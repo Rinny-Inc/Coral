@@ -1,7 +1,6 @@
 [package]
-name = "server"
+name = "paperspigot-rs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = "1.38.0"
