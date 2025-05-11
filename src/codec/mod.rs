@@ -5,9 +5,9 @@ use tokio_util::codec::{Decoder, Encoder, Framed};
 use futures::SinkExt;
 
 use crate::protocol::{reader, writer};
-pub struct MinecraftCodec;
+pub struct Codec;
 
-impl Decoder for MinecraftCodec {
+impl Decoder for Codec {
     type Item = Vec<u8>;
     type Error = std::io::Error;
 
@@ -16,7 +16,7 @@ impl Decoder for MinecraftCodec {
             return Ok(None);
         }
         
-        let mut reader = reader::ByteReader::new(src.to_vec());
+        let mut reader = reader::Reader::new(src.to_vec());
         let length = reader.read_varint() as usize;
         
         if src.len() < length + reader.position {
@@ -29,11 +29,11 @@ impl Decoder for MinecraftCodec {
     }
 }
 
-impl Encoder<Vec<u8>> for MinecraftCodec {
+impl Encoder<Vec<u8>> for Codec {
     type Error = std::io::Error;
 
     fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut writer = writer::ByteWriter::new();
+        let mut writer = writer::Writer::new();
         writer.write_varint(item.len() as i32);
         dst.extend_from_slice(&writer.data);
         dst.extend_from_slice(&item);
@@ -42,7 +42,7 @@ impl Encoder<Vec<u8>> for MinecraftCodec {
 }
 
 pub async fn process(socket: TcpStream) {
-    let mut framed = Framed::new(socket, MinecraftCodec);
+    let mut framed = Framed::new(socket, Codec);
 
     while let Some(Ok(packet)) = framed.next().await {
         println!("Received packet: {:?}", packet);

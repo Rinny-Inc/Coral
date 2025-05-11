@@ -1,11 +1,11 @@
 use crate::protocol::{SEGMENT_BITS, CONTINUE_BIT};
 
-pub struct ByteReader {
+pub struct Reader {
     data: Vec<u8>,
     pub position: usize,
 }
 
-impl ByteReader {
+impl Reader {
     pub fn new(data: Vec<u8>) -> Self {
         Self { 
             data, 
