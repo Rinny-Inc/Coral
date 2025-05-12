@@ -1,13 +1,13 @@
 use crate::protocol::properties::PropertyMap;
 use super::living::Living;
+use uuid::Uuid;
 
 pub struct Player {
     pub base: Living
 }
 
-pub struct UUID([u8; 16]);
 pub struct GameProfile {
-    uuid: UUID,
+    uuid: Uuid,
     name: String,
     properties: PropertyMap,
     legacy: bool

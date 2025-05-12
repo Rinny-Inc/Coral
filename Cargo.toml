@@ -1,12 +1,13 @@
 [package]
-name = "paperspigot-rs"
+name = "coral"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.39.2", features = ["full"] }
+tokio = {version = "1.39.2", features = ["full"]}
 bytes = "1.6.1"
-tokio-util = { version = "0.7.11", features = ["codec"] }
-tokio-stream = { version = "0.1.15", features = ["full"] }
+tokio-util = {version = "0.7.11", features = ["codec"]}
+tokio-stream = {version = "0.1.15", features = ["full"]}
 futures = "0.3"
 serde_json = "1.0.140"
+uuid = {version = "1.16.0", features = ["v4"]}
