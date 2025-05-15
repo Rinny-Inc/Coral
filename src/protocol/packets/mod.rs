@@ -1,10 +1,16 @@
+use handshake::keepalive;
+
 pub mod handshake;
 pub mod login;
+pub mod status;
 
 pub enum Packet {
-    KeepAlive,
+    KeepAlive(keepalive::KeepAlive),
     Handshake(handshake::PacketHandshake),
-    // MOTD
+    StatusStart(status::Start),
+    StatusPing(status::Ping),
+    StatusDone(status::Done),
+    StatusPong(status::Pong),
     LoginSuccess(login::PacketLoginSuccess),
     Unknown(Vec<u8>)
 }

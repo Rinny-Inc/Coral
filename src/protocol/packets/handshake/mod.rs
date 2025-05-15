@@ -1,3 +1,5 @@
+pub mod keepalive;
+
 pub struct PacketHandshake {
     protocol_version: u8,
     host_name: String,
