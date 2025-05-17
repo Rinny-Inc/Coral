@@ -3,6 +3,7 @@ pub mod player;
 
 pub trait Tickable {
     fn tick();
+    fn tick_rate() -> u8;
 }
 
 pub trait EntityTrait {
@@ -16,6 +17,9 @@ pub struct Entity {
 impl Tickable for Entity {
     fn tick() {
         // TODO
+    }
+    fn tick_rate() -> u8 {
+        3
     }
 }
 
