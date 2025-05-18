@@ -4,7 +4,7 @@ use bytes::{Buf, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use futures::SinkExt;
 
-use crate::protocol::{reader, writer};
+use crate::protocol::{reader::{self, Read}, writer::{self, Write}};
 pub struct Codec;
 
 impl Decoder for Codec {
