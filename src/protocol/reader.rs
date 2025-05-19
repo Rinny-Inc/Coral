@@ -1,19 +1,12 @@
 use crate::protocol::{SEGMENT_BITS, CONTINUE_BIT};
 
-pub trait Read {
-    fn new(data: Vec<u8>) -> Self;
-    fn read_byte(&mut self) -> u8;
-    fn read_varint(&mut self) -> i32;
-    fn read_varlong(&mut self) -> i64;
-}
-
 pub struct Reader {
     data: Vec<u8>,
     pub position: usize,
 }
 
-impl Read for Reader {
-    fn new(data: Vec<u8>) -> Self {
+impl Reader {
+    pub fn new(data: Vec<u8>) -> Self {
         Self { 
             data, 
             position: 0 
@@ -26,7 +19,7 @@ impl Read for Reader {
         byte
     }
 
-    fn read_varint(&mut self) -> i32 {
+    pub fn read_varint(&mut self) -> i32 {
         let mut value = 0;
         let mut position = 0;
 
@@ -48,7 +41,7 @@ impl Read for Reader {
         value
     }
 
-    fn read_varlong(&mut self) -> i64 {
+    pub fn read_varlong(&mut self) -> i64 {
         let mut value = 0;
         let mut position = 0;
 

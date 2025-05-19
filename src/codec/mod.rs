@@ -4,7 +4,7 @@ use bytes::{Buf, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use futures::SinkExt;
 
-use crate::protocol::{reader::{self, Read}, writer::{self, Write}};
+use crate::protocol::{reader::Reader, writer::Writer};
 pub struct Codec;
 
 impl Decoder for Codec {
@@ -16,7 +16,7 @@ impl Decoder for Codec {
             return Ok(None);
         }
         
-        let mut reader = reader::Reader::new(src.to_vec());
+        let mut reader = Reader::new(src.to_vec());
         let length = reader.read_varint() as usize;
         
         if src.len() < length + reader.position {
@@ -33,7 +33,7 @@ impl Encoder<Vec<u8>> for Codec {
     type Error = std::io::Error;
 
     fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut writer = writer::Writer::new();
+        let mut writer = Writer::new();
         writer.write_varint(item.len() as i32);
         dst.extend_from_slice(&writer.data);
         dst.extend_from_slice(&item);
