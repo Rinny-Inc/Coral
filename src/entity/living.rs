@@ -1,6 +1,10 @@
-use super::Entity;
+use super::{Entity, EntityTrait};
 
+pub trait LivingTrait: EntityTrait {
+    fn health(&self) -> f32;
+    fn name(&self) -> &str;
+}
 
 pub struct Living {
-    pub base: Entity
+    health: u8
 }
