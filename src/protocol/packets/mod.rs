@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::{Bytes, BytesMut};
-
-use handshake::{keepalive::KeepAlive, PacketHandshake};
+use handshake::keepalive::KeepAlive;
 
 pub mod handshake;
 pub mod login;
@@ -10,7 +9,7 @@ pub mod status;
 
 pub enum PacketsEnum {
     KeepAlive(KeepAlive),
-    Handshake(PacketHandshake),
+    Handshake(handshake::PacketHandshake),
     StatusStart(status::Start),
     StatusPing(status::Ping),
     StatusDone(status::Done),
@@ -20,8 +19,6 @@ pub enum PacketsEnum {
 }
 
 pub trait Packet: std::fmt::Debug {
-    fn id(&self) -> i32;
-
     fn decode(buf: &mut Bytes) -> std::io::Result<Self>
     where
         Self: Sized;
@@ -29,25 +26,34 @@ pub trait Packet: std::fmt::Debug {
     fn encode(&self, buf: &mut BytesMut) -> std::io::Result<()>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PacketKey {
+    pub state: handshake::EnumProtocol,
+    pub id: i32,
+}
 type PacketParser = fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>;
 pub struct PacketRegistry {
-    handlers: HashMap<i32, PacketParser>,
+    handlers: HashMap<PacketKey, PacketParser>,
 }
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<i32, PacketParser> = HashMap::new();
+        let mut handlers: HashMap<PacketKey, PacketParser> = HashMap::new();
 
         // Register packets here
         // ex
-        handlers.insert(PacketHandshake::id(), |buf| {
-            PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
-        });
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Handshaking,
+                id: 0x00
+            }, 
+            |buf| handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+        );
 
         Self { handlers }
     }
 
-    pub fn parse(&self, id: i32, buf: &mut Bytes) -> Option<std::io::Result<Box<dyn Packet>>> {
-        self.handlers.get(&id).map(|parser| parser(buf))
+    pub fn parse(&self, key: PacketKey, buf: &mut Bytes) -> Option<std::io::Result<Box<dyn Packet>>> {
+        self.handlers.get(&key).map(|parser| parser(buf))
     }
 }

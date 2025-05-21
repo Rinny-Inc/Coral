@@ -1,11 +1,16 @@
+use std::sync::Arc;
+
 use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
 use bytes::{Buf, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use futures::SinkExt;
 
-use crate::protocol::{reader::Reader, writer::Writer};
-pub struct Codec;
+use crate::protocol::{packets::{handshake::EnumProtocol, PacketRegistry}, reader::Reader, writer::Writer};
+pub struct Codec {
+    pub registry: Arc<PacketRegistry>,
+    pub state: EnumProtocol,
+}
 
 impl Decoder for Codec {
     type Item = Vec<u8>;
@@ -41,8 +46,12 @@ impl Encoder<Vec<u8>> for Codec {
     }
 }
 
-pub async fn process(socket: TcpStream) {
-    let mut framed = Framed::new(socket, Codec);
+pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
+    let codec = Codec {
+        registry,
+        state: EnumProtocol::Handshaking
+    };
+    let mut framed = Framed::new(socket, codec);
 
     while let Some(Ok(packet)) = framed.next().await {
         println!("Received packet: {:?}", packet);
