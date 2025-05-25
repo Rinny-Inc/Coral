@@ -20,10 +20,10 @@ impl Packet for PacketHandshake {
         Self: Sized {
         let mut buffer = Reader::new(buf.to_vec());
 
-        let protocol_version = buffer.read_varbyte() as u8;
+        let protocol_version = buffer.read_varint_byte() as u8;
         let host_name = buffer.read_string();
         let port = buffer.read_u16();
-        let requested_protocol = match buffer.read_varbyte() {
+        let requested_protocol = match buffer.read_varint_byte() {
             0 => EnumProtocol::Handshaking,
             1 => EnumProtocol::Status,
             2 => EnumProtocol::Login,
@@ -42,10 +42,10 @@ impl Packet for PacketHandshake {
     fn encode(&self) -> std::io::Result<()> {
         let mut buffer = Writer::new();
 
-        buffer.write_varbyte(self.protocol_version as i8);
+        buffer.write_varint_byte(self.protocol_version as i8);
         buffer.write_string(&self.host_name);
         buffer.write_u16(self.port);
-        buffer.write_varbyte(self.requested_protocol.to_id());
+        buffer.write_varint_byte(self.requested_protocol.to_id());
         Ok(())
     }
 }

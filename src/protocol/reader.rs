@@ -39,7 +39,7 @@ impl Reader {
         value
     }
 
-    pub fn read_varshort(&mut self) -> i16 {
+    pub fn read_varint_short(&mut self) -> i16 {
         let mut value = 0;
         let mut position = 0;
         let mut current_byte = self.read_byte();
@@ -59,7 +59,7 @@ impl Reader {
         value
     }
 
-    pub fn read_varbyte(&mut self) -> i8 {
+    pub fn read_varint_byte(&mut self) -> i8 {
         let mut value = 0;
         let mut position = 0;
         let mut current_byte = self.read_byte();

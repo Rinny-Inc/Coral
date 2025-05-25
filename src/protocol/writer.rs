@@ -23,7 +23,7 @@ impl Writer {
         self.write_byte(value as u8);
     }
 
-    pub fn write_varshort(&mut self, mut value: i16) {
+    pub fn write_varint_short(&mut self, mut value: i16) {
         while (value & !(SEGMENT_BITS as i16)) != 0 {
             self.write_byte(((value & SEGMENT_BITS as i16) as u8) | CONTINUE_BIT);
             value >>= 7;
@@ -31,7 +31,7 @@ impl Writer {
         self.write_byte(value as u8);
     }
 
-    pub fn write_varbyte(&mut self, mut value: i8) {
+    pub fn write_varint_byte(&mut self, mut value: i8) {
         while (value & !SEGMENT_BITS as i8) != 0 {
             self.write_byte(((value & SEGMENT_BITS as i8) as u8) | CONTINUE_BIT);
             value >>= 7;
