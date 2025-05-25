@@ -1,3 +1,7 @@
+use std::io::{Error, ErrorKind};
+
+use crate::protocol::{reader::Reader, writer::Writer};
+
 use super::Packet;
 
 pub mod keepalive;
@@ -11,18 +15,37 @@ pub struct PacketHandshake {
 }
 
 impl Packet for PacketHandshake {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized {
-        Ok(PacketHandshake { 
-            protocol_version: 5, 
-            host_name: "locahost".to_string(), 
-            port: 25565,
-            requested_protocol: EnumProtocol::Handshaking
+        let mut buffer = Reader::new(buf.to_vec());
+
+        let protocol_version = buffer.read_varbyte() as u8;
+        let host_name = buffer.read_string();
+        let port = buffer.read_u16();
+        let requested_protocol = match buffer.read_varbyte() {
+            0 => EnumProtocol::Handshaking,
+            1 => EnumProtocol::Status,
+            2 => EnumProtocol::Login,
+            3 => EnumProtocol::Play,
+            _ => return Err(Error::new(ErrorKind::InvalidData, "Unknown protocol")),
+        };
+
+        Ok(PacketHandshake {
+            protocol_version,
+            host_name,
+            port,
+            requested_protocol,
         })
     }
 
-    fn encode(&self, _buf: &mut bytes::BytesMut) -> std::io::Result<()> {
+    fn encode(&self) -> std::io::Result<()> {
+        let mut buffer = Writer::new();
+
+        buffer.write_varbyte(self.protocol_version as i8);
+        buffer.write_string(&self.host_name);
+        buffer.write_u16(self.port);
+        buffer.write_varbyte(self.requested_protocol.to_id());
         Ok(())
     }
 }
@@ -33,4 +56,15 @@ pub enum EnumProtocol {
     Status,
     Login,
     Play
+}
+
+impl EnumProtocol {
+    pub fn to_id(&self) -> i8 {
+        match self {
+            EnumProtocol::Handshaking => 0,
+            EnumProtocol::Status => 1,
+            EnumProtocol::Login => 2,
+            EnumProtocol::Play => 3,
+        }
+    }
 }

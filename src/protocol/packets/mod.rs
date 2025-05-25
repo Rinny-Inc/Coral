@@ -23,7 +23,7 @@ pub trait Packet: std::fmt::Debug {
     where
         Self: Sized;
 
-    fn encode(&self, buf: &mut BytesMut) -> std::io::Result<()>;
+    fn encode(&self) -> std::io::Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
