@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use bytes::{Bytes, BytesMut};
 use handshake::keepalive::KeepAlive;
 
+use super::writer::Writer;
+
 pub mod handshake;
 pub mod login;
 pub mod status;
@@ -23,13 +25,17 @@ pub trait Packet: std::fmt::Debug {
     where
         Self: Sized;
 
-    fn encode(&self) -> std::io::Result<()>;
+    fn encode(&self, writer: &mut Writer) -> std::io::Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PacketKey {
     pub state: handshake::EnumProtocol,
     pub id: i32,
+}
+pub struct PacketStruct {
+    encoder: fn(&mut Bytes) -> std::io::Result<()>,
+    decoder: fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>
 }
 type PacketParser = fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>;
 pub struct PacketRegistry {

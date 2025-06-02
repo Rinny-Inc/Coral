@@ -39,9 +39,7 @@ impl Packet for PacketHandshake {
         })
     }
 
-    fn encode(&self) -> std::io::Result<()> {
-        let mut buffer = Writer::new();
-
+    fn encode(&self, buffer: &mut Writer) -> std::io::Result<()> {
         buffer.write_varint_byte(self.protocol_version as i8);
         buffer.write_string(&self.host_name);
         buffer.write_u16(self.port);
