@@ -46,14 +46,33 @@ impl PacketRegistry {
     pub fn new() -> Self {
         let mut handlers: HashMap<PacketKey, PacketParser> = HashMap::new();
 
-        // Register packets here
-        // ex
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Handshaking,
                 id: 0x00
             }, 
             |buf| handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Status,
+                id: 0x00
+            }, 
+            |buf| status::Start::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Status,
+                id: 0x01
+            }, 
+            |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Status,
+                id: 0x01
+            }, 
+            |buf| status::Pong::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
         );
 
         Self { handlers }

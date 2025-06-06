@@ -67,7 +67,7 @@ impl Writer {
         self.data.extend_from_slice(bytes);
     }
 
-    fn write_long(&mut self, value: i64) {
+    pub fn write_long(&mut self, value: i64) {
         self.data.extend_from_slice(&value.to_be_bytes());
     }
 

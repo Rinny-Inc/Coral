@@ -108,7 +108,7 @@ impl Reader {
         }
     }
 
-    fn read_long(&mut self) -> i64 {
+    pub fn read_long(&mut self) -> i64 {
         let mut bytes = [0u8; 8];
         for byte in &mut bytes {
             *byte = self.read_byte();
