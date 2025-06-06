@@ -1,19 +1,31 @@
-use crate::protocol::{SEGMENT_BITS, CONTINUE_BIT};
+use crate::protocol::{CONTINUE_BIT, SEGMENT_BITS};
 
 pub struct Reader {
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub position: usize,
 }
 
 impl Reader {
     pub fn new(data: Vec<u8>) -> Self {
-        Self { 
-            data, 
-            position: 0 
-        }
+        Self { data, position: 0 }
+    }
+
+    pub fn has_remaining(&self) -> bool {
+        self.position < self.data.len()
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.data.len() - self.position
     }
 
     fn read_byte(&mut self) -> u8 {
+        if self.position >= self.data.len() {
+            panic!(
+                "Attempted to read byte at position {}, but data length is {}",
+                self.position,
+                self.data.len()
+            );
+        }
         let byte = self.data[self.position];
         self.position += 1;
         byte
@@ -22,7 +34,9 @@ impl Reader {
     pub fn read_varint(&mut self) -> i32 {
         let mut value = 0;
         let mut position = 0;
+        let mut bytes_read = Vec::new();
         let mut current_byte = self.read_byte();
+        bytes_read.push(current_byte);
 
         while (current_byte & CONTINUE_BIT) != 0 {
             value |= ((current_byte & SEGMENT_BITS) as i32) << position;
@@ -33,49 +47,13 @@ impl Reader {
             }
 
             current_byte = self.read_byte();
+            bytes_read.push(current_byte);
         }
 
         value |= ((current_byte & SEGMENT_BITS) as i32) << position;
-        value
-    }
 
-    pub fn read_varint_short(&mut self) -> i16 {
-        let mut value = 0;
-        let mut position = 0;
-        let mut current_byte = self.read_byte();
+        println!("read_varint -> value: {}, bytes: {:?}", value, bytes_read);
 
-        while (current_byte & CONTINUE_BIT) != 0 {
-            value |= ((current_byte & SEGMENT_BITS) as i16) << position;
-            position += 7;
-
-            if position >= 32 {
-                panic!("VarInt is too big");
-            }
-
-            current_byte = self.read_byte();
-        }
-
-        value |= ((current_byte & SEGMENT_BITS) as i16) << position;
-        value
-    }
-
-    pub fn read_varint_byte(&mut self) -> i8 {
-        let mut value = 0;
-        let mut position = 0;
-        let mut current_byte = self.read_byte();
-
-        while (current_byte & CONTINUE_BIT) != 0 {
-            value |= ((current_byte & SEGMENT_BITS) as i8) << position;
-            position += 7;
-
-            if position >= 32 {
-                panic!("VarInt is too big");
-            }
-
-            current_byte = self.read_byte();
-        }
-
-        value |= ((current_byte & SEGMENT_BITS) as i8) << position;
         value
     }
 
@@ -83,7 +61,7 @@ impl Reader {
         let mut value = 0;
         let mut position = 0;
         let mut current_byte = self.read_byte();
-        
+
         while (current_byte & CONTINUE_BIT) != 0 {
             value |= ((current_byte & SEGMENT_BITS) as i64) << position;
             position += 7;

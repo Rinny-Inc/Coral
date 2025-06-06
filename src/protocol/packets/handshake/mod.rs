@@ -20,16 +20,24 @@ impl Packet for PacketHandshake {
         Self: Sized {
         let mut buffer = Reader::new(buf.to_vec());
 
-        let protocol_version = buffer.read_varint_byte() as u8;
+        let _packet_id = buffer.read_varint();
+        let protocol_version = buffer.read_varint() as u8;
         let host_name = buffer.read_string();
         let port = buffer.read_u16();
-        let requested_protocol = match buffer.read_varint_byte() {
+        let requested_protocol = match buffer.read_varint() {
             0 => EnumProtocol::Handshaking,
             1 => EnumProtocol::Status,
             2 => EnumProtocol::Login,
             3 => EnumProtocol::Play,
             _ => return Err(Error::new(ErrorKind::InvalidData, "Unknown protocol")),
         };
+
+        if buffer.has_remaining() {
+            return Err(Error::new(
+                ErrorKind::Other,
+                format!("Bytes remaining on stream: {}", buffer.remaining()),
+            ));
+        }
 
         Ok(PacketHandshake {
             protocol_version,
@@ -49,6 +57,7 @@ impl Packet for PacketHandshake {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(i8)]
 pub enum EnumProtocol {
     Handshaking,
     Status,
@@ -58,11 +67,6 @@ pub enum EnumProtocol {
 
 impl EnumProtocol {
     pub fn to_id(&self) -> i8 {
-        match self {
-            EnumProtocol::Handshaking => 0,
-            EnumProtocol::Status => 1,
-            EnumProtocol::Login => 2,
-            EnumProtocol::Play => 3,
-        }
+        self.clone() as i8
     }
 }

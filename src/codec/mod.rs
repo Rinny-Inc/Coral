@@ -31,6 +31,8 @@ impl Decoder for Codec {
         src.advance(reader.position);
         let data = src.split_to(length);
 
+        println!("Decoder data -> {:?}", data.to_vec());
+
         let mut bytes = Bytes::from(data.to_vec());
         let mut inner_reader = Reader::new(bytes.clone().to_vec());
 
@@ -78,11 +80,11 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
         match result {
             Ok(packet) => {
                 println!("Received packet: {:?}", packet);
-                break;
+                continue;
             },
             Err(e) => {
                 eprintln!("Error processing packet: {:?}", e);
-                break;
+                continue;
             }
         }
     }
