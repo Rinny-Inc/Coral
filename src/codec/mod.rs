@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
 use bytes::{Buf, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use futures::SinkExt;
 
-use crate::protocol::{packets::{handshake::EnumProtocol, Packet, PacketKey, PacketRegistry}, reader::Reader, writer::Writer};
+use crate::protocol::{packets::{handshake::{EnumProtocol, PacketHandshake}, Packet, PacketKey, PacketRegistry}, reader::Reader, writer::Writer};
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
@@ -71,7 +71,7 @@ impl Encoder<Box<dyn Packet>> for Codec {
 
 pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
     let codec = Codec {
-        registry,
+        registry: registry.clone(),
         state: EnumProtocol::Handshaking
     };
     let mut framed = Framed::new(socket, codec);
@@ -80,6 +80,38 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
         match result {
             Ok(packet) => {
                 println!("Received packet: {:?}", packet);
+
+                if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
+                    println!("Handshake received. Changing state to {:?}", handshake.requested_protocol);
+                    framed.codec_mut().state = handshake.requested_protocol.clone();
+                    continue; 
+                }
+
+                // TEST
+                let mut encoded_buf = BytesMut::new();
+                let mut should_send = false;
+                
+                for (_, parser) in &registry.handlers {
+                    if let Some(encoder_fn) = parser.encoder {
+                        let mut writer = Writer::new();
+                        if encoder_fn(packet.as_ref(), &mut writer).is_ok() {
+                            let mut length_writer = Writer::new();
+                            length_writer.write_varint(writer.data.len() as i32);
+
+                            encoded_buf.extend_from_slice(&length_writer.data);
+                            encoded_buf.extend_from_slice(&writer.data);
+
+                            should_send = true;
+                            break;
+                        }
+                    }
+                }
+                if should_send {
+                    if let Err(e) = framed.get_mut().write_all(&encoded_buf).await {
+                        eprintln!("Error sending encoded packet: {:?}", e);
+                    }
+                }
+                // TEST
                 continue;
             },
             Err(e) => {
