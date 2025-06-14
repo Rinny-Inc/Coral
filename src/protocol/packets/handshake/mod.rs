@@ -73,14 +73,4 @@ impl EnumProtocol {
     pub fn to_id(&self) -> i8 {
         self.clone() as i8
     }
-
-    pub fn from_id(id: i8) -> Option<Self> {
-        match id {
-            0 => Some(Self::Handshaking),
-            1 => Some(Self::Status),
-            2 => Some(Self::Login),
-            3 => Some(Self::Play),
-            _ => None
-        }
-    }
 }
