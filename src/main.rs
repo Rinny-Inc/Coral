@@ -4,12 +4,17 @@ use protocol::packets::PacketRegistry;
 use tokio::net::TcpListener;
 
 mod codec;
-mod protocol;
 mod entity;
+mod protocol;
+pub mod random;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:25565").await?;
+    // TODO:
+    // ip port separated for config
+    // check if the port is already binded
+    let listener = TcpListener::bind("0.0.0.0:25565").await?;
+    println!("Minecraft Server started at 0.0.0.0:25565");
     let packet_registry = Arc::new(PacketRegistry::new());
 
     loop {

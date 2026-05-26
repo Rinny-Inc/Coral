@@ -8,20 +8,21 @@ pub mod keepalive;
 
 #[derive(Debug)]
 pub struct PacketHandshake {
-    protocol_version: u8,
+    protocol_version: i32,
     host_name: String,
     port: u16,
-    pub requested_protocol: EnumProtocol
+    pub requested_protocol: EnumProtocol,
 }
 
 impl Packet for PacketHandshake {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
-        Self: Sized {
+        Self: Sized,
+    {
         let mut buffer = Reader::new(buf.to_vec());
 
         let _packet_id = buffer.read_varint();
-        let protocol_version = buffer.read_varint() as u8;
+        let protocol_version = buffer.read_varint();
         let host_name = buffer.read_string();
         let port = buffer.read_u16();
         let requested_protocol = match buffer.read_varint() {
@@ -66,7 +67,7 @@ pub enum EnumProtocol {
     Handshaking,
     Status,
     Login,
-    Play
+    Play,
 }
 
 impl EnumProtocol {

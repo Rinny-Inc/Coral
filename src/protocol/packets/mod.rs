@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use bytes::Bytes;
+use std::collections::HashMap;
 
 use super::writer::Writer;
 
@@ -24,7 +24,7 @@ pub struct PacketKey {
 }
 pub struct PacketParser {
     pub encoder: Option<fn(&dyn Packet, &mut Writer) -> std::io::Result<()>>,
-    pub decoder: fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>
+    pub decoder: fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>,
 }
 pub struct PacketRegistry {
     pub handlers: HashMap<PacketKey, PacketParser>,
@@ -37,47 +37,55 @@ impl PacketRegistry {
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Handshaking,
-                id: 0x00
-            }, 
-            PacketParser { 
-                encoder: None, 
-                decoder: |buf| handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>) 
-            }
+                id: 0x00,
+            },
+            PacketParser {
+                encoder: None,
+                decoder: |buf| {
+                    handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+                },
+            },
         );
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Status,
-                id: 0x00
-            }, 
-            PacketParser { 
-                encoder: None, 
-                decoder: |buf| status::Request::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>) 
-            }
+                id: 0x00,
+            },
+            PacketParser {
+                encoder: None,
+                decoder: |buf| status::Request::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+            },
         );
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Status,
-                id: 0x01
-            }, 
-            PacketParser { 
+                id: 0x01,
+            },
+            PacketParser {
                 encoder: Some(|packet, writer| {
                     let pong = match packet.as_any().downcast_ref::<status::Pong>() {
                         Some(pong) => pong,
-                        None => return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                       "Failed to downcast to Pong",
-                        )),
+                        None => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Failed to downcast to Pong",
+                            ));
+                        }
                     };
                     pong.encode(writer)
-                }), 
-                decoder: |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>) 
-            }
+                }),
+                decoder: |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+            },
         );
 
         Self { handlers }
     }
 
-    pub fn parse(&self, key: PacketKey, buf: &mut Bytes) -> Option<std::io::Result<Box<dyn Packet>>> {
+    pub fn parse(
+        &self,
+        key: PacketKey,
+        buf: &mut Bytes,
+    ) -> Option<std::io::Result<Box<dyn Packet>>> {
         self.handlers.get(&key).map(|parser| (parser.decoder)(buf))
     }
 

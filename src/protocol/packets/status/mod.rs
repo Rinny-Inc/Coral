@@ -1,12 +1,15 @@
 use std::io::{Error, ErrorKind, Result};
 
+use serde_json::json;
+
 use crate::protocol::{packets::Packet, reader::Reader, writer::Writer};
 
 #[derive(Debug)]
 pub struct Request;
 
+#[derive(Debug)]
 pub struct Response {
-    json: String
+    json: String,
 }
 
 #[derive(Debug)]
@@ -16,31 +19,73 @@ pub struct Ping {
 
 #[derive(Debug)]
 pub struct Pong {
-    pub time: i64
+    pub time: i64,
+}
+
+impl Response {
+    pub fn new(motd: &str, online: u32, max: u32) -> Self {
+        let json = json!({
+            "version": {
+                "name": "Coral 1.7.x/1.8.x",
+                "protocol": 1
+            },
+            "players": {
+                "max": max,
+                "online": online,
+                "sample": []
+            },
+            "description": {
+                "text": motd
+            }
+        })
+        .to_string();
+
+        println!("DEBUG response json: {}", json);
+
+        Self { json }
+    }
+}
+impl Packet for Response {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf.to_vec());
+        let json = reader.read_string();
+        Ok(Response { json })
+    }
+
+    fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
+        writer.write_varint(0x00);
+        writer.write_string(&self.json);
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl Packet for Ping {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self>
-        where
-            Self: Sized {
+    where
+        Self: Sized,
+    {
         let mut reader = Reader::new(buf.to_vec());
-
-        let packet_id = reader.read_varint();
-        if packet_id != 0x01 {
-            return Err(Error::new(ErrorKind::InvalidData, format!("Expected packet ID 1, got {}", packet_id)));
-        }
-
+        let _packet_id = reader.read_varint();
         let time = reader.read_long(); // i64
 
         if reader.has_remaining() {
-            return Err(Error::new(ErrorKind::InvalidData, "Unexpected extra bytes in Ping packet"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Unexpected extra bytes in Ping packet",
+            ));
         }
 
         Ok(Ping { time })
     }
 
     fn encode(&self, writer: &mut Writer) -> Result<()> {
-        writer.write_varint(0x01);
         writer.write_long(self.time);
         Ok(())
     }
@@ -56,7 +101,6 @@ impl Packet for Pong {
     }
 
     fn encode(&self, writer: &mut Writer) -> Result<()> {
-        writer.write_varint(0x01);
         writer.write_long(self.time);
         Ok(())
     }
@@ -69,13 +113,12 @@ impl Packet for Pong {
 impl Packet for Request {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
         let mut reader = Reader::new(buf.to_vec());
-        let packet_id = reader.read_varint();
-        if packet_id != 0x00 {
-            return Err(Error::new(ErrorKind::InvalidData, "Expected packet ID 0 for StatusRequest"));
-        }
-
+        let _packet_id = reader.read_varint();
         if reader.has_remaining() {
-            return Err(Error::new(ErrorKind::InvalidData, "Unexpected extra bytes in StatusRequest"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Unexpected extra bytes in StatusRequest",
+            ));
         }
 
         Ok(Request)

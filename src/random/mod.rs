@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct XorShift {
     state: u64,
@@ -11,7 +11,9 @@ impl XorShift {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|_| Duration::new(0, 0))
             .as_nanos();
-        Self { state: seed.wrapping_add(0x9E3779B97F4A7C15) as u64 }
+        Self {
+            state: seed.wrapping_add(0x9E3779B97F4A7C15) as u64,
+        }
     }
 
     #[inline]
