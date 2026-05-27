@@ -23,11 +23,11 @@ pub struct Pong {
 }
 
 impl Response {
-    pub fn new(motd: &str, online: u32, max: u32) -> Self {
+    pub fn new(motd: &str, online: u32, max: u32, protocol: i32) -> Self {
         let json = json!({
             "version": {
                 "name": "Coral 1.7.x/1.8.x",
-                "protocol": 1
+                "protocol": protocol
             },
             "players": {
                 "max": max,

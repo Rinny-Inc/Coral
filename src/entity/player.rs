@@ -1,11 +1,14 @@
+use super::{
+    EntityTrait,
+    living::{Living, LivingTrait},
+};
 use crate::protocol::properties::PropertyMap;
-use super::{living::{Living, LivingTrait}, EntityTrait};
 use uuid::Uuid;
 
 pub struct Player {
     id: u128,
     health: f32,
-    name: String
+    name: String,
 }
 
 impl EntityTrait for Player {
@@ -22,12 +25,4 @@ impl LivingTrait for Player {
     fn name(&self) -> &str {
         &self.name
     }
-}
-
-
-pub struct GameProfile {
-    uuid: Uuid,
-    name: String,
-    properties: PropertyMap,
-    legacy: bool
 }

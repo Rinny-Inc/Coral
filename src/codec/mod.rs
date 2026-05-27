@@ -6,11 +6,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
+use uuid::Uuid;
 
 use crate::protocol::{
     packets::{
         Packet, PacketKey, PacketRegistry,
-        handshake::{EnumProtocol, PacketHandshake},
+        handshake::{self, EnumProtocol, PacketHandshake},
+        login::{self, LoginStart, LoginSuccess},
         status::{Ping, Pong, Request, Response},
     },
     reader::Reader,
@@ -100,13 +102,14 @@ async fn send_packet<P: Packet>(framed: &mut Framed<TcpStream, Codec>, packet: P
     }
 }
 
+const ALLOWED_PROTOCOLS: &[i32] = &[5, 47];
 pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
     let codec = Codec {
         registry: registry.clone(),
         state: EnumProtocol::Handshaking,
     };
     let mut framed = Framed::new(socket, codec);
-
+    let mut client_protocol = 1;
     while let Some(result) = framed.next().await {
         match result {
             Ok(packet) => {
@@ -117,6 +120,7 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                         "Handshake received. Sending Status {:?}",
                         handshake.requested_protocol
                     );
+                    client_protocol = handshake.protocol_version;
                     framed.codec_mut().state = handshake.requested_protocol.clone();
                     continue;
                 }
@@ -124,7 +128,12 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                     println!("Status request → sending response");
                     send_packet(
                         &mut framed,
-                        Response::new("Coral Rust Minecraft Server\nTest Server", 0, 20),
+                        Response::new(
+                            "Coral Rust Minecraft Server\nTest Server",
+                            0,
+                            20,
+                            client_protocol,
+                        ),
                     )
                     .await;
                     continue;
@@ -136,12 +145,39 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                     continue;
                 }
 
+                if framed.codec().state == EnumProtocol::Login
+                    && !ALLOWED_PROTOCOLS.contains(&client_protocol)
+                {
+                    break;
+                }
+
+                if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                    println!("Login request from {}", login_start.username);
+
+                    let uuid = Uuid::new_v3(
+                        &Uuid::NAMESPACE_DNS,
+                        format!("OfflinePlayer:{}", login_start.username).as_bytes(),
+                    );
+
+                    send_packet(
+                        &mut framed,
+                        LoginSuccess {
+                            uuid,
+                            username: login_start.username.clone(),
+                        },
+                    )
+                    .await;
+
+                    framed.codec_mut().state = handshake::EnumProtocol::Play;
+                    continue;
+                }
+
                 println!("WARN: Unhandled packet: {:?}", packet);
-                continue;
+                break;
             }
             Err(e) => {
                 eprintln!("Error processing packet: {:?}", e);
-                continue;
+                break;
             }
         }
     }

@@ -26,6 +26,7 @@ pub struct PacketParser {
     pub encoder: Option<fn(&dyn Packet, &mut Writer) -> std::io::Result<()>>,
     pub decoder: fn(&mut Bytes) -> std::io::Result<Box<dyn Packet>>,
 }
+
 pub struct PacketRegistry {
     pub handlers: HashMap<PacketKey, PacketParser>,
 }
@@ -75,6 +76,18 @@ impl PacketRegistry {
                     pong.encode(writer)
                 }),
                 decoder: |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+            },
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Login,
+                id: 0x00,
+            },
+            PacketParser {
+                encoder: None,
+                decoder: |buf| {
+                    login::LoginStart::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+                },
             },
         );
 
