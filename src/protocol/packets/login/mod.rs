@@ -41,7 +41,7 @@ impl Packet for LoginSuccess {
     where
         Self: Sized,
     {
-        Err(Error::new(ErrorKind::Other, "Unexpected call"))
+        Err(Error::other("Unexpected call"))
     }
 
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {

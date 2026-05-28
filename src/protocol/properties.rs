@@ -27,7 +27,7 @@ impl PropertyMap {
     }
 
     pub fn insert(&mut self, key: String, property: Property) {
-        self.properties.entry(key).or_insert_with(Vec::new).push(property);
+        self.properties.entry(key).or_default().push(property);
     }
 
     pub fn get(&self, key: &str) -> Option<&Vec<Property>> {

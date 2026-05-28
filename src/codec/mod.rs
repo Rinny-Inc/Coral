@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes, BytesMut};
-use futures::SinkExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio_stream::StreamExt;
@@ -12,7 +11,11 @@ use crate::protocol::{
     packets::{
         Packet, PacketKey, PacketRegistry,
         handshake::{self, EnumProtocol, PacketHandshake},
-        login::{self, LoginStart, LoginSuccess},
+        login::{LoginStart, LoginSuccess},
+        play::{
+            PlayerAbilities, PlayerPositionAndLook, SpawnPosition, SpawnPosition17,
+            join_game::JoinGame,
+        },
         status::{Ping, Pong, Request, Response},
     },
     reader::Reader,
@@ -21,6 +24,7 @@ use crate::protocol::{
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
+    online: u32,
 }
 
 impl Decoder for Codec {
@@ -56,10 +60,20 @@ impl Decoder for Codec {
         match self.registry.parse(key, &mut bytes) {
             Some(Ok(packet)) => Ok(Some(packet)),
             Some(Err(e)) => Err(e),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Unknown packet ID: {}", id),
-            )),
+            None => {
+                if self.state == EnumProtocol::Play {
+                    println!(
+                        "WARN: Ignoring unknown Play packet ID: 0x{:02X} ({})",
+                        id, id
+                    );
+                    Ok(None)
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Unknown packet ID: {}", id),
+                    ))
+                }
+            }
         }
     }
 }
@@ -103,10 +117,12 @@ async fn send_packet<P: Packet>(framed: &mut Framed<TcpStream, Codec>, packet: P
 }
 
 const ALLOWED_PROTOCOLS: &[i32] = &[5, 47];
+const MAX_PLAYER: u32 = 20;
 pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
     let codec = Codec {
         registry: registry.clone(),
         state: EnumProtocol::Handshaking,
+        online: 0,
     };
     let mut framed = Framed::new(socket, codec);
     let mut client_protocol = 1;
@@ -116,22 +132,20 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                 println!("INFO: Received packet: {:?}", packet);
 
                 if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
-                    println!(
-                        "Handshake received. Sending Status {:?}",
-                        handshake.requested_protocol
-                    );
+                    //println!("Handshake received. Sending Status {:?}", handshake.requested_protocol);
                     client_protocol = handshake.protocol_version;
                     framed.codec_mut().state = handshake.requested_protocol.clone();
                     continue;
                 }
                 if packet.as_any().downcast_ref::<Request>().is_some() {
-                    println!("Status request → sending response");
+                    //println!("Status request → sending response");
+                    let online = framed.codec().online;
                     send_packet(
                         &mut framed,
                         Response::new(
                             "Coral Rust Minecraft Server\nTest Server",
-                            0,
-                            20,
+                            online,
+                            MAX_PLAYER,
                             client_protocol,
                         ),
                     )
@@ -169,6 +183,49 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                     .await;
 
                     framed.codec_mut().state = handshake::EnumProtocol::Play;
+
+                    send_packet(
+                        &mut framed,
+                        JoinGame {
+                            entity_id: 1,
+                            gamemode: 0,
+                            dimension: 0,
+                            difficulty: 1,
+                            max_player: 20,
+                            level_type: "default".to_string(),
+                            reduced_debug_info: false,
+                        },
+                    )
+                    .await;
+
+                    if client_protocol == 47 {
+                        send_packet(&mut framed, SpawnPosition { x: 0, y: 64, z: 0 }).await;
+                    } else {
+                        send_packet(&mut framed, SpawnPosition17 { x: 0, y: 64, z: 0 }).await;
+                    }
+
+                    send_packet(
+                        &mut framed,
+                        PlayerAbilities {
+                            flags: 0x00,
+                            fly_speed: 0.05,
+                            walk_speed: 0.1,
+                        },
+                    )
+                    .await;
+
+                    send_packet(
+                        &mut framed,
+                        PlayerPositionAndLook {
+                            x: 0.0,
+                            y: 64.0,
+                            z: 0.0,
+                            yaw: 90.0,
+                            pitch: 0.0,
+                            on_ground: true,
+                        },
+                    )
+                    .await;
                     continue;
                 }
 

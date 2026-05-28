@@ -34,10 +34,10 @@ impl Packet for PacketHandshake {
         };
 
         if buffer.has_remaining() {
-            return Err(Error::new(
-                ErrorKind::Other,
-                format!("Bytes remaining on stream: {}", buffer.remaining()),
-            ));
+            return Err(Error::other(format!(
+                "Bytes remaining on stream: {}",
+                buffer.remaining()
+            )));
         }
 
         Ok(PacketHandshake {

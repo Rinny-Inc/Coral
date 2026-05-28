@@ -97,7 +97,7 @@ impl Packet for Ping {
 
 impl Packet for Pong {
     fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
-        return Err(Error::new(ErrorKind::Other, "Unexpected call"));
+        Err(Error::other("Unexpected call"))
     }
 
     fn encode(&self, writer: &mut Writer) -> Result<()> {

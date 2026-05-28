@@ -1,4 +1,4 @@
-use crate::protocol::{SEGMENT_BITS, CONTINUE_BIT};
+use crate::protocol::{CONTINUE_BIT, SEGMENT_BITS};
 
 pub struct Writer {
     pub data: Vec<u8>,
@@ -6,12 +6,10 @@ pub struct Writer {
 
 impl Writer {
     pub fn new() -> Self {
-        Self { 
-            data: Vec::new()
-        }
+        Self { data: Vec::new() }
     }
 
-    fn write_byte(&mut self, byte: u8) {
+    pub fn write_byte(&mut self, byte: u8) {
         self.data.push(byte);
     }
 
@@ -54,6 +52,18 @@ impl Writer {
     pub fn write_u16(&mut self, value: u16) {
         self.write_byte((value >> 8) as u8);
         self.write_byte((value & 0xFF) as u8);
+    }
+
+    pub fn write_i32(&mut self, value: i32) {
+        self.data.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn write_f32(&mut self, value: f32) {
+        self.data.extend_from_slice(&value.to_be_bytes());
+    }
+
+    pub fn write_f64(&mut self, value: f64) {
+        self.data.extend_from_slice(&value.to_be_bytes());
     }
 
     pub fn write_string(&mut self, value: &str) {

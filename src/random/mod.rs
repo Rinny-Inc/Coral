@@ -17,7 +17,7 @@ impl XorShift {
     }
 
     #[inline]
-    pub fn next(&mut self) -> u64 {
+    pub fn next_state(&mut self) -> u64 {
         self.state ^= self.state << 13;
         self.state ^= self.state >> 7;
         self.state ^= self.state << 17;
@@ -31,6 +31,11 @@ impl XorShift {
         if range == 0 {
             return min;
         }
-        min.wrapping_add(self.next() % range)
+        min.wrapping_add(self.next_state() % range)
+    }
+}
+impl Default for XorShift {
+    fn default() -> Self {
+        Self::new()
     }
 }
