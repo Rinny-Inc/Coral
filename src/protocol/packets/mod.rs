@@ -40,6 +40,7 @@ impl PacketRegistry {
             },
             |buf| handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
+
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Status,
@@ -54,6 +55,7 @@ impl PacketRegistry {
             },
             |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
+
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Login,
@@ -62,6 +64,15 @@ impl PacketRegistry {
             |buf| login::LoginStart::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
 
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x00,
+            },
+            |buf| {
+                handshake::keepalive::KeepAlive::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+            },
+        );
         Self { handlers }
     }
 
