@@ -21,7 +21,6 @@ impl Packet for LoginStart {
         Self: Sized,
     {
         let mut reader = Reader::new(buf.to_vec());
-        let _packet_id = reader.read_varint();
         let username = reader.read_string();
         Ok(Self { username })
     }

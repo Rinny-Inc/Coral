@@ -72,7 +72,6 @@ impl Packet for Ping {
         Self: Sized,
     {
         let mut reader = Reader::new(buf.to_vec());
-        let _packet_id = reader.read_varint();
         let time = reader.read_long(); // i64
 
         if reader.has_remaining() {
@@ -112,8 +111,7 @@ impl Packet for Pong {
 
 impl Packet for Request {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
-        let mut reader = Reader::new(buf.to_vec());
-        let _packet_id = reader.read_varint();
+        let reader = Reader::new(buf.to_vec());
         if reader.has_remaining() {
             return Err(Error::new(
                 ErrorKind::InvalidData,

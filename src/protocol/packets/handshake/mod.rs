@@ -21,7 +21,6 @@ impl Packet for PacketHandshake {
     {
         let mut buffer = Reader::new(buf.to_vec());
 
-        let _packet_id = buffer.read_varint();
         let protocol_version = buffer.read_varint();
         let host_name = buffer.read_string();
         let port = buffer.read_u16();
@@ -49,7 +48,7 @@ impl Packet for PacketHandshake {
     }
 
     fn encode(&self, buffer: &mut Writer) -> std::io::Result<()> {
-        buffer.write_varint_byte(self.protocol_version as i8);
+        buffer.write_varint(self.protocol_version);
         buffer.write_string(&self.host_name);
         buffer.write_u16(self.port);
         buffer.write_varint_byte(self.requested_protocol.to_id());

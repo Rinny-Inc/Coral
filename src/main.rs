@@ -7,6 +7,7 @@ mod codec;
 mod entity;
 mod protocol;
 pub mod random;
+pub mod world;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

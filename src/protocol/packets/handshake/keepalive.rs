@@ -10,7 +10,6 @@ impl Packet for KeepAlive {
         Self: Sized,
     {
         let mut reader = Reader::new(buf.to_vec());
-        let _packet_id = reader.read_varint();
         let id = reader.read_varint();
         Ok(Self { id })
     }

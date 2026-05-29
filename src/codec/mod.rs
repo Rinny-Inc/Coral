@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Buf, Bytes, BytesMut};
+use futures::SinkExt;
 use tokio::net::TcpStream;
 use tokio::{io::AsyncWriteExt, time::interval};
 use tokio_stream::StreamExt;
@@ -23,6 +24,8 @@ use crate::protocol::{
     reader::Reader,
     writer::Writer,
 };
+use crate::world::chunk::ChunkData;
+use crate::world::time::TimeUpdate;
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
@@ -51,9 +54,13 @@ impl Decoder for Codec {
         println!("INFO: Decoder Codec data -> {:?}", data.to_vec());
 
         let mut bytes = Bytes::from(data.to_vec());
-        let mut inner_reader = Reader::new(bytes.clone().to_vec());
 
-        let id = inner_reader.read_varint();
+        let id = {
+            let mut inner_reader = Reader::new(bytes.to_vec());
+            let id = inner_reader.read_varint();
+            bytes.advance(inner_reader.position); // consume the id
+            id
+        };
         let key = PacketKey {
             state: self.state.clone(),
             id,
@@ -96,7 +103,7 @@ impl Encoder<Box<dyn Packet>> for Codec {
     }
 }
 
-async fn send_packet<P: Packet>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
+async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
     let mut writer = Writer::new();
     if let Err(e) = packet.encode(&mut writer) {
         eprintln!("Failed to encode packet: {e}");
@@ -211,6 +218,11 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                             )
                             .await;
 
+                            send_packet(&mut framed, TimeUpdate {
+                                world_age: 0,
+                                time_of_day: 6000
+                            }).await;
+
                             if client_protocol == 47 {
                                 send_packet(&mut framed, SpawnPosition { x: 0, y: 64, z: 0 }).await;
                             } else {
@@ -227,18 +239,25 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                             )
                             .await;
 
-                            send_packet(
-                                &mut framed,
-                                PlayerPositionAndLook {
-                                    x: 0.0,
-                                    y: 64.0,
-                                    z: 0.0,
-                                    yaw: 90.0,
-                                    pitch: 0.0,
-                                    on_ground: true,
-                                },
-                            )
-                            .await;
+                            for cx in -2i32..=2 {
+                                for cz in -2i32..=2 {
+                                    send_packet(&mut framed, ChunkData {
+                                        chunk_x: cx,
+                                        chunk_z: cz,
+                                        client_protocol,
+                                    }).await;
+                                }
+                            }
+
+                            send_packet(&mut framed, PlayerPositionAndLook {
+                                x: 0.5,
+                                y: 4.5,
+                                z: 0.5,
+                                yaw: 0.0,
+                                pitch: 0.0,
+                                on_ground: false,
+                            }).await;
+
                             continue;
                         }
 
@@ -248,7 +267,7 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>) {
                         }
 
                         println!("WARN: Unhandled packet: {:?}", packet);
-                        break;
+                        continue;
                     }
                     Err(e) => {
                         eprintln!("Error processing packet: {:?}", e);
