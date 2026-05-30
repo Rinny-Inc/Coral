@@ -23,26 +23,43 @@ pub struct Pong {
 }
 
 impl Response {
-    pub fn new(motd: &str, online: u32, max: u32, protocol: i32) -> Self {
-        let json = json!({
-            "version": {
-                "name": "Coral 1.7.x/1.8.x",
-                "protocol": protocol
-            },
-            "players": {
-                "max": max,
-                "online": online,
-                "sample": []
-            },
-            "description": {
-                "text": motd
-            }
-        })
-        .to_string();
+    pub fn new(motd: &str, online: u32, max: u32, protocol: i32, favicon: Option<&str>) -> Self {
+        let json = if let Some(icon) = favicon {
+            json!({
+                "version": {
+                    "name": "Coral 1.7.x/1.8.x",
+                    "protocol": protocol
+                },
+                "players": {
+                    "max": max,
+                    "online": online,
+                    "sample": []
+                },
+                "description": {
+                    "text": motd
+                },
+                "favicon": icon
+            })
+        } else {
+            json!({
+                "version": {
+                    "name": "Coral 1.7.x/1.8.x",
+                    "protocol": protocol
+                },
+                "players": {
+                    "max": max,
+                    "online": online,
+                    "sample": []
+                },
+                "description": {
+                    "text": motd
+                }
+            })
+        };
 
-        println!("DEBUG response json: {}", json);
-
-        Self { json }
+        Self {
+            json: json.to_string(),
+        }
     }
 }
 impl Packet for Response {

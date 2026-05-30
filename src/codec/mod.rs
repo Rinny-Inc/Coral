@@ -150,7 +150,12 @@ async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>,
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
 const MAX_PLAYER: u32 = 20;
-pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>, online: Arc<AtomicU32>) {
+pub async fn process(
+    socket: TcpStream,
+    registry: Arc<PacketRegistry>,
+    online: Arc<AtomicU32>,
+    server_icon: Arc<Option<String>>,
+) {
     let codec = Codec {
         registry: registry.clone(),
         state: EnumProtocol::Handshaking,
@@ -198,6 +203,7 @@ pub async fn process(socket: TcpStream, registry: Arc<PacketRegistry>, online: A
                                     online.load(Relaxed),
                                     MAX_PLAYER,
                                     client_protocol,
+                                    server_icon.as_deref()
                                 ),
                             )
                             .await;
