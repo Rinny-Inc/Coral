@@ -1,6 +1,4 @@
 use crate::protocol::{packets::Packet, writer::Writer};
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
 use std::io::Write;
 use std::io::{Error, ErrorKind, Result};
 
@@ -9,8 +7,8 @@ const DIRT: u8 = 3;
 const GRASS: u8 = 2;
 const AIR: u8 = 0;
 
-fn index_xzy(x: usize, y: usize, z: usize) -> usize {
-    y + z * 16 + x * 256
+fn index_yzx(x: usize, y: usize, z: usize) -> usize {
+    (y * 256) + (z * 16) + x
 }
 
 fn build_flat_section() -> Vec<u8> {
@@ -25,7 +23,7 @@ fn build_flat_section() -> Vec<u8> {
                     3 => GRASS,
                     _ => AIR,
                 };
-                blocks[index_xzy(x, y, z)] = block;
+                blocks[index_yzx(x, y, z)] = block;
             }
         }
     }
@@ -36,54 +34,66 @@ fn build_flat_section() -> Vec<u8> {
 fn build_chunk_data_18() -> Vec<u8> {
     let mut data = Vec::new();
 
-    let blocks = build_flat_section();
+    // 2 bytes per block (u16)
+    // Formula => (Id << 4) | Metadata
+    for y in 0..16usize {
+        for _z in 0..16usize {
+            for _x in 0..16usize {
+                let block_id = match y {
+                    0 => BEDROCK as u16,
+                    1 | 2 => DIRT as u16,
+                    3 => GRASS as u16,
+                    _ => AIR as u16,
+                };
+                let metadata = 0u16; // 0u16 metadata
+                let block_state = (block_id << 4) | (metadata & 0xF);
 
-    // block types (4096 bytes)
-    data.extend_from_slice(&blocks);
+                // Little-Endian u16 (2 bytes)
+                data.extend_from_slice(&block_state.to_le_bytes());
+            }
+        }
+    }
 
-    // metadata (4 bits per block = 2048 bytes, all zero)
-    data.extend_from_slice(&vec![0u8; 2048]);
-
-    // block light (4 bits per block = 2048 bytes, all 0xFF)
+    // 2. Block light (4 bits per block = 2048 bytes)
     data.extend_from_slice(&vec![0xFFu8; 2048]);
 
-    // sky light (4 bits per block = 2048 bytes, all 0xFF)
+    // 3. Sky light (4 bits per block = 2048 bytes)
     data.extend_from_slice(&vec![0xFFu8; 2048]);
 
-    // biomes ONLY appended when ground_up_continuous=true (256 bytes)
+    // 4. Biomes (256 bytes) - Only appended if ground_up_continuous = true
     data.extend_from_slice(&vec![1u8; 256]);
 
     data
 }
 
+// FIXME: packet length too large by 1 byte
 fn build_chunk_data_17() -> Vec<u8> {
     let mut data = Vec::new();
+    let blocks = build_flat_section(); // Updated to use the correct YZX index
 
-    let blocks = build_flat_section();
-
-    // block types
+    // 1. Block IDs (4096 bytes)
     data.extend_from_slice(&blocks);
 
-    // block metadata (4 bits each = 2048 bytes)
+    // 2. Block Metadata (2048 bytes)
     data.extend_from_slice(&vec![0u8; 2048]);
 
-    // block light
+    // 3. Block Light (2048 bytes)
     data.extend_from_slice(&vec![0xFFu8; 2048]);
 
-    // sky light
+    // 4. Sky Light (2048 bytes)
     data.extend_from_slice(&vec![0xFFu8; 2048]);
 
-    // add (extra block types, all zero)
-    data.extend_from_slice(&vec![0u8; 2048]);
-
-    // biomes
+    // 5. Biomes (256 bytes) - Only if ground_up_continuous is true
     data.extend_from_slice(&vec![1u8; 256]);
 
     data
 }
 
 fn zlib_compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    use flate2::Compression;
+    use flate2::write::DeflateEncoder;
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
 }

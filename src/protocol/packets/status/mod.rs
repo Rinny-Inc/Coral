@@ -100,6 +100,7 @@ impl Packet for Pong {
     }
 
     fn encode(&self, writer: &mut Writer) -> Result<()> {
+        writer.write_varint(0x01);
         writer.write_long(self.time);
         Ok(())
     }

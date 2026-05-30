@@ -66,6 +66,14 @@ impl PacketRegistry {
 
         handlers.insert(
             PacketKey {
+                state: handshake::EnumProtocol::Login,
+                id: 0x01,
+            },
+            |buf| login::EncryptionResponse::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+        );
+
+        handlers.insert(
+            PacketKey {
                 state: handshake::EnumProtocol::Play,
                 id: 0x00,
             },

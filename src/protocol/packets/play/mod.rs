@@ -3,6 +3,7 @@ use std::io::Error;
 use crate::protocol::packets::Packet;
 
 pub mod join_game;
+pub mod player_list;
 
 // 0x05
 #[derive(Debug)]

@@ -10,5 +10,13 @@ tokio-util = {version = "0.7.18", features = ["codec"]}
 tokio-stream = {version = "0.1.18", features = ["full"]}
 futures = "0.3.32"
 serde_json = "1.0.150"
-uuid = {version = "1.23.1", features = ["v3"]}
+uuid = {version = "1.23.2", features = ["v3", "v4"]}
 flate2 = "1.1.9"
+rsa = "0.9.9"
+rand = "0.10.1"
+sha1 = "0.11.0"
+reqwest = { version = "0.13.4", features = ["json"] }
+aes = "0.9.1"
+cfb8 = "0.9.1"
+cipher = "0.5.2"
+num-bigint = "0.4.6"

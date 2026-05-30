@@ -31,6 +31,13 @@ impl Reader {
         byte
     }
 
+    pub fn read_bytes(&mut self, length: usize) -> Vec<u8> {
+        let end = self.position + length;
+        let bytes = self.data[self.position..end].to_vec();
+        self.position = end;
+        bytes
+    }
+
     pub fn read_varint(&mut self) -> i32 {
         let mut value = 0;
         let mut position = 0;
