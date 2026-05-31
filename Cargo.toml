@@ -4,20 +4,22 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = {version = "1.52.3", features = ["full"]}
-bytes = "1.11.1"
-tokio-util = {version = "0.7.18", features = ["codec"]}
-tokio-stream = {version = "0.1.18", features = ["full"]}
-futures = "0.3.32"
-serde_json = "1.0.150"
-uuid = {version = "1.23.2", features = ["v3", "v4"]}
-flate2 = "1.1.9"
-rsa = "0.9.9"
-rand = "0.10.1"
-sha1 = "0.11.0"
-reqwest = { version = "0.13.4", features = ["json"] }
 aes = "0.9.1"
+base64 = "0.22.1"
+bytes = "1.11.1"
 cfb8 = "0.9.1"
 cipher = "0.5.2"
+flate2 = "1.1.9"
+futures = "0.3.32"
 num-bigint = "0.4.6"
-base64 = "0.22.1"
+rand = "0.10.1"
+reqwest = { version = "0.13.4", features = ["json"] }
+rsa = "0.9.9"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha1 = "0.11.0"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["full"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+toml = "1.1.2+spec-1.1.0"
+uuid = { version = "1.23.2", features = ["v3", "v4"] }

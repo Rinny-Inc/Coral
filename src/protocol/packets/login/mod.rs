@@ -35,7 +35,7 @@ impl Packet for LoginStart {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(buf.to_vec());
+        let mut reader = Reader::new(&buf);
         let username = reader.read_string();
         Ok(Self { username })
     }
@@ -97,7 +97,7 @@ impl Packet for EncryptionResponse {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(buf.to_vec());
+        let mut reader = Reader::new(&buf);
         let secret_len = reader.read_varint() as usize;
         let shared_secret = reader.read_bytes(secret_len);
         let token_len = reader.read_varint() as usize;

@@ -6,8 +6,11 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self { data, position: 0 }
+    pub fn new(data: &[u8]) -> Self {
+        Self {
+            data: data.to_vec(),
+            position: 0,
+        }
     }
 
     pub fn has_remaining(&self) -> bool {
@@ -90,6 +93,22 @@ impl Reader {
             0x01 => true,
             other => panic!("Invalid boolean value: {}", other),
         }
+    }
+
+    pub fn read_float(&mut self) -> f32 {
+        let mut bytes = [0u8; 4];
+        for b in &mut bytes {
+            *b = self.read_byte();
+        }
+        f32::from_be_bytes(bytes)
+    }
+
+    pub fn read_double(&mut self) -> f64 {
+        let mut bytes = [0u8; 8];
+        for b in &mut bytes {
+            *b = self.read_byte();
+        }
+        f64::from_be_bytes(bytes)
     }
 
     pub fn read_u16(&mut self) -> u16 {

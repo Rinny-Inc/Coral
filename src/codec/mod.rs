@@ -7,11 +7,13 @@ use std::vec;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::SinkExt;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
+use crate::config::Config;
 use crate::protocol::auth::{AuthProfile, authenticate, compute_server_hash};
 use crate::protocol::encryption::{
     Encryption, decrypt_rsa, generate_rsa_key, generate_verify_token,
@@ -19,6 +21,7 @@ use crate::protocol::encryption::{
 use crate::protocol::packets::handshake::keepalive::KeepAlive;
 use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
+use crate::protocol::packets::play::chat::{ChatMessage, ChatMessageOut};
 use crate::protocol::packets::play::player_list::{PlayerListItem, PlayerListItem17};
 use crate::protocol::{
     packets::{
@@ -39,7 +42,6 @@ use crate::world::time::TimeUpdate;
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
-    online_mode: bool,
     pub encryption: Option<Encryption>,
     decrypted_buf: BytesMut,
 }
@@ -69,7 +71,7 @@ impl Decoder for Codec {
         }
 
         // parse length from decrypted buffer
-        let mut reader = Reader::new(self.decrypted_buf.to_vec());
+        let mut reader = Reader::new(&self.decrypted_buf);
         let length = reader.read_varint() as usize;
         let length_prefix_size = reader.position;
 
@@ -83,7 +85,7 @@ impl Decoder for Codec {
         let mut bytes = Bytes::from(payload.to_vec());
 
         let id = {
-            let mut inner_reader = Reader::new(bytes.to_vec());
+            let mut inner_reader = Reader::new(&bytes);
             let id = inner_reader.read_varint();
             bytes.advance(inner_reader.position);
             id
@@ -149,23 +151,24 @@ async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>,
 }
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
-const MAX_PLAYER: u32 = 20;
 pub async fn process(
     socket: TcpStream,
     registry: Arc<PacketRegistry>,
     online: Arc<AtomicU32>,
     server_icon: Arc<Option<String>>,
+    config: Arc<Config>,
+    chat_tx: Arc<broadcast::Sender<String>>,
 ) {
     let codec = Codec {
         registry: registry.clone(),
         state: EnumProtocol::Handshaking,
-        online_mode: true,
         encryption: None,
         decrypted_buf: BytesMut::new(),
     };
+    let mut chat_rx = chat_tx.subscribe();
     let mut framed = Framed::new(socket, codec);
     let mut client_protocol = 1;
-    let mut keep_alive_interval = interval(Duration::from_secs(5));
+    let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
     let mut keep_alive_id = 0;
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -173,15 +176,23 @@ pub async fn process(
     let mut pending_username: Option<String> = None;
 
     let mut joined = false;
+    let mut player_name: Option<String> = None;
 
     loop {
         tokio::select! {
+            Ok(message) = chat_rx.recv() => {
+                if framed.codec().state == EnumProtocol::Play {
+                    send_packet(&mut framed, ChatMessageOut::from_json(&message)).await;
+                }
+            }
+
             _ = keep_alive_interval.tick() => {
                 if framed.codec().state == EnumProtocol::Play {
                     keep_alive_id += 1;
                     send_packet(&mut framed, KeepAlive { id: keep_alive_id }).await;
                 }
             }
+
             result = framed.next() => {
                 let Some(result) = result else { break };
                 match result {
@@ -199,9 +210,9 @@ pub async fn process(
                             send_packet(
                                 &mut framed,
                                 Response::new(
-                                    "Coral Rust Minecraft Server\nTest Server",
+                                    &config.server.motd,
                                     online.load(Relaxed),
-                                    MAX_PLAYER,
+                                    config.server.max_player,
                                     client_protocol,
                                     server_icon.as_deref()
                                 ),
@@ -223,7 +234,7 @@ pub async fn process(
                             break;
                         }
 
-                        if framed.codec().online_mode {
+                        if config.server.online_mode {
                             if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
                                 pending_username = Some(login_start.username.clone());
 
@@ -261,7 +272,8 @@ pub async fn process(
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                make_player_join(&mut framed, profile, client_protocol).await;
+                                make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8).await;
+                                player_name = Some(username.clone());
                                 online.fetch_add(1, Relaxed);
                                 println!(
                                     "Player joined: {}, online: {}",
@@ -285,7 +297,8 @@ pub async fn process(
                                     properties: vec![]
                                 };
 
-                                make_player_join(&mut framed, profile, client_protocol).await;
+                                make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8).await;
+                                player_name = Some(login_start.username.clone());
                                 online.fetch_add(1, Relaxed);
                                 println!(
                                     "Player joined: {}, online: {}",
@@ -299,6 +312,27 @@ pub async fn process(
 
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
                             println!("Keep Alive response: {}", ka.id);
+                            continue;
+                        }
+
+                        if let Some(chat) = packet.as_any().downcast_ref::<ChatMessage>() {
+                            if let Some(ref name) = player_name {
+                                if chat.message.len() > 100 { // FIXME: check the correct length
+                                    continue;
+                                }
+
+                                let formatted = config.chat.format.replace("{username}", name).replace("{message}", &chat.message);
+
+                                println!("[CHAT] {}", formatted);
+
+                                let json = format!(
+                                    "{{\"text\":\"{}\"}}",
+                                    formatted.replace('"', "\\\"")
+                                );
+                                if chat_tx.send(json).is_err() {
+                                    eprintln!("Failed to send json to Chat Sender!");
+                                };
+                            }
                             continue;
                         }
 
@@ -335,6 +369,7 @@ async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
     profile: AuthProfile,
     client_protocol: i32,
+    max_players: u8,
 ) {
     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
 
@@ -356,7 +391,7 @@ async fn make_player_join(
             gamemode: 0,
             dimension: 0,
             difficulty: 1,
-            max_player: MAX_PLAYER as u8,
+            max_player: max_players,
             level_type: "default".to_string(),
             reduced_debug_info: false,
         },

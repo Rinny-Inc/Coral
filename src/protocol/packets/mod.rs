@@ -81,6 +81,14 @@ impl PacketRegistry {
                 handshake::keepalive::KeepAlive::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
             },
         );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x01,
+            },
+            |buf| play::chat::ChatMessage::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+        );
+
         Self { handlers }
     }
 

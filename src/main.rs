@@ -1,20 +1,41 @@
-use std::sync::{Arc, atomic::AtomicU32};
+use std::{
+    io::ErrorKind,
+    sync::{Arc, atomic::AtomicU32},
+};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use protocol::packets::PacketRegistry;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::broadcast};
 
 mod codec;
+pub mod config;
 mod protocol;
+pub mod server;
 pub mod world;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // TODO:
-    // ip port separated for config
-    // check if the port is already binded
-    let listener = TcpListener::bind("0.0.0.0:25565").await?;
-    println!("Minecraft Server started at 0.0.0.0:25565");
+    let config = Arc::new(config::Config::load());
+    println!(
+        "Loaded config: online_mode={}, port={}",
+        config.server.online_mode, config.server.port
+    );
+
+    let addr = format!("0.0.0.0:{}", config.server.port);
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(l) => {
+            println!("Minecraft Server started at {}", addr);
+            l
+        }
+        Err(e) => {
+            if e.kind() == ErrorKind::AddrInUse {
+                eprintln!("Port {} is already in use!", config.server.port);
+            } else {
+                eprintln!("Failed to bind a port to {}: {}", addr, e);
+            }
+            std::process::exit(1);
+        }
+    };
     let packet_registry = Arc::new(PacketRegistry::new());
     let online = Arc::new(AtomicU32::new(0));
 
@@ -25,14 +46,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let server_icon = Arc::new(server_icon);
 
+    let (chat_tx, _) = broadcast::channel::<String>(100); // TODO: probably more?
+    let chat_tx = Arc::new(chat_tx);
+
     loop {
         let (socket, _) = listener.accept().await?;
         let registry = packet_registry.clone();
         let online = online.clone();
         let server_icon = server_icon.clone();
+        let config = config.clone();
+        let chat_tx = chat_tx.clone();
 
         tokio::spawn(async move {
-            codec::process(socket, registry, online, server_icon).await;
+            codec::process(socket, registry, online, server_icon, config, chat_tx).await;
         });
     }
 }

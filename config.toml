@@ -1,0 +1,8 @@
+[server]
+motd = "Coral Rust Minecraft Server\nTest Server"
+port = 25565
+max_player = 20
+online_mode = true
+
+[chat]
+format = "<{username}> {message}"
