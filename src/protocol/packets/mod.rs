@@ -89,6 +89,45 @@ impl PacketRegistry {
             |buf| play::chat::ChatMessage::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
 
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x03,
+            },
+            |buf| {
+                play::movement::PlayerOnGround::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+            },
+        );
+
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x04,
+            },
+            |buf| {
+                play::movement::PlayerPosition::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
+            },
+        );
+
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x05,
+            },
+            |buf| play::movement::PlayerLook::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+        );
+
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x06,
+            },
+            |buf| {
+                play::movement::PlayerPositionAndLookIn::decode(buf)
+                    .map(|p| Box::new(p) as Box<dyn Packet>)
+            },
+        );
+
         Self { handlers }
     }
 
@@ -99,8 +138,4 @@ impl PacketRegistry {
     ) -> Option<std::io::Result<Box<dyn Packet>>> {
         self.handlers.get(&key).map(|decoder| decoder(buf))
     }
-
-    /*fn encode(&self, key: PacketKey, packet: &dyn Packet, writer: &mut Writer) -> Option<std::io::Result<()>> {
-        self.handlers.get(&key).and_then(|handler| handler.encoder.map(|encoder| encoder(packet, writer)))
-    }*/
 }

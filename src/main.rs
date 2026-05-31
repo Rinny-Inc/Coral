@@ -7,11 +7,16 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use protocol::packets::PacketRegistry;
 use tokio::{net::TcpListener, sync::broadcast};
 
+use crate::server::{player::Player, registry::PlayerRegistry};
+
 mod codec;
 pub mod config;
 mod protocol;
 pub mod server;
 pub mod world;
+
+pub type PositionUpdate = (uuid::Uuid, i32, f64, f64, f64, f32, f32, bool);
+pub type JoinLeave = (Player, bool);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let packet_registry = Arc::new(PacketRegistry::new());
+    let player_registry = Arc::new(PlayerRegistry::new());
     let online = Arc::new(AtomicU32::new(0));
 
     let server_icon = load_server_icon();
@@ -46,8 +52,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let server_icon = Arc::new(server_icon);
 
-    let (chat_tx, _) = broadcast::channel::<String>(100); // TODO: probably more?
+    let (chat_tx, _) = broadcast::channel::<String>(100);
     let chat_tx = Arc::new(chat_tx);
+
+    let (join_tx, _) = broadcast::channel::<JoinLeave>(100);
+    let join_tx = Arc::new(join_tx);
+
+    let (pos_tx, _) = broadcast::channel::<PositionUpdate>(100);
+    let pos_tx = Arc::new(pos_tx);
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -56,9 +68,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let server_icon = server_icon.clone();
         let config = config.clone();
         let chat_tx = chat_tx.clone();
+        let join_tx = join_tx.clone();
+        let pos_tx = pos_tx.clone();
+        let player_registry = player_registry.clone();
 
         tokio::spawn(async move {
-            codec::process(socket, registry, online, server_icon, config, chat_tx).await;
+            codec::process(
+                socket,
+                registry,
+                online,
+                server_icon,
+                config,
+                chat_tx,
+                join_tx,
+                pos_tx,
+                player_registry,
+            )
+            .await;
         });
     }
 }

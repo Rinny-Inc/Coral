@@ -62,7 +62,7 @@ impl Reader {
 
         value |= ((current_byte & SEGMENT_BITS) as i32) << position;
 
-        println!("read_varint -> value: {}, bytes: {:?}", value, bytes_read);
+        //println!("read_varint -> value: {}, bytes: {:?}", value, bytes_read);
 
         value
     }

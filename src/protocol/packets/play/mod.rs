@@ -3,7 +3,9 @@ use std::io::Error;
 use crate::protocol::packets::Packet;
 
 pub mod chat;
+pub mod entity;
 pub mod join_game;
+pub mod movement;
 pub mod player_list;
 
 // 0x05
