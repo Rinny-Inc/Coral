@@ -1,5 +1,3 @@
-use std::ops::ControlFlow::Continue;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
@@ -23,6 +21,7 @@ use crate::protocol::encryption::{
 use crate::protocol::packets::handshake::keepalive::KeepAlive;
 use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
+use crate::protocol::packets::play::PluginMessage;
 use crate::protocol::packets::play::chat::{ChatMessage, ChatMessageOut};
 use crate::protocol::packets::play::entity::{DestroyEntities, EntityTeleport, SpawnPlayer};
 use crate::protocol::packets::play::movement::{
@@ -261,7 +260,6 @@ pub async fn process(
                         //println!("INFO: Received packet: {:?}", packet);
 
                         if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
-                            //println!("Handshake received. Sending Status {:?}", handshake.requested_protocol);
                             client_protocol = handshake.protocol_version;
                             framed.codec_mut().state = handshake.requested_protocol.clone();
                             continue;
@@ -271,14 +269,19 @@ pub async fn process(
                             let sample: Vec<(&str, String)> = players.iter().take(config.server.player_sample_amount as usize).map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string())).collect();
                             let sample_refs: Vec<(&str, &str)> = sample.iter().map(|(name, uuid)| (*name, uuid.as_str())).collect();
 
-                            //println!("Status request → sending response");
+                            let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
+                                client_protocol
+                            } else {
+                                1
+                            };
+
                             send_packet(
                                 &mut framed,
                                 Response::new(
                                     &config.server.motd,
                                     online.load(Relaxed),
                                     config.server.max_player,
-                                    client_protocol,
+                                    server_protocol,
                                     server_icon.as_deref(),
                                     &sample_refs
                                 ),
@@ -288,7 +291,6 @@ pub async fn process(
                         }
 
                         if let Some(ping) = packet.as_any().downcast_ref::<Ping>() {
-                            //println!("Ping → sending pong ({})", ping.time);
                             send_packet(&mut framed, Pong { time: ping.time }).await;
                             continue;
                         }
@@ -433,6 +435,13 @@ pub async fn process(
                                         og.on_ground,
                                     ).await;
                                 }
+                            }
+                            continue;
+                        }
+
+                        if let Some(plugin) = packet.as_any().downcast_ref::<PluginMessage>() {
+                            if plugin.channel == "MC|Brand" {
+                                send_packet(&mut framed, PluginMessage::brand("Coral")).await;
                             }
                             continue;
                         }

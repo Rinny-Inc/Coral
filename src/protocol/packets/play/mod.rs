@@ -1,6 +1,6 @@
 use std::io::Error;
 
-use crate::protocol::packets::Packet;
+use crate::protocol::{packets::Packet, reader::Reader};
 
 pub mod chat;
 pub mod entity;
@@ -123,6 +123,59 @@ impl Packet for PlayerPositionAndLook {
         writer.write_f32(self.yaw);
         writer.write_f32(self.pitch);
         writer.write_bool(self.on_ground);
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct PluginMessage {
+    pub channel: String,
+    pub data: Vec<u8>,
+}
+
+impl PluginMessage {
+    pub fn decode_raw(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
+        let mut reader = Reader::new(&buf);
+        let channel = reader.read_string();
+        let data = reader.read_bytes(reader.remaining());
+        Ok(PluginMessage { channel, data })
+    }
+
+    pub fn brand(name: &str) -> Self {
+        let mut data = Vec::new();
+        let bytes = name.as_bytes();
+
+        let mut len = bytes.len() as i32;
+        while (len & !0x7F) != 0 {
+            data.push(((len & 0x7F) as u8) | 0x80);
+            len >>= 7;
+        }
+        data.push(len as u8);
+        data.extend_from_slice(bytes);
+
+        PluginMessage {
+            channel: "MC|Brand".to_string(),
+            data,
+        }
+    }
+}
+impl Packet for PluginMessage {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        Self::decode_raw(buf)
+    }
+
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x17);
+        writer.write_string(&self.channel);
+        writer.write_varint(self.data.len() as i32);
+        writer.data.extend_from_slice(&self.data);
         Ok(())
     }
 

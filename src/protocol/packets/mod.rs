@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use flate2::Status::Ok;
 use std::collections::HashMap;
 
 use super::writer::Writer;
@@ -126,6 +127,14 @@ impl PacketRegistry {
                 play::movement::PlayerPositionAndLookIn::decode(buf)
                     .map(|p| Box::new(p) as Box<dyn Packet>)
             },
+        );
+
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x17,
+            },
+            |buf| play::PluginMessage::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
 
         Self { handlers }
