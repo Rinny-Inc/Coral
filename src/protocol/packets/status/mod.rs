@@ -23,7 +23,23 @@ pub struct Pong {
 }
 
 impl Response {
-    pub fn new(motd: &str, online: u32, max: u32, protocol: i32, favicon: Option<&str>) -> Self {
+    pub fn new(
+        motd: &str,
+        online: u32,
+        max: u32,
+        protocol: i32,
+        favicon: Option<&str>,
+        sample: &[(&str, &str)],
+    ) -> Self {
+        let sample_json: Vec<serde_json::Value> = sample
+            .iter()
+            .map(|(name, uuid)| {
+                json!({
+                    "name": name,
+                    "id": uuid
+                })
+            })
+            .collect();
         let json = if let Some(icon) = favicon {
             json!({
                 "version": {
@@ -33,7 +49,7 @@ impl Response {
                 "players": {
                     "max": max,
                     "online": online,
-                    "sample": []
+                    "sample": sample_json
                 },
                 "description": {
                     "text": motd
@@ -49,7 +65,7 @@ impl Response {
                 "players": {
                     "max": max,
                     "online": online,
-                    "sample": []
+                    "sample": sample_json
                 },
                 "description": {
                     "text": motd

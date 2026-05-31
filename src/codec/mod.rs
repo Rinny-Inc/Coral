@@ -267,6 +267,10 @@ pub async fn process(
                             continue;
                         }
                         if packet.as_any().downcast_ref::<Request>().is_some() {
+                            let players = player_registry.get_all().await;
+                            let sample: Vec<(&str, String)> = players.iter().take(config.server.player_sample_amount as usize).map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string())).collect();
+                            let sample_refs: Vec<(&str, &str)> = sample.iter().map(|(name, uuid)| (*name, uuid.as_str())).collect();
+
                             //println!("Status request → sending response");
                             send_packet(
                                 &mut framed,
@@ -275,7 +279,8 @@ pub async fn process(
                                     online.load(Relaxed),
                                     config.server.max_player,
                                     client_protocol,
-                                    server_icon.as_deref()
+                                    server_icon.as_deref(),
+                                    &sample_refs
                                 ),
                             )
                             .await;

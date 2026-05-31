@@ -14,6 +14,7 @@ pub struct ServerConfig {
     pub port: u16,
     pub max_player: u32,
     pub online_mode: bool,
+    pub player_sample_amount: i8,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -40,6 +41,7 @@ motd = "Coral Rust Minecraft Server\nTest Server"
 port = 25565
 max_player = 20
 online_mode = true
+player_sample_amount = 12
 
 [chat]
 format = "<{username}> {message}"
