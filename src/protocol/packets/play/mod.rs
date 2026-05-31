@@ -2,6 +2,7 @@ use std::io::Error;
 
 use crate::protocol::packets::Packet;
 
+pub mod chat;
 pub mod join_game;
 pub mod player_list;
 
