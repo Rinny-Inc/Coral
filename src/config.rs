@@ -24,6 +24,11 @@ pub struct ChatConfig {
 
 impl Config {
     pub fn load() -> Self {
+        if !std::fs::exists("config.toml").unwrap_or(false) {
+            println!("config.toml not found, creating default...");
+            std::fs::write("config.toml", DEFAULT_CONFIG.trim_start())
+                .unwrap_or_else(|e| eprintln!("Failed to create config.toml: {}", e))
+        }
         let content = fs::read_to_string("config.toml").unwrap_or_else(|_| {
             println!("config.toml not found, using defaults!");
             DEFAULT_CONFIG.to_string()
