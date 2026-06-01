@@ -298,6 +298,8 @@ pub async fn process(
                             break;
                         }
 
+                        // TODO: if online player > max_online kick if not op
+
                         if config.server.online_mode {
                             if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
                                 pending_username = Some(login_start.username.clone());
@@ -382,27 +384,33 @@ pub async fn process(
                                     "{{\"text\":\"{}\"}}",
                                     formatted.replace('"', "\\\"")
                                 );
-                                if chat_tx.send(json).is_err() {
-                                    eprintln!("Failed to send json to Chat Sender!");
-                                };
+                                chat_tx.send(json).ok();
                             }
                             continue;
                         }
 
                         if let Some(pos) = packet.as_any().downcast_ref::<PlayerPosition>() {
-                            if let Some(uuid) = my_uuid {
-                                player_registry.update_position(&uuid, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground).await;
-                                pos_tx.send((uuid, my_entity_id, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground)).ok();
+                            if let Some(uuid) = my_uuid
+                                && let Some(p) = player_registry.get(&uuid).await
+                            {
+                                let moved = (pos.x - p.x).abs() > 0.01
+                                    || (pos.y - p.y).abs() > 0.01
+                                    || (pos.z - p.z).abs() > 0.01;
+
+                                if moved {
+                                    player_registry.update_position(&uuid, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground).await;
+                                    pos_tx.send((uuid, my_entity_id, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground)).ok();
+                                }
                             }
                             continue;
                         }
 
                         if let Some(look) = packet.as_any().downcast_ref::<PlayerLook>() {
-                            if let Some(uuid) = my_uuid {
-                                if let Some(p) = player_registry.get(&uuid).await {
-                                    player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
-                                    pos_tx.send((uuid, my_entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
-                                }
+                            if let Some(uuid) = my_uuid
+                                && let Some(p) = player_registry.get(&uuid).await
+                            {
+                                player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
+                                pos_tx.send((uuid, my_entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
                             }
                             continue;
                         }
@@ -416,15 +424,15 @@ pub async fn process(
                         }
 
                         if let Some(og) = packet.as_any().downcast_ref::<PlayerOnGround>() {
-                            if let Some(uuid) = my_uuid {
-                                if let Some(p) = player_registry.get(&uuid).await {
-                                    player_registry.update_position(
-                                        &uuid,
-                                        p.x, p.y, p.z,
-                                        p.yaw, p.pitch,
-                                        og.on_ground,
-                                    ).await;
-                                }
+                            if let Some(uuid) = my_uuid
+                                && let Some(p) = player_registry.get(&uuid).await
+                            {
+                                player_registry.update_position(
+                                    &uuid,
+                                    p.x, p.y, p.z,
+                                    p.yaw, p.pitch,
+                                    og.on_ground,
+                                ).await;
                             }
                             continue;
                         }
