@@ -1,6 +1,6 @@
 use crate::protocol::{packets::Packet, writer::Writer};
 use std::io::Write;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, Result};
 
 const BEDROCK: u8 = 7;
 const DIRT: u8 = 3;
@@ -107,7 +107,7 @@ pub struct ChunkData {
 
 impl Packet for ChunkData {
     fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
-        Err(Error::new(ErrorKind::Other, "Unexpected call"))
+        Err(Error::other("Unexpected Call!"))
     }
 
     fn encode(&self, writer: &mut Writer) -> Result<()> {

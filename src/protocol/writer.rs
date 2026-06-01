@@ -29,14 +29,6 @@ impl Writer {
         self.write_byte(value as u8);
     }
 
-    pub fn write_varlong(&mut self, mut value: i64) {
-        while (value & !(SEGMENT_BITS as i64)) != 0 {
-            self.write_byte(((value & SEGMENT_BITS as i64) as u8) | CONTINUE_BIT);
-            value >>= 7;
-        }
-        self.write_byte(value as u8);
-    }
-
     pub fn write_bool(&mut self, value: bool) {
         self.write_byte(if value { 0x01 } else { 0x00 });
     }

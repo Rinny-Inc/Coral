@@ -50,4 +50,7 @@ player_sample_amount = 12
 
 [chat]
 format = "<{username}> {message}"
+
+[world]
+#todo
 "#;

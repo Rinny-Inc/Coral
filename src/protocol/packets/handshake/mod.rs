@@ -19,7 +19,7 @@ impl Packet for PacketHandshake {
     where
         Self: Sized,
     {
-        let mut buffer = Reader::new(&buf);
+        let mut buffer = Reader::new(buf);
 
         let protocol_version = buffer.read_varint();
         let host_name = buffer.read_string();

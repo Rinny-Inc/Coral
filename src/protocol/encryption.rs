@@ -28,10 +28,10 @@ impl Encryption {
         }
     }
 
-    pub fn encrypt(&mut self, data: &mut Vec<u8>) {
+    pub fn encrypt(&mut self, data: &mut [u8]) {
         self.encrypt.encrypt(data);
     }
-    pub fn decrypt(&mut self, data: &mut Vec<u8>) {
+    pub fn decrypt(&mut self, data: &mut [u8]) {
         self.decrypt.decrypt(data);
     }
 }

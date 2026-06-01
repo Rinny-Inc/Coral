@@ -37,6 +37,16 @@ impl PlayerRegistry {
         self.players.read().await.values().cloned().collect()
     }
 
+    pub async fn get_online_count(&self) -> u32 {
+        self.players.read().await.len() as u32
+    }
+
+    pub async fn get(&self, uuid: &Uuid) -> Option<Player> {
+        self.players.read().await.get(&uuid).cloned()
+    }
+
+    // TODO: could prolly have less argument by doing structs
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_position(
         &self,
         uuid: &Uuid,
@@ -55,5 +65,10 @@ impl PlayerRegistry {
             player.pitch = pitch;
             player.on_ground = on_ground;
         }
+    }
+}
+impl Default for PlayerRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }

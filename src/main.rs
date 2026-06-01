@@ -1,13 +1,13 @@
-use std::{
-    io::ErrorKind,
-    sync::{Arc, atomic::AtomicU32},
-};
+use std::{io::ErrorKind, sync::Arc};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use protocol::packets::PacketRegistry;
 use tokio::{net::TcpListener, sync::broadcast};
 
-use crate::server::{player::Player, registry::PlayerRegistry};
+use crate::{
+    protocol::encryption::generate_rsa_key,
+    server::{player::Player, registry::PlayerRegistry},
+};
 
 mod codec;
 pub mod config;
@@ -43,7 +43,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let packet_registry = Arc::new(PacketRegistry::new());
     let player_registry = Arc::new(PlayerRegistry::new());
-    let online = Arc::new(AtomicU32::new(0));
 
     let server_icon = load_server_icon();
     match &server_icon {
@@ -61,28 +60,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (pos_tx, _) = broadcast::channel::<PositionUpdate>(100);
     let pos_tx = Arc::new(pos_tx);
 
+    let (private_key, public_key_der) = generate_rsa_key();
+    let private_key = Arc::new(private_key);
+    let public_key_der = Arc::new(public_key_der);
+
     loop {
         let (socket, _) = listener.accept().await?;
         let registry = packet_registry.clone();
-        let online = online.clone();
         let server_icon = server_icon.clone();
         let config = config.clone();
         let chat_tx = chat_tx.clone();
         let join_tx = join_tx.clone();
         let pos_tx = pos_tx.clone();
         let player_registry = player_registry.clone();
+        let private_key = private_key.clone();
+        let public_key_der = public_key_der.clone();
 
         tokio::spawn(async move {
             codec::process(
                 socket,
                 registry,
-                online,
                 server_icon,
                 config,
                 chat_tx,
                 join_tx,
                 pos_tx,
                 player_registry,
+                private_key,
+                public_key_der,
             )
             .await;
         });

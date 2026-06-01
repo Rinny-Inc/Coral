@@ -83,7 +83,7 @@ impl Packet for Response {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let json = reader.read_string();
         Ok(Response { json })
     }
@@ -104,7 +104,7 @@ impl Packet for Ping {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let time = reader.read_long(); // i64
 
         if reader.has_remaining() {
@@ -145,7 +145,7 @@ impl Packet for Pong {
 
 impl Packet for Request {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
-        let reader = Reader::new(&buf);
+        let reader = Reader::new(buf);
         if reader.has_remaining() {
             return Err(Error::new(
                 ErrorKind::InvalidData,

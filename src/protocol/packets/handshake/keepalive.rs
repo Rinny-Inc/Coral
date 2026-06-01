@@ -9,7 +9,7 @@ impl Packet for KeepAlive {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let id = reader.read_varint();
         Ok(Self { id })
     }

@@ -1,11 +1,10 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use futures::SinkExt;
+use rsa::RsaPrivateKey;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::time::interval;
@@ -159,16 +158,19 @@ async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>,
 }
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
+
+#[allow(clippy::too_many_arguments)]
 pub async fn process(
     socket: TcpStream,
     registry: Arc<PacketRegistry>,
-    online: Arc<AtomicU32>,
     server_icon: Arc<Option<String>>,
     config: Arc<Config>,
     chat_tx: Arc<broadcast::Sender<String>>,
     join_tx: Arc<broadcast::Sender<JoinLeave>>,
     pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
     player_registry: Arc<PlayerRegistry>,
+    private_key: Arc<RsaPrivateKey>,
+    public_key_der: Arc<Vec<u8>>,
 ) {
     let codec = Codec {
         registry: registry.clone(),
@@ -187,7 +189,6 @@ pub async fn process(
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
     let mut keep_alive_id = 0;
 
-    let (private_key, public_key_der) = generate_rsa_key();
     let verify_token = generate_verify_token();
     let mut pending_username: Option<String> = None;
 
@@ -272,14 +273,14 @@ pub async fn process(
                             let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
                                 client_protocol
                             } else {
-                                1
+                                -1
                             };
 
                             send_packet(
                                 &mut framed,
                                 Response::new(
                                     &config.server.motd,
-                                    online.load(Relaxed),
+                                    player_registry.get_online_count().await,
                                     config.server.max_player,
                                     server_protocol,
                                     server_icon.as_deref(),
@@ -295,9 +296,7 @@ pub async fn process(
                             continue;
                         }
 
-                        if framed.codec().state == EnumProtocol::Login
-                            && !ALLOWED_PROTOCOLS.contains(&client_protocol)
-                        {
+                        if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
                             kick(&mut framed, "Unsupported version. Use 1.7.x or 1.8.x").await;
                             break;
                         }
@@ -308,7 +307,7 @@ pub async fn process(
 
                                 send_packet(&mut framed, EncryptionRequest {
                                     server_id: "".to_string(),
-                                    public_key: public_key_der.clone(),
+                                    public_key: public_key_der.to_vec(),
                                     verify_token: verify_token.clone(),
                                 }).await;
                                 continue;
@@ -322,7 +321,6 @@ pub async fn process(
                                     kick(&mut framed, "Encryption Error!").await;
                                     break;
                                 }
-
                                 let username = match pending_username.take() {
                                     Some(u) => u,
                                     None => break
@@ -340,16 +338,15 @@ pub async fn process(
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                let (uuid, id) = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &online, &join_tx).await;
-                                my_uuid = Some(uuid);
-                                my_entity_id = id;
-                                player_name = Some(username.clone());
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &join_tx).await;
+                                my_uuid = Some(result.uuid);
+                                my_entity_id = result.entity_id;
+                                player_name = Some(result.player_name);
                                 joined = true;
                                 continue;
                             }
                         } else {
-                                if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-
+                            if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
                                 let uuid = Uuid::new_v3(
                                     &Uuid::NAMESPACE_DNS,
                                     format!("OfflinePlayer:{}", login_start.username).as_bytes(),
@@ -361,14 +358,15 @@ pub async fn process(
                                     properties: vec![]
                                 };
 
-                                let (uuid, id) = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &online, &join_tx).await;
-                                my_uuid = Some(uuid);
-                                my_entity_id = id;
-                                player_name = Some(login_start.username.clone());
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &join_tx).await;
+
+                                my_uuid = Some(result.uuid);
+                                my_entity_id = result.entity_id;
+                                player_name = Some(result.player_name);
                                 joined = true;
                                 continue;
                             }
-                        }
+                        };
 
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
                             println!("Keep Alive response: {}", ka.id);
@@ -406,9 +404,7 @@ pub async fn process(
 
                         if let Some(look) = packet.as_any().downcast_ref::<PlayerLook>() {
                             if let Some(uuid) = my_uuid {
-                                let players = player_registry.get_all().await;
-
-                                if let Some(p) = players.iter().find(|p| p.uuid == uuid) {
+                                if let Some(p) = player_registry.get(&uuid).await {
                                     player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
                                     pos_tx.send((uuid, my_entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
                                 }
@@ -426,8 +422,7 @@ pub async fn process(
 
                         if let Some(og) = packet.as_any().downcast_ref::<PlayerOnGround>() {
                             if let Some(uuid) = my_uuid {
-                                let players = player_registry.get_all().await;
-                                if let Some(p) = players.iter().find(|p| p.uuid == uuid) {
+                                if let Some(p) = player_registry.get(&uuid).await {
                                     player_registry.update_position(
                                         &uuid,
                                         p.x, p.y, p.z,
@@ -466,8 +461,10 @@ pub async fn process(
         }
     }
     if joined {
-        online.fetch_sub(1, Relaxed);
-        println!("Player left, online: {}", online.load(Relaxed));
+        println!(
+            "Player left, online: {}",
+            player_registry.get_online_count().await
+        );
     }
 }
 
@@ -483,15 +480,20 @@ async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
     }
 }
 
+struct JoinResult {
+    uuid: Uuid,
+    entity_id: i32,
+    player_name: String,
+}
+
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
     profile: AuthProfile,
     client_protocol: i32,
     max_players: u8,
     player_registry: &Arc<PlayerRegistry>,
-    online: &Arc<AtomicU32>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
-) -> (Uuid, i32) {
+) -> JoinResult {
     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
     let entity_id = next_entity_id();
 
@@ -506,44 +508,10 @@ async fn make_player_join(
 
     framed.codec_mut().state = handshake::EnumProtocol::Play;
 
-    online.fetch_add(1, Relaxed);
-    println!(
-        "Player joined: {}, online: {}",
-        profile.username,
-        online.load(Relaxed)
-    );
-
-    let player = Player::new(entity_id, uuid, profile.username.clone());
-    player_registry.add(player.clone()).await;
-
-    let existing_players = player_registry.get_all().await;
-    for p in existing_players {
-        if p.uuid == uuid {
-            continue;
-        }
-        send_packet(
-            framed,
-            SpawnPlayer {
-                entity_id: p.entity_id,
-                uuid: p.uuid,
-                username: p.username.clone(),
-                x: p.x,
-                y: p.y,
-                z: p.z,
-                yaw: 90.0,
-                pitch: 0.0,
-                current_item: 0,
-            },
-        )
-        .await
-    }
-
-    join_tx.send((player, true)).ok();
-
     send_packet(
         framed,
         JoinGame {
-            entity_id: 1,
+            entity_id,
             gamemode: 0,
             dimension: 0,
             difficulty: 1,
@@ -630,5 +598,42 @@ async fn make_player_join(
     )
     .await;
 
-    (uuid, entity_id)
+    let player = Player::new(entity_id, uuid, profile.username.clone());
+    player_registry.add(player.clone()).await;
+
+    println!(
+        "Player joined: {}, online: {}",
+        profile.username,
+        player_registry.get_online_count().await
+    );
+
+    let existing_players = player_registry.get_all().await;
+    for p in existing_players {
+        if p.uuid == uuid {
+            continue;
+        }
+        send_packet(
+            framed,
+            SpawnPlayer {
+                entity_id: p.entity_id,
+                uuid: p.uuid,
+                username: p.username.clone(),
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                yaw: 90.0,
+                pitch: 0.0,
+                current_item: 0,
+            },
+        )
+        .await
+    }
+
+    join_tx.send((player, true)).ok();
+
+    JoinResult {
+        uuid,
+        entity_id,
+        player_name: profile.username,
+    }
 }

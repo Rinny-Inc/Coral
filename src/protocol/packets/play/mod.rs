@@ -139,7 +139,7 @@ pub struct PluginMessage {
 
 impl PluginMessage {
     pub fn decode_raw(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let channel = reader.read_string();
         let data = reader.read_bytes(reader.remaining());
         Ok(PluginMessage { channel, data })
@@ -172,7 +172,7 @@ impl Packet for PluginMessage {
     }
 
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        writer.write_varint(0x17);
+        writer.write_varint(0x3F);
         writer.write_string(&self.channel);
         writer.write_varint(self.data.len() as i32);
         writer.data.extend_from_slice(&self.data);

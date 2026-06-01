@@ -1,4 +1,4 @@
-use std::{fmt::format, io::Error};
+use std::io::Error;
 
 use crate::protocol::{packets::Packet, reader::Reader};
 
@@ -13,12 +13,6 @@ pub struct ChatMessageOut {
 }
 
 impl ChatMessageOut {
-    pub fn new(message: &str) -> Self {
-        Self {
-            json: format!("{{\"text\":\"{}\"}}", message.replace('"', "\\\"")),
-        }
-    }
-
     pub fn from_json(json: &str) -> Self {
         Self {
             json: json.to_string(),
@@ -31,7 +25,7 @@ impl Packet for ChatMessage {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let message = reader.read_string();
         Ok(ChatMessage { message })
     }
@@ -48,7 +42,7 @@ impl Packet for ChatMessage {
 }
 
 impl Packet for ChatMessageOut {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
     {

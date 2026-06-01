@@ -1,7 +1,5 @@
 use std::io::Error;
 
-use futures::future::ok;
-
 use crate::protocol::{packets::Packet, reader::Reader};
 
 #[derive(Debug)]
@@ -39,7 +37,7 @@ impl Packet for PlayerPosition {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let x = reader.read_double();
         let y = reader.read_double();
         let z = reader.read_double();
@@ -61,7 +59,7 @@ impl Packet for PlayerLook {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let yaw = reader.read_float();
         let pitch = reader.read_float();
         let on_ground = reader.read_bool();
@@ -86,7 +84,7 @@ impl Packet for PlayerPositionAndLookIn {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let x = reader.read_double();
         let y = reader.read_double();
         let z = reader.read_double();
@@ -117,7 +115,7 @@ impl Packet for PlayerOnGround {
     where
         Self: Sized,
     {
-        let mut reader = Reader::new(&buf);
+        let mut reader = Reader::new(buf);
         let on_ground = reader.read_bool();
         Ok(PlayerOnGround { on_ground })
     }
