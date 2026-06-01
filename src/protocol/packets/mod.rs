@@ -31,7 +31,7 @@ pub struct PacketRegistry {
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::new();
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(12); // TODO: add 1 for every new packets
 
         handlers.insert(
             PacketKey {
@@ -63,7 +63,6 @@ impl PacketRegistry {
             },
             |buf| login::LoginStart::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Login,
@@ -88,7 +87,6 @@ impl PacketRegistry {
             },
             |buf| play::chat::ChatMessage::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Play,
@@ -98,7 +96,6 @@ impl PacketRegistry {
                 play::movement::PlayerOnGround::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
             },
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Play,
@@ -108,7 +105,6 @@ impl PacketRegistry {
                 play::movement::PlayerPosition::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>)
             },
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Play,
@@ -116,7 +112,6 @@ impl PacketRegistry {
             },
             |buf| play::movement::PlayerLook::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Play,
@@ -127,11 +122,10 @@ impl PacketRegistry {
                     .map(|p| Box::new(p) as Box<dyn Packet>)
             },
         );
-
         handlers.insert(
             PacketKey {
                 state: handshake::EnumProtocol::Play,
-                id: 0x3F,
+                id: 0x17,
             },
             |buf| play::PluginMessage::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );

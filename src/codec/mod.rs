@@ -14,9 +14,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::protocol::auth::{AuthProfile, authenticate, compute_server_hash};
-use crate::protocol::encryption::{
-    Encryption, decrypt_rsa, generate_rsa_key, generate_verify_token,
-};
+use crate::protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token};
 use crate::protocol::packets::handshake::keepalive::KeepAlive;
 use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
@@ -192,7 +190,6 @@ pub async fn process(
     let verify_token = generate_verify_token();
     let mut pending_username: Option<String> = None;
 
-    let mut joined = false;
     let mut player_name: Option<String> = None;
 
     loop {
@@ -342,7 +339,6 @@ pub async fn process(
                                 my_uuid = Some(result.uuid);
                                 my_entity_id = result.entity_id;
                                 player_name = Some(result.player_name);
-                                joined = true;
                                 continue;
                             }
                         } else {
@@ -363,7 +359,6 @@ pub async fn process(
                                 my_uuid = Some(result.uuid);
                                 my_entity_id = result.entity_id;
                                 player_name = Some(result.player_name);
-                                joined = true;
                                 continue;
                             }
                         };
@@ -454,13 +449,9 @@ pub async fn process(
     }
     if let Some(uuid) = my_uuid {
         player_registry.remove(&uuid).await;
-        if let Some(eid) = Some(my_entity_id) {
-            join_tx
-                .send((Player::new(eid, uuid, String::new()), false))
-                .ok();
-        }
-    }
-    if joined {
+        join_tx
+            .send((Player::new(my_entity_id, uuid, String::new()), false))
+            .ok();
         println!(
             "Player left, online: {}",
             player_registry.get_online_count().await
