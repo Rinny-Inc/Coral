@@ -53,6 +53,33 @@ impl Packet for PlayerListItem {
 }
 
 #[derive(Debug)]
+pub struct UpdateLatency {
+    pub uuid: Uuid,
+    pub ping: i32,
+}
+impl Packet for UpdateLatency {
+    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        Err(Error::other("Unexpected Call!"))
+    }
+
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x38);
+        writer.write_varint(2);
+        writer.write_varint(1); // AMOUNT OF PLAYER
+        writer.write_uuid(&self.uuid);
+        writer.write_varint(self.ping);
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+#[derive(Debug)]
 pub struct PlayerListItem17 {
     pub username: String,
     pub online: bool,

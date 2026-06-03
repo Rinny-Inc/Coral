@@ -45,6 +45,24 @@ impl PlayerRegistry {
         self.players.read().await.get(&uuid).cloned()
     }
 
+    pub async fn update_gamemode(&self, uuid: Uuid, gamemode: u8) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.gamemode = gamemode;
+        }
+    }
+
+    pub async fn update_held_slot(&self, uuid: Uuid, held_slot: u8) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.held_slot = held_slot;
+        }
+    }
+
+    pub async fn update_held_item(&self, uuid: Uuid, item_id: i16) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.held_item_id = item_id;
+        }
+    }
+
     // TODO: could prolly have less argument by doing structs
     #[allow(clippy::too_many_arguments)]
     pub async fn update_position(

@@ -31,7 +31,7 @@ pub struct PacketRegistry {
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(12); // TODO: add 1 for every new packets
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(15); // TODO: add 1 for every new packets
 
         handlers.insert(
             PacketKey {
@@ -121,6 +121,31 @@ impl PacketRegistry {
                 play::movement::PlayerPositionAndLookIn::decode(buf)
                     .map(|p| Box::new(p) as Box<dyn Packet>)
             },
+        );
+
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x07,
+            },
+            |buf| play::block::PlayerDig::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x08,
+            },
+            |buf| {
+                play::block::PlayerBlockPlacement::decode(buf)
+                    .map(|p| Box::new(p) as Box<dyn Packet>)
+            },
+        );
+        handlers.insert(
+            PacketKey {
+                state: handshake::EnumProtocol::Play,
+                id: 0x09,
+            },
+            |buf| play::block::HeldItemChange::decode(buf).map(|p| Box::new(p) as Box<dyn Packet>),
         );
         handlers.insert(
             PacketKey {

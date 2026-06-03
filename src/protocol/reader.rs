@@ -21,7 +21,7 @@ impl Reader {
         self.data.len() - self.position
     }
 
-    fn read_byte(&mut self) -> u8 {
+    pub fn read_byte(&mut self) -> u8 {
         if self.position >= self.data.len() {
             panic!(
                 "Attempted to read byte at position {}, but data length is {}",
@@ -32,6 +32,18 @@ impl Reader {
         let byte = self.data[self.position];
         self.position += 1;
         byte
+    }
+    pub fn read_i32(&mut self) -> i32 {
+        i32::from_be_bytes([
+            self.read_byte(),
+            self.read_byte(),
+            self.read_byte(),
+            self.read_byte(),
+        ])
+    }
+
+    pub fn read_i16(&mut self) -> i16 {
+        i16::from_be_bytes([self.read_byte(), self.read_byte()])
     }
 
     pub fn read_bytes(&mut self, length: usize) -> Vec<u8> {

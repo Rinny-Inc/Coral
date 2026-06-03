@@ -3,10 +3,15 @@ use std::{io::ErrorKind, sync::Arc};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use protocol::packets::PacketRegistry;
 use tokio::{net::TcpListener, sync::broadcast};
+use uuid::Uuid;
 
 use crate::{
-    protocol::encryption::generate_rsa_key,
+    protocol::{
+        encryption::generate_rsa_key,
+        packets::play::{game::ChangeGameState, player_list::UpdateLatency},
+    },
     server::{player::Player, registry::PlayerRegistry},
+    world::blocks::WorldBlocks,
 };
 
 mod codec;
@@ -17,6 +22,9 @@ pub mod world;
 
 pub type PositionUpdate = (uuid::Uuid, i32, f64, f64, f64, f32, f32, bool);
 pub type JoinLeave = (Player, bool);
+pub type GamemodeUpdate = (Uuid, u8);
+pub type PingUpdate = (Uuid, u32);
+pub type BlockUpdate = (i32, i32, i32, i32, u8);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,14 +59,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let server_icon = Arc::new(server_icon);
 
-    let (chat_tx, _) = broadcast::channel::<String>(100);
+    let (chat_tx, _) = broadcast::channel::<String>(50); // We dont need to store that much chat messages
     let chat_tx = Arc::new(chat_tx);
 
-    let (join_tx, _) = broadcast::channel::<JoinLeave>(100);
+    let (join_tx, _) = broadcast::channel::<JoinLeave>(1); // We dont need to store 100 join and leave action
     let join_tx = Arc::new(join_tx);
 
     let (pos_tx, _) = broadcast::channel::<PositionUpdate>(100);
     let pos_tx = Arc::new(pos_tx);
+
+    let (gm_tx, _) = broadcast::channel::<GamemodeUpdate>(1);
+    let gm_tx = Arc::new(gm_tx);
+
+    let (ping_tx, _) = broadcast::channel::<PingUpdate>(1);
+    let ping_tx = Arc::new(ping_tx);
+
+    let (block_tx, _) = broadcast::channel::<BlockUpdate>(10);
+    let block_tx = Arc::new(block_tx);
+
+    let world_blocks = Arc::new(WorldBlocks::new());
 
     let (private_key, public_key_der) = generate_rsa_key();
     let private_key = Arc::new(private_key);
@@ -69,9 +88,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let registry = packet_registry.clone();
         let server_icon = server_icon.clone();
         let config = config.clone();
+
         let chat_tx = chat_tx.clone();
         let join_tx = join_tx.clone();
         let pos_tx = pos_tx.clone();
+        let gm_tx = gm_tx.clone();
+        let ping_tx = ping_tx.clone();
+        let block_tx = block_tx.clone();
+        let world_blocks = world_blocks.clone();
+
         let player_registry = player_registry.clone();
         let private_key = private_key.clone();
         let public_key_der = public_key_der.clone();
@@ -85,6 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 chat_tx,
                 join_tx,
                 pos_tx,
+                gm_tx,
+                ping_tx,
+                block_tx,
+                world_blocks,
                 player_registry,
                 private_key,
                 public_key_der,

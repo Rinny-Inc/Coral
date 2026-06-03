@@ -2,8 +2,10 @@ use std::io::Error;
 
 use crate::protocol::{packets::Packet, reader::Reader};
 
+pub mod block;
 pub mod chat;
 pub mod entity;
+pub mod game;
 pub mod join_game;
 pub mod movement;
 pub mod player_list;

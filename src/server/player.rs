@@ -11,6 +11,9 @@ pub struct Player {
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
+    pub gamemode: u8,
+    pub held_slot: u8,
+    pub held_item_id: i16,
 }
 
 impl Player {
@@ -25,6 +28,9 @@ impl Player {
             yaw: 90.0,
             pitch: 0.0,
             on_ground: true,
+            gamemode: 0,
+            held_slot: 0,
+            held_item_id: -1,
         }
     }
 }

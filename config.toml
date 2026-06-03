@@ -4,9 +4,10 @@ port = 25565
 max_player = 20
 online_mode = true
 player_sample_amount = 12
+default_gamemode = 0
 
 [chat]
 format = "<{username}> {message}"
 
 [world]
-# todo
+difficulty = 0

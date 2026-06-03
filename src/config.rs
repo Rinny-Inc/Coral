@@ -6,6 +6,7 @@ use serde::Deserialize;
 pub struct Config {
     pub server: ServerConfig,
     pub chat: ChatConfig,
+    pub world: WorldConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -15,11 +16,17 @@ pub struct ServerConfig {
     pub max_player: u32,
     pub online_mode: bool,
     pub player_sample_amount: i8,
+    pub default_gamemode: u8,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatConfig {
     pub format: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct WorldConfig {
+    pub difficulty: u8,
 }
 
 impl Config {
@@ -47,10 +54,11 @@ port = 25565
 max_player = 20
 online_mode = true
 player_sample_amount = 12
+default_gamemode = 0
 
 [chat]
 format = "<{username}> {message}"
 
 [world]
-#todo
+difficulty = 0
 "#;

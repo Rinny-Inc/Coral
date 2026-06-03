@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
@@ -19,12 +19,18 @@ use crate::protocol::packets::handshake::keepalive::KeepAlive;
 use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
 use crate::protocol::packets::play::PluginMessage;
+use crate::protocol::packets::play::block::{
+    BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
+};
 use crate::protocol::packets::play::chat::{ChatMessage, ChatMessageOut};
 use crate::protocol::packets::play::entity::{DestroyEntities, EntityTeleport, SpawnPlayer};
+use crate::protocol::packets::play::game::ChangeGameState;
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
 };
-use crate::protocol::packets::play::player_list::{PlayerListItem, PlayerListItem17};
+use crate::protocol::packets::play::player_list::{
+    PlayerListItem, PlayerListItem17, UpdateLatency,
+};
 use crate::protocol::{
     packets::{
         Packet, PacketKey, PacketRegistry,
@@ -41,9 +47,10 @@ use crate::protocol::{
 };
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
+use crate::world::blocks::{Block, WorldBlocks};
 use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
-use crate::{JoinLeave, PositionUpdate};
+use crate::{BlockUpdate, GamemodeUpdate, JoinLeave, PingUpdate, PositionUpdate};
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
@@ -166,6 +173,10 @@ pub async fn process(
     chat_tx: Arc<broadcast::Sender<String>>,
     join_tx: Arc<broadcast::Sender<JoinLeave>>,
     pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
+    gm_tx: Arc<broadcast::Sender<GamemodeUpdate>>,
+    ping_tx: Arc<broadcast::Sender<PingUpdate>>,
+    block_tx: Arc<broadcast::Sender<BlockUpdate>>,
+    world_blocks: Arc<WorldBlocks>,
     player_registry: Arc<PlayerRegistry>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -179,13 +190,21 @@ pub async fn process(
     let mut chat_rx = chat_tx.subscribe();
     let mut join_rx = join_tx.subscribe();
     let mut pos_rx = pos_tx.subscribe();
+    let mut gm_rx = gm_tx.subscribe();
+    let mut ping_rx = ping_tx.subscribe();
+    let mut block_rx = block_tx.subscribe();
+
     let mut my_uuid: Option<Uuid> = None;
     let mut my_entity_id: i32 = 0;
+    let mut my_gamemode: u8 = config.server.default_gamemode;
+    let mut my_held_item: i16 = -1;
+    let mut my_latency_ms: u32 = 0;
 
     let mut framed = Framed::new(socket, codec);
     let mut client_protocol = 1;
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
-    let mut keep_alive_id = 0;
+    let mut keep_alive_count: i32 = 0;
+    let mut last_sent_keep_alive: Option<(i32, std::time::Instant)> = None;
 
     let verify_token = generate_verify_token();
     let mut pending_username: Option<String> = None;
@@ -194,6 +213,15 @@ pub async fn process(
 
     loop {
         tokio::select! {
+            _ = keep_alive_interval.tick() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                keep_alive_count += 1;
+                last_sent_keep_alive = Some((keep_alive_count, std::time::Instant::now()));
+                send_packet(&mut framed, KeepAlive { id: keep_alive_count }).await;
+            }
+
             Ok((uuid, eid, x, y, z, yaw, pitch, on_ground)) = pos_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
@@ -209,6 +237,16 @@ pub async fn process(
                     x, y, z,
                     yaw: yaw_byte, pitch: pitch_byte,
                     on_ground
+                }).await;
+            }
+            Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, BlockChange {
+                    x, y, z,
+                    block_id,
+                    block_metadata: metadata
                 }).await;
             }
             Ok((player, join_event)) = join_rx.recv() => {
@@ -242,13 +280,34 @@ pub async fn process(
                 }
                 send_packet(&mut framed, ChatMessageOut::from_json(&message)).await;
             }
-
-            _ = keep_alive_interval.tick() => {
+            Ok((uuid, ping)) = ping_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                keep_alive_id += 1;
-                send_packet(&mut framed, KeepAlive { id: keep_alive_id }).await;
+                send_packet(&mut framed, UpdateLatency {
+                    uuid,
+                    ping: ping as i32
+                }).await;
+            }
+            Ok((uuid, gamemode)) = gm_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if let Some(uuid) = my_uuid {
+                    my_gamemode = gamemode;
+                    send_packet(&mut framed, ChangeGameState::set_gamemode(gamemode)).await;
+
+                    let (flags, fly_speed, walk_speed) = match gamemode {
+                        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.5, 0.1),
+                        3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
+                        _ => (0x00, 0.5, 0.1),
+                    };
+                    send_packet(&mut framed, PlayerAbilities {
+                        flags,
+                        fly_speed,
+                        walk_speed
+                    }).await;
+                }
             }
 
             result = framed.next() => {
@@ -293,12 +352,18 @@ pub async fn process(
                             continue;
                         }
 
+                        // TODO: connection throttled
                         if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
                             kick(&mut framed, "Unsupported version. Use 1.7.x or 1.8.x").await;
                             break;
                         }
+                        if player_registry.get_online_count().await > config.server.max_player {
+                            kick(&mut framed, "Server is full!").await;
+                            break;
+                        }
+                        // TODO: whitelist & ban
+                        // TODO: login from another location
 
-                        // TODO: if online player > max_online kick if not op
 
                         if config.server.online_mode {
                             if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
@@ -337,10 +402,13 @@ pub async fn process(
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &join_tx).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, my_latency_ms, &player_registry, &join_tx, &config).await;
+                                // THIS IS RIDICULOUS
                                 my_uuid = Some(result.uuid);
                                 my_entity_id = result.entity_id;
                                 player_name = Some(result.player_name);
+                                my_gamemode = result.gamemode;
+                                keep_alive_interval.reset();
                                 continue;
                             }
                         } else {
@@ -356,17 +424,90 @@ pub async fn process(
                                     properties: vec![]
                                 };
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, &player_registry, &join_tx).await;
-
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, my_latency_ms, &player_registry, &join_tx, &config).await;
+                                // SO IT IS
                                 my_uuid = Some(result.uuid);
                                 my_entity_id = result.entity_id;
                                 player_name = Some(result.player_name);
+                                my_gamemode = result.gamemode;
+                                keep_alive_interval.reset();
                                 continue;
                             }
                         };
 
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
-                            println!("Keep Alive response: {}", ka.id);
+                            if let Some((sent_id, sent_time)) = last_sent_keep_alive.take()
+                                && ka.id == sent_id
+                            {
+                                my_latency_ms = sent_time.elapsed().as_millis() as u32;
+                                if let Some(uuid) = my_uuid {
+                                    ping_tx.send((uuid, my_latency_ms)).ok();
+                                }
+                            }
+                            continue;
+                        }
+
+                        if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
+                            let slot = held.slot as u8;
+                            if let Some(uuid) = my_uuid {
+                                player_registry.update_held_slot(uuid, slot).await;
+                            }
+                            my_held_item = -1;
+                            continue;
+                        }
+
+                        if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
+                            match dig.status {
+                                0 => {
+                                    if my_gamemode == 1 {
+                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                        block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                    }
+                                }
+                                2 => {
+                                    if my_gamemode == 0 {
+                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                        block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
+                            if place.held_item_id == -1 || place.face == 255 {
+                                continue;
+                            }
+                            if my_gamemode == 2 || my_gamemode == 3 {
+                                continue;
+                            }
+                            let (tx, ty, tz): (i32, i32, i32) = match place.face {
+                                0 => (place.x, place.y as i32 - 1, place.z),
+                                1 => (place.x, place.y as i32 + 1, place.z),
+                                2 => (place.x, place.y as i32, place.z - 1),
+                                3 => (place.x, place.y as i32, place.z + 1),
+                                4 => (place.x - 1, place.y as i32, place.z),
+                                5 => (place.x + 1, place.y as i32, place.z),
+                                _ => continue
+                            };
+
+                            if ty < 0 || ty > 255 {
+                                continue;
+                            }
+
+                            let block_id = place.held_item_id as i32;
+                            if block_id <= 0 || block_id > 255 {
+                                continue;
+                            }
+
+                            my_held_item = place.held_item_id;
+                            if let Some(uuid) = my_uuid {
+                                player_registry.update_held_item(uuid, my_held_item).await;
+                            }
+
+                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0)).await;
+                            block_tx.send((tx, ty, tz, block_id, 0)).ok();
                             continue;
                         }
 
@@ -483,6 +624,7 @@ struct JoinResult {
     uuid: Uuid,
     entity_id: i32,
     player_name: String,
+    gamemode: u8,
 }
 
 async fn make_player_join(
@@ -490,8 +632,10 @@ async fn make_player_join(
     profile: AuthProfile,
     client_protocol: i32,
     max_players: u8,
+    latency: u32,
     player_registry: &Arc<PlayerRegistry>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
+    config: &Config,
 ) -> JoinResult {
     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
     let entity_id = next_entity_id();
@@ -511,13 +655,19 @@ async fn make_player_join(
         framed,
         JoinGame {
             entity_id,
-            gamemode: 0,
+            gamemode: config.server.default_gamemode,
             dimension: 0,
-            difficulty: 1,
+            difficulty: config.world.difficulty,
             max_player: max_players,
-            level_type: "default".to_string(),
+            level_type: "flat".to_string(),
             reduced_debug_info: false,
         },
+    )
+    .await;
+
+    send_packet(
+        framed,
+        ChangeGameState::set_gamemode(config.server.default_gamemode),
     )
     .await;
 
@@ -528,8 +678,8 @@ async fn make_player_join(
                 uuid,
                 username: profile.username.clone(),
                 properties: profile.properties.clone(),
-                gamemode: 0,
-                ping: 20,
+                gamemode: config.server.default_gamemode as i32,
+                ping: latency as i32,
             },
         )
         .await;
@@ -539,7 +689,7 @@ async fn make_player_join(
             PlayerListItem17 {
                 username: profile.username.clone(),
                 online: true,
-                ping: 20,
+                ping: latency as i16,
             },
         )
         .await;
@@ -634,5 +784,6 @@ async fn make_player_join(
         uuid,
         entity_id,
         player_name: profile.username,
+        gamemode: config.server.default_gamemode,
     }
 }
