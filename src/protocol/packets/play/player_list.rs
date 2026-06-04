@@ -1,8 +1,6 @@
-use std::io::Error;
-
 use uuid::Uuid;
 
-use crate::protocol::{auth::ProfileProperty, packets::Packet};
+use crate::protocol::{auth::ProfileProperty, packets::PacketOut};
 
 #[derive(Debug)]
 pub struct PlayerListItem {
@@ -13,14 +11,7 @@ pub struct PlayerListItem {
     pub ping: i32,
 }
 
-impl Packet for PlayerListItem {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for PlayerListItem {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x38);
         writer.write_varint(0);
@@ -46,10 +37,6 @@ impl Packet for PlayerListItem {
         writer.write_bool(false);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 #[derive(Debug)]
@@ -57,25 +44,30 @@ pub struct UpdateLatency {
     pub uuid: Uuid,
     pub ping: i32,
 }
-impl Packet for UpdateLatency {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for UpdateLatency {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x38);
-        writer.write_varint(2);
-        writer.write_varint(1); // AMOUNT OF PLAYER
+        writer.write_varint(2); // update tablist
+        writer.write_varint(1);
         writer.write_uuid(&self.uuid);
         writer.write_varint(self.ping);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+}
+#[derive(Debug)]
+pub struct BulkUpdateLatency {
+    pub entries: Vec<(Uuid, i32)>,
+}
+impl PacketOut for BulkUpdateLatency {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x38);
+        writer.write_varint(2); // update tablist
+        writer.write_varint(self.entries.len() as i32);
+        for (uuid, ping) in &self.entries {
+            writer.write_uuid(uuid);
+            writer.write_varint(*ping);
+        }
+        Ok(())
     }
 }
 
@@ -85,23 +77,12 @@ pub struct PlayerListItem17 {
     pub online: bool,
     pub ping: i16,
 }
-impl Packet for PlayerListItem17 {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for PlayerListItem17 {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0xC9);
         writer.write_string(&self.username);
         writer.write_bool(self.online);
         writer.write_u16(self.ping as u16);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

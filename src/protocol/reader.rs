@@ -33,14 +33,6 @@ impl Reader {
         self.position += 1;
         byte
     }
-    pub fn read_i32(&mut self) -> i32 {
-        i32::from_be_bytes([
-            self.read_byte(),
-            self.read_byte(),
-            self.read_byte(),
-            self.read_byte(),
-        ])
-    }
 
     pub fn read_i16(&mut self) -> i16 {
         i16::from_be_bytes([self.read_byte(), self.read_byte()])

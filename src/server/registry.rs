@@ -42,7 +42,7 @@ impl PlayerRegistry {
     }
 
     pub async fn get(&self, uuid: &Uuid) -> Option<Player> {
-        self.players.read().await.get(&uuid).cloned()
+        self.players.read().await.get(uuid).cloned()
     }
 
     pub async fn update_gamemode(&self, uuid: Uuid, gamemode: u8) {
@@ -57,9 +57,35 @@ impl PlayerRegistry {
         }
     }
 
+    pub async fn update_health(&self, uuid: Uuid, health: f32, food: i32, food_saturation: f32) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.health = health;
+            player.food = food;
+            player.food_saturation = food_saturation;
+            player.is_dead = health <= 0.0
+        }
+    }
+
     pub async fn update_held_item(&self, uuid: Uuid, item_id: i16) {
         if let Some(player) = self.players.write().await.get_mut(&uuid) {
             player.held_item_id = item_id;
+        }
+    }
+
+    pub async fn update_latency(&self, uuid: Uuid, latency_ms: u32) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.latency_ms = latency_ms;
+        }
+    }
+
+    pub async fn update_sprinting(&self, uuid: Uuid, is_sprinting: bool) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.is_sprinting = is_sprinting;
+        }
+    }
+    pub async fn update_sneaking(&self, uuid: Uuid, is_sneaking: bool) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.is_sneaking = is_sneaking;
         }
     }
 

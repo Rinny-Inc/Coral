@@ -1,6 +1,7 @@
-use crate::protocol::{packets::Packet, writer::Writer};
+use crate::protocol::packets::PacketOut;
+use crate::protocol::writer::Writer;
+use std::io::Result;
 use std::io::Write;
-use std::io::{Error, Result};
 
 const BEDROCK: u8 = 7;
 const DIRT: u8 = 3;
@@ -105,11 +106,7 @@ pub struct ChunkData {
     pub client_protocol: i32,
 }
 
-impl Packet for ChunkData {
-    fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for ChunkData {
     fn encode(&self, writer: &mut Writer) -> Result<()> {
         writer.write_varint(0x21);
         writer.write_i32(self.chunk_x);
@@ -148,9 +145,5 @@ impl Packet for ChunkData {
         );
 
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

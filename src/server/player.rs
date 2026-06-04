@@ -14,6 +14,13 @@ pub struct Player {
     pub gamemode: u8,
     pub held_slot: u8,
     pub held_item_id: i16,
+    pub latency_ms: u32,
+    pub health: f32,
+    pub food: i32,
+    pub food_saturation: f32,
+    pub is_dead: bool,
+    pub is_sneaking: bool,
+    pub is_sprinting: bool,
 }
 
 impl Player {
@@ -31,6 +38,24 @@ impl Player {
             gamemode: 0,
             held_slot: 0,
             held_item_id: -1,
+            latency_ms: 0,
+            health: 20.0,
+            food: 20,
+            food_saturation: 5.0,
+            is_dead: false,
+            is_sneaking: false,
+            is_sprinting: false,
         }
+    }
+
+    pub fn entity_flags(&self) -> u8 {
+        let mut flags = 0u8;
+        if self.is_sneaking {
+            flags |= 0x02;
+        }
+        if self.is_sprinting {
+            flags |= 0x08;
+        }
+        flags
     }
 }

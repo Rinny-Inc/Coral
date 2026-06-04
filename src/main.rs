@@ -6,10 +6,7 @@ use tokio::{net::TcpListener, sync::broadcast};
 use uuid::Uuid;
 
 use crate::{
-    protocol::{
-        encryption::generate_rsa_key,
-        packets::play::{game::ChangeGameState, player_list::UpdateLatency},
-    },
+    protocol::encryption::generate_rsa_key,
     server::{player::Player, registry::PlayerRegistry},
     world::blocks::WorldBlocks,
 };
@@ -25,6 +22,9 @@ pub type JoinLeave = (Player, bool);
 pub type GamemodeUpdate = (Uuid, u8);
 pub type PingUpdate = (Uuid, u32);
 pub type BlockUpdate = (i32, i32, i32, i32, u8);
+pub type AnimationUpdate = (i32, u8);
+pub type MetadataUpdate = (i32, u8);
+pub type DamageEvent = (Uuid, f32, i32, f32, i32);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -77,6 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (block_tx, _) = broadcast::channel::<BlockUpdate>(10);
     let block_tx = Arc::new(block_tx);
 
+    let (anim_tx, _) = broadcast::channel::<AnimationUpdate>(100);
+    let anim_tx = Arc::new(anim_tx);
+
+    let (meta_tx, _) = broadcast::channel::<MetadataUpdate>(100);
+    let meta_tx = Arc::new(meta_tx);
+
+    let (dmg_tx, _) = broadcast::channel::<DamageEvent>(100);
+    let dmg_tx = Arc::new(dmg_tx);
+
     let world_blocks = Arc::new(WorldBlocks::new());
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -96,6 +105,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ping_tx = ping_tx.clone();
         let block_tx = block_tx.clone();
         let world_blocks = world_blocks.clone();
+        let anim_tx = anim_tx.clone();
+        let meta_tx = meta_tx.clone();
+        let dmg_tx = dmg_tx.clone();
 
         let player_registry = player_registry.clone();
         let private_key = private_key.clone();
@@ -113,6 +125,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gm_tx,
                 ping_tx,
                 block_tx,
+                anim_tx,
+                meta_tx,
+                dmg_tx,
                 world_blocks,
                 player_registry,
                 private_key,

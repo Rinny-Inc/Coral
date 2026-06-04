@@ -1,6 +1,7 @@
-use std::io::Error;
-
-use crate::protocol::packets::Packet;
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct ChangeGameState {
@@ -25,19 +26,65 @@ impl ChangeGameState {
         }
     }
 }
-impl Packet for ChangeGameState {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for ChangeGameState {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x2B);
         writer.write_byte(self.reason);
         writer.write_f32(self.value);
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct UpdateHealth {
+    pub health: f32,
+    pub food: i32,
+    pub food_saturation: f32,
+}
+
+#[derive(Debug)]
+pub struct Respawn {
+    pub dimension: i32,
+    pub difficulty: u8,
+    pub gamemode: u8,
+    pub level_type: String,
+}
+
+#[derive(Debug)]
+pub struct ClientStatus {
+    // 0 = perform respawn
+    // 1 = request stats
+    // 2 = open inventory (creative)
+    pub action: u8,
+}
+
+impl PacketOut for UpdateHealth {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x06);
+        writer.write_f32(self.health);
+        writer.write_varint(self.food);
+        writer.write_f32(self.food_saturation);
+        Ok(())
+    }
+}
+impl PacketOut for Respawn {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x07);
+        writer.write_i32(self.dimension);
+        writer.write_byte(self.difficulty);
+        writer.write_byte(self.gamemode);
+        writer.write_string(&self.level_type);
+        Ok(())
+    }
+}
+impl PacketIn for ClientStatus {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let action = reader.read_byte();
+        Ok(ClientStatus { action })
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

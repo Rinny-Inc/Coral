@@ -1,6 +1,7 @@
-use std::io::Error;
-
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct ChatMessage {
@@ -20,7 +21,7 @@ impl ChatMessageOut {
     }
 }
 
-impl Packet for ChatMessage {
+impl PacketIn for ChatMessage {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -30,33 +31,23 @@ impl Packet for ChatMessage {
         Ok(ChatMessage { message })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for ChatMessage {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x01);
         writer.write_string(&self.message);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for ChatMessageOut {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for ChatMessageOut {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x02);
         writer.write_string(&self.json);
         writer.write_byte(0);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

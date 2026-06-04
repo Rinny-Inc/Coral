@@ -1,6 +1,7 @@
-use std::io::Error;
-
-use crate::protocol::packets::Packet;
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct SpawnPlayer {
@@ -69,14 +70,7 @@ fn degrees_to_byte(degrees: f32) -> u8 {
     ((degrees / 360.0 * 256.0) as i32).rem_euclid(256) as u8
 }
 
-impl Packet for SpawnPlayer {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for SpawnPlayer {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x0C);
         writer.write_varint(self.entity_id);
@@ -95,20 +89,9 @@ impl Packet for SpawnPlayer {
         writer.write_byte(127);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EntityTeleport {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EntityTeleport {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x18);
         writer.write_varint(self.entity_id);
@@ -120,20 +103,9 @@ impl Packet for EntityTeleport {
         writer.write_bool(self.on_ground);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EntityRelativeMove {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EntityRelativeMove {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x15);
         writer.write_varint(self.entity_id);
@@ -143,20 +115,9 @@ impl Packet for EntityRelativeMove {
         writer.write_bool(self.on_ground);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EntityLookAndMove {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EntityLookAndMove {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x17);
         writer.write_varint(self.entity_id);
@@ -168,20 +129,9 @@ impl Packet for EntityLookAndMove {
         writer.write_bool(self.on_ground);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EntityLook {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EntityLook {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x16);
         writer.write_varint(self.entity_id);
@@ -190,20 +140,9 @@ impl Packet for EntityLook {
         writer.write_bool(self.on_ground);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for DestroyEntities {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for DestroyEntities {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x13);
         writer.write_varint(self.entity_ids.len() as i32);
@@ -212,28 +151,146 @@ impl Packet for DestroyEntities {
         }
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EntityHeadLook {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EntityHeadLook {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x19);
         writer.write_varint(self.entity_id);
         writer.write_byte(self.head_yaw);
         Ok(())
     }
+}
+
+#[derive(Debug)]
+pub struct ArmAnimation;
+
+#[derive(Debug)]
+pub struct EntityAnimation {
+    pub entity_id: i32,
+    // 0 = swing arm
+    // 1 = take damage
+    // 2 = leave bed
+    // 3 = eat food
+    // 4 = critical effect
+    // 5 = magic critical effect
+    pub animation: u8,
+}
+
+impl PacketIn for ArmAnimation {
+    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(ArmAnimation)
+    }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+impl PacketOut for EntityAnimation {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x0B);
+        writer.write_varint(self.entity_id);
+        writer.write_byte(self.animation);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct EntityAction {
+    pub entity_id: i32,
+    // 0 = start sneaking
+    // 1 = stop sneaking
+    // 2 = leave bed
+    // 3 = start sprinting
+    // 4 = stop sprinting
+    // 5 = jump with horse
+    // 6 = open ridden horse inventory
+    pub action: i32,
+    pub jump_boost: i32, // HORSE ONLY
+}
+
+#[derive(Debug)]
+pub struct UseEntity {
+    pub target_entity_id: i32,
+    // 0 = interact
+    // 1 = attack
+    // 2 = interact at
+    pub action: i32,
+}
+
+#[derive(Debug)]
+pub struct EntityVelocity {
+    pub entity_id: i32,
+    pub vx: i16, // fixed point * 8000
+    pub vy: i16,
+    pub vz: i16,
+}
+
+#[derive(Debug)]
+pub struct EntityMetadata {
+    pub entity_id: i32,
+    pub flags: u8, // bit 1 = sneaking, bit 3 = sprinting
+}
+
+impl PacketIn for EntityAction {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let entity_id = reader.read_varint();
+        let action = reader.read_varint();
+        let jump_boost = reader.read_varint();
+        Ok(EntityAction {
+            entity_id,
+            action,
+            jump_boost,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketIn for UseEntity {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let target_entity_id = reader.read_varint();
+        let action = reader.read_varint();
+        Ok(UseEntity {
+            target_entity_id,
+            action,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl PacketOut for EntityVelocity {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x12);
+        writer.write_varint(self.entity_id);
+        writer.write_i16(self.vx);
+        writer.write_i16(self.vy);
+        writer.write_i16(self.vz);
+        Ok(())
+    }
+}
+impl PacketOut for EntityMetadata {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1C);
+        writer.write_varint(self.entity_id);
+        writer.write_byte(0x00);
+        writer.write_byte(self.flags);
+        writer.write_byte(0x7F);
+        Ok(())
     }
 }

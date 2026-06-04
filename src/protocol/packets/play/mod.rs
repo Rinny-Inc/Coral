@@ -1,6 +1,7 @@
-use std::io::Error;
-
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 pub mod block;
 pub mod chat;
@@ -37,14 +38,7 @@ pub struct PlayerPositionAndLook {
     pub on_ground: bool,
 }
 
-impl Packet for SpawnPosition {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for SpawnPosition {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x05);
         let packed: i64 = ((self.x as i64 & 0x3FFFFFF) << 38)
@@ -53,10 +47,6 @@ impl Packet for SpawnPosition {
 
         writer.write_long(packed);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -67,14 +57,7 @@ pub struct SpawnPosition17 {
     pub z: i32,
 }
 
-impl Packet for SpawnPosition17 {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for SpawnPosition17 {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x05);
         writer.write_i32(self.x);
@@ -82,20 +65,9 @@ impl Packet for SpawnPosition17 {
         writer.write_i32(self.z);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for PlayerAbilities {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for PlayerAbilities {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x39);
         writer.write_byte(self.flags);
@@ -103,20 +75,9 @@ impl Packet for PlayerAbilities {
         writer.write_f32(self.walk_speed);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for PlayerPositionAndLook {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for PlayerPositionAndLook {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x08);
         writer.write_f64(self.x);
@@ -126,10 +87,6 @@ impl Packet for PlayerPositionAndLook {
         writer.write_f32(self.pitch);
         writer.write_bool(self.on_ground);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -165,7 +122,7 @@ impl PluginMessage {
         }
     }
 }
-impl Packet for PluginMessage {
+impl PacketIn for PluginMessage {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -173,15 +130,16 @@ impl Packet for PluginMessage {
         Self::decode_raw(buf)
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for PluginMessage {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x3F);
         writer.write_string(&self.channel);
         writer.write_varint(self.data.len() as i32);
         writer.data.extend_from_slice(&self.data);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

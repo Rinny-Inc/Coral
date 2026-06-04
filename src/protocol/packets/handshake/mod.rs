@@ -1,8 +1,10 @@
 use std::io::{Error, ErrorKind};
 
-use crate::protocol::{reader::Reader, writer::Writer};
-
-use super::Packet;
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+    writer::Writer,
+};
 
 pub mod keepalive;
 
@@ -14,7 +16,7 @@ pub struct PacketHandshake {
     pub requested_protocol: EnumProtocol,
 }
 
-impl Packet for PacketHandshake {
+impl PacketIn for PacketHandshake {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -47,16 +49,17 @@ impl Packet for PacketHandshake {
         })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for PacketHandshake {
     fn encode(&self, buffer: &mut Writer) -> std::io::Result<()> {
         buffer.write_varint(self.protocol_version);
         buffer.write_string(&self.host_name);
         buffer.write_u16(self.port);
         buffer.write_varint_byte(self.requested_protocol.to_id());
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

@@ -1,8 +1,9 @@
-use std::io::Error;
-
 use uuid::Uuid;
 
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 pub mod disconnect;
 
@@ -30,7 +31,7 @@ pub struct EncryptionResponse {
     pub verify_token: Vec<u8>,
 }
 
-impl Packet for LoginStart {
+impl PacketIn for LoginStart {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -40,44 +41,27 @@ impl Packet for LoginStart {
         Ok(Self { username })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for LoginStart {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x00);
         writer.write_string(&self.username);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
-impl Packet for LoginSuccess {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected call"))
-    }
-
+impl PacketOut for LoginSuccess {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x02);
         writer.write_string(&self.uuid.hyphenated().to_string());
         writer.write_string(&self.username);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for EncryptionRequest {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for EncryptionRequest {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x01);
         writer.write_string(&self.server_id);
@@ -87,12 +71,8 @@ impl Packet for EncryptionRequest {
         writer.data.extend_from_slice(&self.verify_token);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
-impl Packet for EncryptionResponse {
+impl PacketIn for EncryptionResponse {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -106,10 +86,6 @@ impl Packet for EncryptionResponse {
             shared_secret,
             verify_token,
         })
-    }
-
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

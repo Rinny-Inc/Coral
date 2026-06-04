@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
@@ -23,17 +23,21 @@ use crate::protocol::packets::play::block::{
     BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
 };
 use crate::protocol::packets::play::chat::{ChatMessage, ChatMessageOut};
-use crate::protocol::packets::play::entity::{DestroyEntities, EntityTeleport, SpawnPlayer};
-use crate::protocol::packets::play::game::ChangeGameState;
+use crate::protocol::packets::play::entity::{
+    ArmAnimation, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook, EntityMetadata,
+    EntityTeleport, EntityVelocity, SpawnPlayer, UseEntity,
+};
+use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
 };
 use crate::protocol::packets::play::player_list::{
-    PlayerListItem, PlayerListItem17, UpdateLatency,
+    BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
 };
+use crate::protocol::packets::{PacketIn, PacketOut};
 use crate::protocol::{
     packets::{
-        Packet, PacketKey, PacketRegistry,
+        PacketKey, PacketRegistry,
         handshake::{self, EnumProtocol, PacketHandshake},
         login::{LoginStart, LoginSuccess},
         play::{
@@ -50,7 +54,10 @@ use crate::server::registry::{PlayerRegistry, next_entity_id};
 use crate::world::blocks::{Block, WorldBlocks};
 use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
-use crate::{BlockUpdate, GamemodeUpdate, JoinLeave, PingUpdate, PositionUpdate};
+use crate::{
+    AnimationUpdate, BlockUpdate, DamageEvent, GamemodeUpdate, JoinLeave, MetadataUpdate,
+    PingUpdate, PositionUpdate,
+};
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
@@ -59,7 +66,7 @@ pub struct Codec {
 }
 
 impl Decoder for Codec {
-    type Item = Box<dyn Packet>;
+    type Item = Box<dyn PacketIn>;
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -129,10 +136,10 @@ impl Decoder for Codec {
     }
 }
 
-impl Encoder<Box<dyn Packet>> for Codec {
+impl Encoder<Box<dyn PacketOut>> for Codec {
     type Error = std::io::Error;
 
-    fn encode(&mut self, item: Box<dyn Packet>, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: Box<dyn PacketOut>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let mut writer = Writer::new();
 
         item.encode(&mut writer)?;
@@ -154,8 +161,8 @@ impl Encoder<Box<dyn Packet>> for Codec {
     }
 }
 
-async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
-    let boxed_packet: Box<dyn Packet> = Box::new(packet);
+async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
+    let boxed_packet: Box<dyn PacketOut> = Box::new(packet);
 
     if let Err(e) = framed.send(boxed_packet).await {
         eprintln!("Failed to cleanly dispatch packet frame: {e}");
@@ -163,6 +170,47 @@ async fn send_packet<P: Packet + 'static>(framed: &mut Framed<TcpStream, Codec>,
 }
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
+
+struct PlayerState {
+    uuid: Option<Uuid>,
+    entity_id: i32,
+    gamemode: u8,
+    held_item: i16,
+    health: f32,
+    food: i32,
+    food_saturation: f32,
+    is_dead: bool,
+    is_sneaking: bool,
+    is_sprinting: bool,
+    latency_ms: u32,
+    food_timer: u8,
+    name: Option<String>,
+    pending_username: Option<String>,
+    keep_alive_count: i32,
+    last_sent_keep_alive: Option<(i32, std::time::Instant)>,
+}
+impl PlayerState {
+    fn new(default_gamemode: u8) -> Self {
+        Self {
+            uuid: None,
+            entity_id: 0,
+            gamemode: default_gamemode,
+            held_item: -1,
+            health: 20.0,
+            food: 20,
+            food_saturation: 5.0,
+            is_dead: false,
+            is_sneaking: false,
+            is_sprinting: false,
+            latency_ms: 0,
+            food_timer: 0,
+            name: None,
+            pending_username: None,
+            keep_alive_count: 0,
+            last_sent_keep_alive: None,
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn process(
@@ -176,6 +224,9 @@ pub async fn process(
     gm_tx: Arc<broadcast::Sender<GamemodeUpdate>>,
     ping_tx: Arc<broadcast::Sender<PingUpdate>>,
     block_tx: Arc<broadcast::Sender<BlockUpdate>>,
+    anim_tx: Arc<broadcast::Sender<AnimationUpdate>>,
+    meta_tx: Arc<broadcast::Sender<MetadataUpdate>>,
+    dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
     world_blocks: Arc<WorldBlocks>,
     player_registry: Arc<PlayerRegistry>,
     private_key: Arc<RsaPrivateKey>,
@@ -193,23 +244,17 @@ pub async fn process(
     let mut gm_rx = gm_tx.subscribe();
     let mut ping_rx = ping_tx.subscribe();
     let mut block_rx = block_tx.subscribe();
+    let mut anim_rx = anim_tx.subscribe();
+    let mut meta_rx = meta_tx.subscribe();
+    let mut dmg_rx = dmg_tx.subscribe();
 
-    let mut my_uuid: Option<Uuid> = None;
-    let mut my_entity_id: i32 = 0;
-    let mut my_gamemode: u8 = config.server.default_gamemode;
-    let mut my_held_item: i16 = -1;
-    let mut my_latency_ms: u32 = 0;
+    let mut state = PlayerState::new(config.server.default_gamemode);
 
     let mut framed = Framed::new(socket, codec);
     let mut client_protocol = 1;
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
-    let mut keep_alive_count: i32 = 0;
-    let mut last_sent_keep_alive: Option<(i32, std::time::Instant)> = None;
 
     let verify_token = generate_verify_token();
-    let mut pending_username: Option<String> = None;
-
-    let mut player_name: Option<String> = None;
 
     loop {
         tokio::select! {
@@ -217,16 +262,16 @@ pub async fn process(
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                keep_alive_count += 1;
-                last_sent_keep_alive = Some((keep_alive_count, std::time::Instant::now()));
-                send_packet(&mut framed, KeepAlive { id: keep_alive_count }).await;
+                state.keep_alive_count += 1;
+                state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
+                send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
             }
 
             Ok((uuid, eid, x, y, z, yaw, pitch, on_ground)) = pos_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                if Some(uuid) == my_uuid {
+                if Some(uuid) == state.uuid {
                     continue;
                 }
                 let yaw_byte = ((yaw / 360.0 * 256.0) as i32).rem_euclid(256) as u8;
@@ -237,6 +282,35 @@ pub async fn process(
                     x, y, z,
                     yaw: yaw_byte, pitch: pitch_byte,
                     on_ground
+                }).await;
+                send_packet(&mut framed, EntityHeadLook {
+                    entity_id: eid,
+                    head_yaw: yaw_byte
+                }).await;
+            }
+
+            Ok((eid, anim)) = anim_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(&mut framed, EntityAnimation {
+                    entity_id: eid,
+                    animation: anim
+                }).await;
+            }
+            Ok((eid, flags)) = meta_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(&mut framed, EntityMetadata {
+                    entity_id: eid,
+                    flags
                 }).await;
             }
             Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
@@ -253,7 +327,7 @@ pub async fn process(
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                if Some(player.uuid) == my_uuid {
+                if Some(player.uuid) == state.uuid {
                     continue;
                 }
                 if !join_event {
@@ -272,6 +346,44 @@ pub async fn process(
                         pitch: 0.0,
                         current_item: 0
                     }).await;
+                }
+            }
+            Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
+                if Some(uuid) != state.uuid {
+                    continue;
+                }
+                state.health = health;
+                state.food = food;
+                state.food_saturation = food_saturation;
+                state.is_dead = health <= 0.0;
+
+                send_packet(&mut framed, UpdateHealth {
+                    health,
+                    food,
+                    food_saturation,
+                }).await;
+
+                if health > 0.0
+                    && let Some(uuid_val) = state.uuid
+                    && let Some(me) = player_registry.get(&uuid_val).await
+                {
+                    let players = player_registry.get_all().await;
+                    if let Some(attacker) = players.iter().find(|p| p.entity_id == attacker_eid) {
+                        let dx = me.x - attacker.x;
+                        let dz = me.z - attacker.z;
+                        let len = (dx * dx + dz * dz).sqrt().max(0.001);
+                        let knockback = 0.4;
+                        let vx = (dx / len * knockback * 8000.0) as i16;
+                        let vz = (dz / len * knockback * 8000.0) as i16;
+                        let vy = 2000i16;
+
+                        send_packet(&mut framed, EntityVelocity {
+                            entity_id: state.entity_id,
+                            vx,
+                            vy,
+                            vz
+                        }).await;
+                    }
                 }
             }
             Ok(message) = chat_rx.recv() => {
@@ -293,8 +405,8 @@ pub async fn process(
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                if let Some(uuid) = my_uuid {
-                    my_gamemode = gamemode;
+                if let Some(uuid) = state.uuid {
+                    state.gamemode = gamemode;
                     send_packet(&mut framed, ChangeGameState::set_gamemode(gamemode)).await;
 
                     let (flags, fly_speed, walk_speed) = match gamemode {
@@ -361,13 +473,16 @@ pub async fn process(
                             kick(&mut framed, "Server is full!").await;
                             break;
                         }
-                        // TODO: whitelist & ban
+                        // TODO: is banned
+                        if config.server.whitelisted { // check if the uuid is whitelisted
+                            // TODO
+                        }
                         // TODO: login from another location
 
 
                         if config.server.online_mode {
                             if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                pending_username = Some(login_start.username.clone());
+                                state.pending_username = Some(login_start.username.clone());
 
                                 send_packet(&mut framed, EncryptionRequest {
                                     server_id: "".to_string(),
@@ -385,7 +500,7 @@ pub async fn process(
                                     kick(&mut framed, "Encryption Error!").await;
                                     break;
                                 }
-                                let username = match pending_username.take() {
+                                let username = match state.pending_username.take() {
                                     Some(u) => u,
                                     None => break
                                 };
@@ -402,12 +517,12 @@ pub async fn process(
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, my_latency_ms, &player_registry, &join_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &config).await;
                                 // THIS IS RIDICULOUS
-                                my_uuid = Some(result.uuid);
-                                my_entity_id = result.entity_id;
-                                player_name = Some(result.player_name);
-                                my_gamemode = result.gamemode;
+                                state.uuid = Some(result.uuid);
+                                state.entity_id = result.entity_id;
+                                state.name = Some(result.player_name);
+                                state.gamemode = result.gamemode;
                                 keep_alive_interval.reset();
                                 continue;
                             }
@@ -424,24 +539,25 @@ pub async fn process(
                                     properties: vec![]
                                 };
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, my_latency_ms, &player_registry, &join_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &config).await;
                                 // SO IT IS
-                                my_uuid = Some(result.uuid);
-                                my_entity_id = result.entity_id;
-                                player_name = Some(result.player_name);
-                                my_gamemode = result.gamemode;
+                                state.uuid = Some(result.uuid);
+                                state.entity_id = result.entity_id;
+                                state.name = Some(result.player_name);
+                                state.gamemode = result.gamemode;
                                 keep_alive_interval.reset();
                                 continue;
                             }
                         };
 
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
-                            if let Some((sent_id, sent_time)) = last_sent_keep_alive.take()
+                            if let Some((sent_id, sent_time)) = state.last_sent_keep_alive.take()
                                 && ka.id == sent_id
                             {
-                                my_latency_ms = sent_time.elapsed().as_millis() as u32;
-                                if let Some(uuid) = my_uuid {
-                                    ping_tx.send((uuid, my_latency_ms)).ok();
+                                state.latency_ms = sent_time.elapsed().as_millis() as u32;
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_latency(uuid, state.latency_ms).await;
+                                    ping_tx.send((uuid, state.latency_ms)).ok();
                                 }
                             }
                             continue;
@@ -449,26 +565,22 @@ pub async fn process(
 
                         if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
                             let slot = held.slot as u8;
-                            if let Some(uuid) = my_uuid {
+                            if let Some(uuid) = state.uuid {
                                 player_registry.update_held_slot(uuid, slot).await;
                             }
-                            my_held_item = -1;
+                            state.held_item = -1;
                             continue;
                         }
 
                         if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
                             match dig.status {
-                                0 => {
-                                    if my_gamemode == 1 {
-                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
-                                        block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
-                                    }
+                                0 if state.gamemode == 1 => {
+                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                    block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                 }
-                                2 => {
-                                    if my_gamemode == 0 {
-                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
-                                        block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
-                                    }
+                                2 if state.gamemode == 0 => {
+                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                    block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                 }
                                 _ => {}
                             }
@@ -479,7 +591,7 @@ pub async fn process(
                             if place.held_item_id == -1 || place.face == 255 {
                                 continue;
                             }
-                            if my_gamemode == 2 || my_gamemode == 3 {
+                            if state.gamemode == 2 || state.gamemode == 3 {
                                 continue;
                             }
                             let (tx, ty, tz): (i32, i32, i32) = match place.face {
@@ -492,7 +604,7 @@ pub async fn process(
                                 _ => continue
                             };
 
-                            if ty < 0 || ty > 255 {
+                            if !(0..=255).contains(&ty) {
                                 continue;
                             }
 
@@ -501,9 +613,9 @@ pub async fn process(
                                 continue;
                             }
 
-                            my_held_item = place.held_item_id;
-                            if let Some(uuid) = my_uuid {
-                                player_registry.update_held_item(uuid, my_held_item).await;
+                            state.held_item = place.held_item_id;
+                            if let Some(uuid) = state.uuid {
+                                player_registry.update_held_item(uuid, state.held_item).await;
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0)).await;
@@ -511,8 +623,13 @@ pub async fn process(
                             continue;
                         }
 
+                        if let Some(arm) = packet.as_any().downcast_ref::<ArmAnimation>() {
+                            anim_tx.send((state.entity_id, 0)).ok();
+                            continue;
+                        }
+
                         if let Some(chat) = packet.as_any().downcast_ref::<ChatMessage>() {
-                            if let Some(ref name) = player_name {
+                            if let Some(ref name) = state.name {
                                 if chat.message.len() > 100 { // FIXME: check the correct length
                                     continue;
                                 }
@@ -531,41 +648,139 @@ pub async fn process(
                         }
 
                         if let Some(pos) = packet.as_any().downcast_ref::<PlayerPosition>() {
-                            if let Some(uuid) = my_uuid
+                            if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
+                                if pos.on_ground && !p.on_ground && state.gamemode == 0 {
+                                    let fall_distance = p.y - pos.y;
+                                    if fall_distance > 3.0 {
+                                        let damage = (fall_distance - 3.0) as f32;
+                                        damage_player(
+                                            &mut framed,
+                                            &mut state.health,
+                                            &mut state.food,
+                                            &mut state.food_saturation,
+                                            &mut state.is_dead,
+                                            damage,
+                                            &player_registry,
+                                            uuid
+                                        ).await;
+                                    }
+                                }
                                 let moved = (pos.x - p.x).abs() > 0.01
                                     || (pos.y - p.y).abs() > 0.01
                                     || (pos.z - p.z).abs() > 0.01;
 
                                 if moved {
                                     player_registry.update_position(&uuid, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground).await;
-                                    pos_tx.send((uuid, my_entity_id, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground)).ok();
+                                    pos_tx.send((uuid, state.entity_id, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground)).ok();
                                 }
                             }
                             continue;
                         }
 
                         if let Some(look) = packet.as_any().downcast_ref::<PlayerLook>() {
-                            if let Some(uuid) = my_uuid
+                            if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
                                 player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
-                                pos_tx.send((uuid, my_entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
+                                pos_tx.send((uuid, state.entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
+                            }
+                            continue;
+                        }
+
+                        if let Some(status) = packet.as_any().downcast_ref::<ClientStatus>() {
+                            if status.action == 0 && state.is_dead {
+                                state.health = 20.0;
+                                state.food = 20;
+                                state.food_saturation = 5.0;
+                                state.is_dead = false;
+
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                                }
+
+                                send_packet(&mut framed, Respawn {
+                                    dimension: 0,
+                                    difficulty: config.world.difficulty,
+                                    gamemode: state.gamemode,
+                                    level_type: "flat".to_string()
+                                }).await;
+
+                                send_chunks(&mut framed, client_protocol).await;
+
+                                send_packet(&mut framed, PlayerPositionAndLook {
+                                    x: 0.5,
+                                    y: 5.0,
+                                    z: 0.5,
+                                    yaw: 90.0,
+                                    pitch: 0.0,
+                                    on_ground: false
+                                }).await;
+
+                                send_packet(&mut framed, UpdateHealth {
+                                    health: state.health,
+                                    food: state.food,
+                                    food_saturation: state.food_saturation
+                                }).await;
+                            }
+                            continue;
+                        }
+
+                        if let Some(action) = packet.as_any().downcast_ref::<EntityAction>() {
+                            if let Some(uuid) = state.uuid {
+                                let update = match action.action {
+                                    0 => Some((true, true)),   // sneaking on
+                                    1 => Some((true, false)),  // sneaking off
+                                    3 => Some((false, true)),  // sprinting on
+                                    4 => Some((false, false)), // sprinting off
+                                    _ => None,
+                                };
+
+                                if let Some((sneaking, value)) = update {
+                                    if sneaking {
+                                        state.is_sneaking = value;
+                                        player_registry.update_sneaking(uuid, value).await;
+                                    } else {
+                                        state.is_sprinting = value;
+                                        player_registry.update_sprinting(uuid, value).await;
+                                    }
+
+                                    if let Some(player) = player_registry.get(&uuid).await {
+                                        meta_tx.send((state.entity_id, player.entity_flags())).ok();
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
+                            if use_entity.action == 1 && state.gamemode != 3 {
+                                let players = player_registry.get_all().await;
+                                if let Some(target) = players.iter().find(|p| p.entity_id == use_entity.target_entity_id) {
+                                    if target.is_dead {
+                                        continue;
+                                    }
+                                    let new_health = (target.health - 0.0).max(0.0);
+                                    player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
+
+                                    dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                    anim_tx.send((use_entity.target_entity_id, 1)).ok();
+                                }
                             }
                             continue;
                         }
 
                         if let Some(pos_look) = packet.as_any().downcast_ref::<PlayerPositionAndLookIn>() {
-                            if let Some(uuid) = my_uuid {
+                            if let Some(uuid) = state.uuid {
                                 player_registry.update_position(&uuid, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground).await;
-                                pos_tx.send((uuid, my_entity_id, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground)).ok();
+                                pos_tx.send((uuid, state.entity_id, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground)).ok();
                             }
                             continue;
                         }
 
                         if let Some(og) = packet.as_any().downcast_ref::<PlayerOnGround>() {
-                            if let Some(uuid) = my_uuid
+                            if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
                                 player_registry.update_position(
@@ -589,22 +804,65 @@ pub async fn process(
                         continue;
                     }
                     Err(e) => {
-                        eprintln!("Error processing packet: {:?}", e);
+                        match e.kind() {
+                            std::io::ErrorKind::TimedOut |
+                            std::io::ErrorKind::ConnectionReset |
+                            std::io::ErrorKind::ConnectionAborted |
+                            std::io::ErrorKind::UnexpectedEof |
+                            std::io::ErrorKind::BrokenPipe => {
+                                // NO LOG
+                            }
+                            _ => eprintln!("Error processing packet: {:?}", e),
+                        }
                         break;
                     }
                 }
             }
         }
     }
-    if let Some(uuid) = my_uuid {
+    if let Some(uuid) = state.uuid {
         player_registry.remove(&uuid).await;
         join_tx
-            .send((Player::new(my_entity_id, uuid, String::new()), false))
+            .send((Player::new(state.entity_id, uuid, String::new()), false))
             .ok();
         println!(
             "Player left, online: {}",
             player_registry.get_online_count().await
         );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn damage_player(
+    framed: &mut Framed<TcpStream, Codec>,
+    health: &mut f32,
+    food: &mut i32,
+    food_saturation: &mut f32,
+    is_dead: &mut bool,
+    amount: f32,
+    player_registry: &Arc<PlayerRegistry>,
+    uuid: Uuid,
+) {
+    *health = (*health - amount).max(0.0);
+
+    if let Some(uuid) = Some(uuid) {
+        player_registry
+            .update_health(uuid, *health, *food, *food_saturation)
+            .await;
+    }
+
+    send_packet(
+        framed,
+        UpdateHealth {
+            health: *health,
+            food: *food,
+            food_saturation: *food_saturation,
+        },
+    )
+    .await;
+
+    if *health <= 0.0 {
+        *is_dead = true;
     }
 }
 
@@ -627,6 +885,23 @@ struct JoinResult {
     gamemode: u8,
 }
 
+async fn send_chunks(framed: &mut Framed<TcpStream, Codec>, client_protocol: i32) {
+    for cx in -2i32..=2 {
+        for cz in -2i32..=2 {
+            send_packet(
+                framed,
+                ChunkData {
+                    chunk_x: cx,
+                    chunk_z: cz,
+                    client_protocol,
+                },
+            )
+            .await;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
     profile: AuthProfile,
@@ -683,6 +958,17 @@ async fn make_player_join(
             },
         )
         .await;
+
+        let entries: Vec<(Uuid, i32)> = player_registry
+            .get_all()
+            .await
+            .iter()
+            .map(|p| (p.uuid, p.latency_ms as i32))
+            .collect();
+
+        if !entries.is_empty() {
+            send_packet(framed, BulkUpdateLatency { entries }).await;
+        }
     } else {
         send_packet(
             framed,
@@ -720,19 +1006,7 @@ async fn make_player_join(
     )
     .await;
 
-    for cx in -2i32..=2 {
-        for cz in -2i32..=2 {
-            send_packet(
-                framed,
-                ChunkData {
-                    chunk_x: cx,
-                    chunk_z: cz,
-                    client_protocol,
-                },
-            )
-            .await;
-        }
-    }
+    send_chunks(framed, client_protocol).await;
 
     send_packet(
         framed,
@@ -777,6 +1051,16 @@ async fn make_player_join(
         )
         .await
     }
+
+    send_packet(
+        framed,
+        UpdateHealth {
+            health: 20.0,
+            food: 20,
+            food_saturation: 5.0,
+        },
+    )
+    .await;
 
     join_tx.send((player, true)).ok();
 

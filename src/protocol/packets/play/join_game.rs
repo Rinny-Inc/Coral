@@ -1,6 +1,4 @@
-use std::io::Error;
-
-use crate::protocol::packets::Packet;
+use crate::protocol::packets::PacketOut;
 
 // 0x01
 #[derive(Debug)]
@@ -14,14 +12,7 @@ pub struct JoinGame {
     pub reduced_debug_info: bool,
 }
 
-impl Packet for JoinGame {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for JoinGame {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x01);
         writer.write_i32(self.entity_id);
@@ -32,9 +23,5 @@ impl Packet for JoinGame {
         writer.write_string(&self.level_type);
         writer.write_bool(self.reduced_debug_info);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

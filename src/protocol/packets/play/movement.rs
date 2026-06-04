@@ -1,6 +1,4 @@
-use std::io::Error;
-
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{packets::PacketIn, reader::Reader};
 
 #[derive(Debug)]
 pub struct PlayerPosition {
@@ -32,7 +30,7 @@ pub struct PlayerOnGround {
     pub on_ground: bool,
 }
 
-impl Packet for PlayerPosition {
+impl PacketIn for PlayerPosition {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -45,16 +43,12 @@ impl Packet for PlayerPosition {
         Ok(PlayerPosition { x, y, z, on_ground })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
 
-impl Packet for PlayerLook {
+impl PacketIn for PlayerLook {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -70,16 +64,12 @@ impl Packet for PlayerLook {
         })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
 
-impl Packet for PlayerPositionAndLookIn {
+impl PacketIn for PlayerPositionAndLookIn {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -101,16 +91,12 @@ impl Packet for PlayerPositionAndLookIn {
         })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
 
-impl Packet for PlayerOnGround {
+impl PacketIn for PlayerOnGround {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -118,10 +104,6 @@ impl Packet for PlayerOnGround {
         let mut reader = Reader::new(buf);
         let on_ground = reader.read_bool();
         Ok(PlayerOnGround { on_ground })
-    }
-
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

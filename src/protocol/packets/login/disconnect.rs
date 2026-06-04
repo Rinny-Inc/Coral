@@ -1,6 +1,4 @@
-use std::io::Error;
-
-use crate::protocol::{packets::Packet, writer::Writer};
+use crate::protocol::{packets::PacketOut, writer::Writer};
 
 #[derive(Debug)]
 pub struct LoginDisconnect {
@@ -27,33 +25,17 @@ impl PlayDisconnect {
     }
 }
 
-impl Packet for LoginDisconnect {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self> {
-        Err(Error::other("Unexpected call"))
-    }
-
+impl PacketOut for LoginDisconnect {
     fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
         writer.write_varint(0x00);
         writer.write_string(&self.reason);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
-impl Packet for PlayDisconnect {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self> {
-        Err(Error::other("Unexpected call"))
-    }
-
+impl PacketOut for PlayDisconnect {
     fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
         writer.write_varint(0x40);
         writer.write_string(&self.reason);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

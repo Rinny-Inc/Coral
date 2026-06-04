@@ -1,6 +1,7 @@
-use std::io::Error;
-
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct PlayerDig {
@@ -39,7 +40,7 @@ pub struct BlockChange {
     pub block_metadata: u8,
 }
 
-impl Packet for PlayerDig {
+impl PacketIn for PlayerDig {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -60,15 +61,11 @@ impl Packet for PlayerDig {
         })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
-impl Packet for PlayerBlockPlacement {
+impl PacketIn for PlayerBlockPlacement {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -107,15 +104,11 @@ impl Packet for PlayerBlockPlacement {
         })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
-impl Packet for HeldItemChange {
+impl PacketIn for HeldItemChange {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -125,21 +118,11 @@ impl Packet for HeldItemChange {
         Ok(HeldItemChange { slot })
     }
 
-    fn encode(&self, _writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
-        Err(Error::other("Unexpected Call!"))
-    }
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
-impl Packet for BlockChange {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Err(Error::other("Unexpected Call!"))
-    }
-
+impl PacketOut for BlockChange {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x23);
 
@@ -151,9 +134,5 @@ impl Packet for BlockChange {
 
         writer.write_varint(self.block_id << 4 | self.block_metadata as i32);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

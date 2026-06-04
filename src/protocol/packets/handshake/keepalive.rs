@@ -1,10 +1,13 @@
-use crate::protocol::{packets::Packet, reader::Reader};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct KeepAlive {
     pub id: i32,
 }
-impl Packet for KeepAlive {
+impl PacketIn for KeepAlive {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -14,13 +17,14 @@ impl Packet for KeepAlive {
         Ok(Self { id })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for KeepAlive {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x00);
         writer.write_varint(self.id);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

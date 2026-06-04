@@ -2,7 +2,11 @@ use std::io::{Error, ErrorKind, Result};
 
 use serde_json::json;
 
-use crate::protocol::{packets::Packet, reader::Reader, writer::Writer};
+use crate::protocol::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+    writer::Writer,
+};
 
 #[derive(Debug)]
 pub struct Request;
@@ -78,7 +82,7 @@ impl Response {
         }
     }
 }
-impl Packet for Response {
+impl PacketIn for Response {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
         Self: Sized,
@@ -88,18 +92,19 @@ impl Packet for Response {
         Ok(Response { json })
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for Response {
     fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
         writer.write_varint(0x00);
         writer.write_string(&self.json);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for Ping {
+impl PacketIn for Ping {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self>
     where
         Self: Sized,
@@ -117,33 +122,26 @@ impl Packet for Ping {
         Ok(Ping { time })
     }
 
-    fn encode(&self, writer: &mut Writer) -> Result<()> {
-        writer.write_long(self.time);
-        Ok(())
-    }
-
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
 }
-
-impl Packet for Pong {
-    fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
-        Err(Error::other("Unexpected call"))
+impl PacketOut for Ping {
+    fn encode(&self, writer: &mut Writer) -> Result<()> {
+        writer.write_long(self.time);
+        Ok(())
     }
+}
 
+impl PacketOut for Pong {
     fn encode(&self, writer: &mut Writer) -> Result<()> {
         writer.write_varint(0x01);
         writer.write_long(self.time);
         Ok(())
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
-impl Packet for Request {
+impl PacketIn for Request {
     fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
         let reader = Reader::new(buf);
         if reader.has_remaining() {
@@ -156,12 +154,13 @@ impl Packet for Request {
         Ok(Request)
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+impl PacketOut for Request {
     fn encode(&self, writer: &mut Writer) -> Result<()> {
         writer.write_varint(0x00);
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
