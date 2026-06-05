@@ -56,7 +56,7 @@ impl CommandDispatcher {
         let commands = self.commands.read().await;
         match commands.get(&name) {
             Some(cmd) => (cmd.handler)(ctx).await,
-            None => CommandResult::Error(format!("Unknown command!")),
+            None => CommandResult::Error("Unknown command!".to_string()),
         }
     }
 

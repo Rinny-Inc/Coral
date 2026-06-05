@@ -473,7 +473,7 @@ pub async fn process(
 
                         // TODO: connection throttled
                         if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                            kick(&mut framed, "Unsupported version. Use 1.7.x or 1.8.x").await;
+                            kick(&mut framed, "Unsupported version. Use 1.7.10 or 1.8.9").await;
                             break;
                         }
                         if player_registry.get_online_count().await > config.server.max_player {
@@ -524,7 +524,7 @@ pub async fn process(
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &config).await;
                                 // THIS IS RIDICULOUS
                                 state.uuid = Some(result.uuid);
                                 state.entity_id = result.entity_id;
@@ -546,7 +546,7 @@ pub async fn process(
                                     properties: vec![]
                                 };
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &config).await;
                                 // SO IT IS
                                 state.uuid = Some(result.uuid);
                                 state.entity_id = result.entity_id;
@@ -687,8 +687,7 @@ pub async fn process(
                         }
                         if let Some(tab) = packet.as_any().downcast_ref::<TabComplete>() {
                             let text = &tab.text;
-                            let matches: Vec<String> = if text.starts_with('/') {
-                                let partial = &text[1..];
+                            let matches: Vec<String> = if let Some(partial) = text.strip_prefix('/') {
                                 dispatcher.completions(partial).await
                             } else {
                                 player_registry.get_all().await
@@ -891,13 +890,21 @@ pub async fn process(
             }
         }
     }
-    if let Some(uuid) = state.uuid {
+    if let (Some(uuid), Some(name)) = (state.uuid, state.name) {
         player_registry.remove(&uuid).await;
         join_tx
             .send((Player::new(state.entity_id, uuid, String::new()), false))
             .ok();
+        if player_registry.players.read().await.is_empty() {
+            let leave_msg = format!(
+                "{{\"text\":\"{} left the game\",\"color\":\"yellow\"}}",
+                name
+            );
+            chat_tx.send(leave_msg).ok();
+        }
         println!(
-            "Player left, online: {}",
+            "{} left the game; Online: {}",
+            name,
             player_registry.get_online_count().await
         );
     }
@@ -981,6 +988,7 @@ async fn make_player_join(
     latency: u32,
     player_registry: &Arc<PlayerRegistry>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
+    chat_tx: &Arc<broadcast::Sender<String>>,
     config: &Config,
 ) -> JoinResult {
     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
@@ -1095,8 +1103,14 @@ async fn make_player_join(
     let player = Player::new(entity_id, uuid, profile.username.clone());
     player_registry.add(player.clone()).await;
 
+    let join_msg = format!(
+        "{{\"text\":\"{} joined the game\",\"color\":\"yellow\"}}",
+        profile.username
+    );
+    chat_tx.send(join_msg).ok();
+
     println!(
-        "Player joined: {}, online: {}",
+        "{} joined the game; Online: {}",
         profile.username,
         player_registry.get_online_count().await
     );
