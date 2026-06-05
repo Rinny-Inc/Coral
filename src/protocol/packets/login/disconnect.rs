@@ -1,4 +1,7 @@
-use crate::protocol::{packets::PacketOut, writer::Writer};
+use crate::protocol::{
+    packets::{PacketOut, play::chat::builder::ChatBuilder},
+    writer::Writer,
+};
 
 #[derive(Debug)]
 pub struct LoginDisconnect {
@@ -13,14 +16,14 @@ pub struct PlayDisconnect {
 impl LoginDisconnect {
     pub fn new(reason: &str) -> Self {
         Self {
-            reason: format!("{{\"text\":\"{}\"}}", reason),
+            reason: ChatBuilder::plain_json(&format!("{}", reason)),
         }
     }
 }
 impl PlayDisconnect {
     pub fn new(reason: &str) -> Self {
         Self {
-            reason: format!("{{\"text\":\"{}\"}}", reason),
+            reason: ChatBuilder::plain_json(&format!("{}", reason)),
         }
     }
 }

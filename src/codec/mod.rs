@@ -4,15 +4,14 @@ use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use futures::SinkExt;
-use rsa::RsaPrivateKey;
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
-use crate::command::{CommandContext, CommandDispatcher, CommandResult};
+use crate::command::{CommandContext, CommandResult};
 use crate::config::Config;
 use crate::protocol::auth::{AuthProfile, authenticate, compute_server_hash};
 use crate::protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token};
@@ -23,12 +22,14 @@ use crate::protocol::packets::play::PluginMessage;
 use crate::protocol::packets::play::block::{
     BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
 };
+use crate::protocol::packets::play::chat::builder::ChatBuilder;
+use crate::protocol::packets::play::chat::builder::ChatColor;
 use crate::protocol::packets::play::chat::{
     ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
 };
 use crate::protocol::packets::play::entity::{
     ArmAnimation, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook, EntityMetadata,
-    EntityTeleport, EntityVelocity, SpawnPlayer, UseEntity,
+    EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer, UseEntity,
 };
 use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
 use crate::protocol::packets::play::inventory::{ClickWindow, CloseWindow, ConfirmTransaction};
@@ -53,16 +54,13 @@ use crate::protocol::{
     reader::Reader,
     writer::Writer,
 };
-use crate::server::ops::OpsFile;
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
-use crate::world::blocks::{Block, WorldBlocks};
+use crate::world::blocks::Block;
 use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
-use crate::{
-    AnimationUpdate, BlockUpdate, DamageEvent, GamemodeUpdate, JoinLeave, MetadataUpdate,
-    PingUpdate, PositionUpdate, ServerContext,
-};
+use crate::{JoinLeave, ServerContext};
+
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
@@ -188,7 +186,6 @@ struct PlayerState {
     is_sneaking: bool,
     is_sprinting: bool,
     latency_ms: u32,
-    food_timer: u8,
     name: Option<String>,
     pending_username: Option<String>,
     keep_alive_count: i32,
@@ -208,7 +205,6 @@ impl PlayerState {
             is_sneaking: false,
             is_sprinting: false,
             latency_ms: 0,
-            food_timer: 0,
             name: None,
             pending_username: None,
             keep_alive_count: 0,
@@ -232,11 +228,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         anim_tx,
         meta_tx,
         dmg_tx,
+        item_tx,
         world_blocks,
         player_registry,
         private_key,
         public_key_der,
         ops,
+        whitelist,
     } = ctx;
     let codec = Codec {
         registry: packet_registry,
@@ -253,6 +251,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut anim_rx = anim_tx.subscribe();
     let mut meta_rx = meta_tx.subscribe();
     let mut dmg_rx = dmg_tx.subscribe();
+    let mut item_rx = item_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -398,6 +397,22 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     }
                 }
             }
+            Ok((eid, x, y, z)) = item_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, SpawnObject {
+                    entity_id: eid,
+                    object_type: 2, // itemstack
+                    x, y, z,
+                    yaw: 0,
+                    pitch: 0,
+                    data: 1, // non zero to send velocity
+                    vx: 0,
+                    vy: 100,
+                    vz: 0,
+                }).await;
+            }
             Ok(message) = chat_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
@@ -485,10 +500,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             kick(&mut framed, "Server is full!").await;
                             break;
                         }
-                        // TODO: is banned
-                        if config.server.whitelisted { // check if the uuid is whitelisted
-                            // TODO
-                        }
                         // TODO: login from another location
 
 
@@ -527,6 +538,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
                                 };
 
+                                // todo check if banned
+                                if config.server.whitelisted {
+                                    let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
+                                    if !whitelist.read().await.is_whitelisted(uuid) {
+                                        kick(&mut framed, "You're not whitelisted on this server!").await;
+                                        break;
+                                    }
+                                }
+
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
                                 let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &config).await;
@@ -544,6 +564,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     &Uuid::NAMESPACE_DNS,
                                     format!("OfflinePlayer:{}", login_start.username).as_bytes(),
                                 );
+
+                                if config.server.whitelisted
+                                    && !whitelist.read().await.is_whitelisted(uuid)
+                                {
+                                    kick(&mut framed, "You're not whitelisted on this server!").await;
+                                    break;
+                                }
 
                                 let profile = AuthProfile {
                                     uuid: uuid.to_string(),
@@ -591,8 +618,25 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                 }
                                 2 if state.gamemode == 0 => {
+                                    let block = world_blocks.get(dig.x, dig.y, dig.z).await;
                                     world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
-                                    block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                    block_tx.send((
+                                        dig.x,
+                                        dig.y as i32,
+                                        dig.z,
+                                        0,
+                                        0)
+                                    ).ok();
+
+                                    if !block.is_air() && block.id > 0 {
+                                        let drop_eid = next_entity_id();
+                                        item_tx.send((
+                                            drop_eid,
+                                            dig.x as f64 + 0.5,
+                                            dig.y as f64 + 0.5,
+                                            dig.z as f64 + 0.5)
+                                        ).ok();
+                                    }
                                 }
                                 _ => {}
                             }
@@ -657,17 +701,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                 match dispatcher.dispatch(ctx).await {
                                     CommandResult::Success(msg) => {
-                                        send_packet(&mut framed, ChatMessageOut::from_json(
-                                            &format!("{{\"text\":\"{}\"}}", msg.replace('"', "\\\""))
-                                        )).await;
+                                        send_packet(&mut framed, ChatBuilder::new(&msg).into_packet()).await;
                                     }
                                     CommandResult::Error(msg) => {
-                                        send_packet(&mut framed, ChatMessageOut::from_json(
-                                            &format!("{{\"text\":\"{}\",\"color\":\"red\"}}", msg.replace('"', "\\\""))
-                                        )).await;
+                                        send_packet(&mut framed, ChatBuilder::new(&msg).color(ChatColor::Red).into_packet()).await;
                                     }
                                     CommandResult::Broadcast(msg) => {
-                                        chat_tx.send(format!("{{\"text\":\"{}\"}}", msg.replace('"', "\\\""))).ok();
+                                        chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
                                     }
                                     CommandResult::None => {}
                                 }
@@ -677,15 +717,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 if chat.message.len() > 100 { // FIXME: check the correct length
                                     continue;
                                 }
-
-                                let formatted = config.chat.format.replace("{username}", name).replace("{message}", &chat.message);
-
-                                println!("[CHAT] {}", formatted);
-
-                                let json = format!(
-                                    "{{\"text\":\"{}\"}}",
-                                    formatted.replace('"', "\\\"")
-                                );
+                                let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
+                                //println!("[CHAT] {}", json);
                                 chat_tx.send(json).ok();
                             }
                             continue;
@@ -904,11 +937,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             ))
             .ok();
         if !player_registry.players.read().await.is_empty() {
-            let leave_msg = format!(
-                "{{\"text\":\"{} left the game\",\"color\":\"yellow\"}}",
-                name
-            );
-            chat_tx.send(leave_msg).ok();
+            chat_tx
+                .send(ChatBuilder::colored_json(
+                    &format!("{} left the game", name),
+                    ChatColor::Yellow,
+                ))
+                .ok();
         }
         println!(
             "{} left the game; Online: {}",
@@ -1116,11 +1150,12 @@ async fn make_player_join(
     );
     player_registry.add(player.clone()).await;
 
-    let join_msg = format!(
-        "{{\"text\":\"{} joined the game\",\"color\":\"yellow\"}}",
-        profile.username
-    );
-    chat_tx.send(join_msg).ok();
+    chat_tx
+        .send(ChatBuilder::colored_json(
+            &format!("{} joined the game", profile.username),
+            ChatColor::Yellow,
+        ))
+        .ok();
 
     println!(
         "{} joined the game; Online: {}",

@@ -315,3 +315,38 @@ impl PacketOut for EntityMetadata {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct SpawnObject {
+    pub entity_id: i32,
+    pub object_type: u8,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: u8,
+    pub pitch: u8,
+    pub data: i32,
+    pub vx: i16,
+    pub vy: i16,
+    pub vz: i16,
+}
+
+impl PacketOut for SpawnObject {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x0E);
+        writer.write_varint(self.entity_id);
+        writer.write_byte(self.object_type);
+        writer.write_i32((self.x * 32.0) as i32);
+        writer.write_i32((self.y * 32.0) as i32);
+        writer.write_i32((self.z * 32.0) as i32);
+        writer.write_byte(self.pitch);
+        writer.write_byte(self.yaw);
+        writer.write_i32(self.data);
+        if self.data != 0 {
+            writer.write_i16(self.vx);
+            writer.write_i16(self.vy);
+            writer.write_i16(self.vz);
+        }
+        Ok(())
+    }
+}

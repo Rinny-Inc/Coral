@@ -3,6 +3,8 @@ use crate::protocol::{
     reader::Reader,
 };
 
+pub mod builder;
+
 #[derive(Debug)]
 pub struct ChatMessage {
     pub message: String,

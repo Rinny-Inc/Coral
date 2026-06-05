@@ -13,7 +13,7 @@ use crate::{
     command::{CommandDispatcher, version_command},
     config::Config,
     protocol::encryption::generate_rsa_key,
-    server::{ops::OpsFile, player::Player, registry::PlayerRegistry},
+    server::{ops::OpsFile, player::Player, registry::PlayerRegistry, whitelist::WhitelistFile},
     world::blocks::WorldBlocks,
 };
 
@@ -32,6 +32,7 @@ pub type BlockUpdate = (i32, i32, i32, i32, u8);
 pub type AnimationUpdate = (i32, u8);
 pub type MetadataUpdate = (i32, u8);
 pub type DamageEvent = (Uuid, f32, i32, f32, i32);
+pub type ItemDrop = (i32, f64, f64, f64);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -49,10 +50,12 @@ pub struct ServerContext {
     anim_tx: Arc<broadcast::Sender<AnimationUpdate>>,
     meta_tx: Arc<broadcast::Sender<MetadataUpdate>>,
     dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
+    item_tx: Arc<broadcast::Sender<ItemDrop>>,
     world_blocks: Arc<WorldBlocks>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
     ops: Arc<RwLock<OpsFile>>,
+    whitelist: Arc<RwLock<WhitelistFile>>,
 }
 
 #[tokio::main]
@@ -92,6 +95,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ops = Arc::new(RwLock::new(OpsFile::load()));
     println!("Loaded {} opped players!", ops.read().await.entries.len());
 
+    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
+    println!(
+        "Loaded {} whitelisted players!",
+        whitelist.read().await.entries.len()
+    );
+
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
         server_icon: Arc::new(server_icon),
@@ -106,11 +115,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         anim_tx: Arc::new(broadcast::channel::<AnimationUpdate>(100).0),
         meta_tx: Arc::new(broadcast::channel::<MetadataUpdate>(100).0),
         dmg_tx: Arc::new(broadcast::channel::<DamageEvent>(100).0),
+        item_tx: Arc::new(broadcast::channel::<ItemDrop>(1000).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
         ops,
+        whitelist,
     };
 
     loop {
