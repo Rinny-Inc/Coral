@@ -51,3 +51,52 @@ impl PacketOut for ChatMessageOut {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct TabComplete {
+    pub text: String,
+    pub has_position: bool,
+    pub position: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct TabCompleteResponse {
+    pub matches: Vec<String>,
+}
+
+impl PacketIn for TabComplete {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let text = reader.read_string();
+        let has_position = reader.read_bool();
+        let position = if has_position {
+            Some(reader.read_long())
+        } else {
+            None
+        };
+
+        Ok(TabComplete {
+            text,
+            has_position,
+            position,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl PacketOut for TabCompleteResponse {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x3A);
+        writer.write_varint(self.matches.len() as i32);
+        for m in &self.matches {
+            writer.write_string(m);
+        }
+        Ok(())
+    }
+}

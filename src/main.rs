@@ -2,16 +2,21 @@ use std::{io::ErrorKind, sync::Arc};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use protocol::packets::PacketRegistry;
-use tokio::{net::TcpListener, sync::broadcast};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, broadcast},
+};
 use uuid::Uuid;
 
 use crate::{
+    command::{CommandDispatcher, version_command},
     protocol::encryption::generate_rsa_key,
-    server::{player::Player, registry::PlayerRegistry},
+    server::{ops::OpsFile, player::Player, registry::PlayerRegistry},
     world::blocks::WorldBlocks,
 };
 
 mod codec;
+pub mod command;
 pub mod config;
 mod protocol;
 pub mod server;
@@ -87,16 +92,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dmg_tx = Arc::new(dmg_tx);
 
     let world_blocks = Arc::new(WorldBlocks::new());
+    let command_dispatcher = Arc::new(CommandDispatcher::new());
+    command_dispatcher.register(version_command()).await;
 
     let (private_key, public_key_der) = generate_rsa_key();
     let private_key = Arc::new(private_key);
     let public_key_der = Arc::new(public_key_der);
+
+    let ops = Arc::new(RwLock::new(OpsFile::load()));
+    println!("Loaded {} opped players!", ops.read().await.entries.len());
 
     loop {
         let (socket, _) = listener.accept().await?;
         let registry = packet_registry.clone();
         let server_icon = server_icon.clone();
         let config = config.clone();
+        let dispatcher = command_dispatcher.clone();
 
         let chat_tx = chat_tx.clone();
         let join_tx = join_tx.clone();
@@ -113,12 +124,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let private_key = private_key.clone();
         let public_key_der = public_key_der.clone();
 
+        let ops = ops.clone();
+
         tokio::spawn(async move {
             codec::process(
                 socket,
                 registry,
                 server_icon,
                 config,
+                dispatcher,
                 chat_tx,
                 join_tx,
                 pos_tx,
@@ -132,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 player_registry,
                 private_key,
                 public_key_der,
+                ops,
             )
             .await;
         });

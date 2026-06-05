@@ -7,6 +7,7 @@ pub mod block;
 pub mod chat;
 pub mod entity;
 pub mod game;
+pub mod inventory;
 pub mod join_game;
 pub mod movement;
 pub mod player_list;

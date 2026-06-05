@@ -6,12 +6,13 @@ use bytes::{Buf, Bytes, BytesMut};
 use futures::SinkExt;
 use rsa::RsaPrivateKey;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
+use crate::command::{CommandContext, CommandDispatcher, CommandResult};
 use crate::config::Config;
 use crate::protocol::auth::{AuthProfile, authenticate, compute_server_hash};
 use crate::protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token};
@@ -22,12 +23,15 @@ use crate::protocol::packets::play::PluginMessage;
 use crate::protocol::packets::play::block::{
     BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
 };
-use crate::protocol::packets::play::chat::{ChatMessage, ChatMessageOut};
+use crate::protocol::packets::play::chat::{
+    ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
+};
 use crate::protocol::packets::play::entity::{
     ArmAnimation, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook, EntityMetadata,
     EntityTeleport, EntityVelocity, SpawnPlayer, UseEntity,
 };
 use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
+use crate::protocol::packets::play::inventory::{ClickWindow, CloseWindow, ConfirmTransaction};
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
 };
@@ -49,6 +53,7 @@ use crate::protocol::{
     reader::Reader,
     writer::Writer,
 };
+use crate::server::ops::OpsFile;
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
 use crate::world::blocks::{Block, WorldBlocks};
@@ -218,6 +223,7 @@ pub async fn process(
     registry: Arc<PacketRegistry>,
     server_icon: Arc<Option<String>>,
     config: Arc<Config>,
+    dispatcher: Arc<CommandDispatcher>,
     chat_tx: Arc<broadcast::Sender<String>>,
     join_tx: Arc<broadcast::Sender<JoinLeave>>,
     pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
@@ -231,6 +237,7 @@ pub async fn process(
     player_registry: Arc<PlayerRegistry>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
+    ops: Arc<RwLock<OpsFile>>,
 ) {
     let codec = Codec {
         registry: registry.clone(),
@@ -629,6 +636,38 @@ pub async fn process(
                         }
 
                         if let Some(chat) = packet.as_any().downcast_ref::<ChatMessage>() {
+                            if chat.message.starts_with('/') {
+                                let args: Vec<String> = chat.message[1..]
+                                                            .split_whitespace()
+                                                            .map(|s| s.to_string())
+                                                            .collect();
+                                if args.is_empty() {
+                                    continue;
+                                }
+
+                                let ctx = CommandContext {
+                                    sender: state.name.clone().unwrap_or_default(),
+                                    args
+                                };
+
+                                match dispatcher.dispatch(ctx).await {
+                                    CommandResult::Success(msg) => {
+                                        send_packet(&mut framed, ChatMessageOut::from_json(
+                                            &format!("{{\"text\":\"{}\"}}", msg.replace('"', "\\\""))
+                                        )).await;
+                                    }
+                                    CommandResult::Error(msg) => {
+                                        send_packet(&mut framed, ChatMessageOut::from_json(
+                                            &format!("{{\"text\":\"{}\",\"color\":\"red\"}}", msg.replace('"', "\\\""))
+                                        )).await;
+                                    }
+                                    CommandResult::Broadcast(msg) => {
+                                        chat_tx.send(format!("{{\"text\":\"{}\"}}", msg.replace('"', "\\\""))).ok();
+                                    }
+                                    CommandResult::None => {}
+                                }
+                                continue;
+                            }
                             if let Some(ref name) = state.name {
                                 if chat.message.len() > 100 { // FIXME: check the correct length
                                     continue;
@@ -644,6 +683,24 @@ pub async fn process(
                                 );
                                 chat_tx.send(json).ok();
                             }
+                            continue;
+                        }
+                        if let Some(tab) = packet.as_any().downcast_ref::<TabComplete>() {
+                            let text = &tab.text;
+                            let matches: Vec<String> = if text.starts_with('/') {
+                                let partial = &text[1..];
+                                dispatcher.completions(partial).await
+                            } else {
+                                player_registry.get_all().await
+                                    .iter()
+                                    .filter(|p| p.username.to_lowercase().starts_with(&text.to_lowercase()))
+                                    .map(|p| p.username.clone())
+                                    .collect()
+                            };
+
+                            send_packet(&mut framed, TabCompleteResponse {
+                                matches
+                            }).await;
                             continue;
                         }
 
@@ -686,6 +743,20 @@ pub async fn process(
                                 player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
                                 pos_tx.send((uuid, state.entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
                             }
+                            continue;
+                        }
+
+                        if let Some(close) = packet.as_any().downcast_ref::<CloseWindow>() {
+                            // TODO
+                            continue;
+                        }
+
+                        if let Some(click) = packet.as_any().downcast_ref::<ClickWindow>() {
+                            send_packet(&mut framed, ConfirmTransaction {
+                                window_id: click.window_id,
+                                action_number: click.action_number,
+                                accepted: true
+                            }).await;
                             continue;
                         }
 

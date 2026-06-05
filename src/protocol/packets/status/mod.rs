@@ -44,38 +44,24 @@ impl Response {
                 })
             })
             .collect();
-        let json = if let Some(icon) = favicon {
-            json!({
-                "version": {
-                    "name": "Coral 1.7.x/1.8.x",
-                    "protocol": protocol
-                },
-                "players": {
-                    "max": max,
-                    "online": online,
-                    "sample": sample_json
-                },
-                "description": {
-                    "text": motd
-                },
-                "favicon": icon
-            })
-        } else {
-            json!({
-                "version": {
-                    "name": "Coral 1.7.x/1.8.x",
-                    "protocol": protocol
-                },
-                "players": {
-                    "max": max,
-                    "online": online,
-                    "sample": sample_json
-                },
-                "description": {
-                    "text": motd
-                }
-            })
-        };
+        let mut json = json!({
+            "version": {
+                "name": "Coral 1.8.9",
+                "protocol": protocol
+            },
+            "players": {
+                "max": max,
+                "online": online,
+                "sample": sample_json
+            },
+            "description": {
+                "text": motd
+            }
+        });
+
+        if let Some(icon) = favicon {
+            json["favicon"] = json!(icon);
+        }
 
         Self {
             json: json.to_string(),

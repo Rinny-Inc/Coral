@@ -34,7 +34,7 @@ pub struct PacketRegistry {
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(19); // TODO: add 1 for every new packets
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(22); // TODO: add 1 for every new packets
 
         handlers.insert(
             PacketKey {
@@ -157,6 +157,13 @@ impl PacketRegistry {
         handlers.insert(
             PacketKey {
                 state: EnumProtocol::Play,
+                id: 0x14,
+            },
+            |buf| play::chat::TabComplete::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
+        );
+        handlers.insert(
+            PacketKey {
+                state: EnumProtocol::Play,
                 id: 0x16,
             },
             |buf| play::game::ClientStatus::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
@@ -188,6 +195,24 @@ impl PacketRegistry {
                 id: 0x0B,
             },
             |buf| play::entity::EntityAction::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
+        );
+        handlers.insert(
+            PacketKey {
+                state: EnumProtocol::Play,
+                id: 0x0D,
+            },
+            |buf| {
+                play::inventory::CloseWindow::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>)
+            },
+        );
+        handlers.insert(
+            PacketKey {
+                state: EnumProtocol::Play,
+                id: 0x0E,
+            },
+            |buf| {
+                play::inventory::ClickWindow::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>)
+            },
         );
 
         Self { handlers }
