@@ -61,7 +61,7 @@ use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
 use crate::{
     AnimationUpdate, BlockUpdate, DamageEvent, GamemodeUpdate, JoinLeave, MetadataUpdate,
-    PingUpdate, PositionUpdate,
+    PingUpdate, PositionUpdate, ServerContext,
 };
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
@@ -217,30 +217,29 @@ impl PlayerState {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn process(
-    socket: TcpStream,
-    registry: Arc<PacketRegistry>,
-    server_icon: Arc<Option<String>>,
-    config: Arc<Config>,
-    dispatcher: Arc<CommandDispatcher>,
-    chat_tx: Arc<broadcast::Sender<String>>,
-    join_tx: Arc<broadcast::Sender<JoinLeave>>,
-    pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
-    gm_tx: Arc<broadcast::Sender<GamemodeUpdate>>,
-    ping_tx: Arc<broadcast::Sender<PingUpdate>>,
-    block_tx: Arc<broadcast::Sender<BlockUpdate>>,
-    anim_tx: Arc<broadcast::Sender<AnimationUpdate>>,
-    meta_tx: Arc<broadcast::Sender<MetadataUpdate>>,
-    dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
-    world_blocks: Arc<WorldBlocks>,
-    player_registry: Arc<PlayerRegistry>,
-    private_key: Arc<RsaPrivateKey>,
-    public_key_der: Arc<Vec<u8>>,
-    ops: Arc<RwLock<OpsFile>>,
-) {
+pub async fn process(socket: TcpStream, ctx: ServerContext) {
+    let ServerContext {
+        packet_registry,
+        server_icon,
+        config,
+        dispatcher,
+        chat_tx,
+        join_tx,
+        pos_tx,
+        gm_tx,
+        ping_tx,
+        block_tx,
+        anim_tx,
+        meta_tx,
+        dmg_tx,
+        world_blocks,
+        player_registry,
+        private_key,
+        public_key_der,
+        ops,
+    } = ctx;
     let codec = Codec {
-        registry: registry.clone(),
+        registry: packet_registry,
         state: EnumProtocol::Handshaking,
         encryption: None,
         decrypted_buf: BytesMut::new(),
@@ -346,12 +345,18 @@ pub async fn process(
                         entity_id: player.entity_id,
                         uuid: player.uuid,
                         username: player.username.clone(),
+                        properties: player.properties.clone(),
                         x: player.x,
                         y: player.y,
                         z: player.z,
                         yaw: 90.0,
                         pitch: 0.0,
                         current_item: 0
+                    }).await;
+
+                    send_packet(&mut framed, EntityMetadata {
+                        entity_id: player.entity_id,
+                        flags: 0x00
                     }).await;
                 }
             }
@@ -630,7 +635,7 @@ pub async fn process(
                             continue;
                         }
 
-                        if let Some(arm) = packet.as_any().downcast_ref::<ArmAnimation>() {
+                        if packet.as_any().downcast_ref::<ArmAnimation>().is_some() {
                             anim_tx.send((state.entity_id, 0)).ok();
                             continue;
                         }
@@ -745,7 +750,7 @@ pub async fn process(
                             continue;
                         }
 
-                        if let Some(close) = packet.as_any().downcast_ref::<CloseWindow>() {
+                        if packet.as_any().downcast_ref::<CloseWindow>().is_some() {
                             // TODO
                             continue;
                         }
@@ -893,9 +898,12 @@ pub async fn process(
     if let (Some(uuid), Some(name)) = (state.uuid, state.name) {
         player_registry.remove(&uuid).await;
         join_tx
-            .send((Player::new(state.entity_id, uuid, String::new()), false))
+            .send((
+                Player::new(state.entity_id, uuid, String::new(), vec![]),
+                false,
+            ))
             .ok();
-        if player_registry.players.read().await.is_empty() {
+        if !player_registry.players.read().await.is_empty() {
             let leave_msg = format!(
                 "{{\"text\":\"{} left the game\",\"color\":\"yellow\"}}",
                 name
@@ -1100,7 +1108,12 @@ async fn make_player_join(
     )
     .await;
 
-    let player = Player::new(entity_id, uuid, profile.username.clone());
+    let player = Player::new(
+        entity_id,
+        uuid,
+        profile.username.clone(),
+        profile.properties.clone(),
+    );
     player_registry.add(player.clone()).await;
 
     let join_msg = format!(
@@ -1126,6 +1139,7 @@ async fn make_player_join(
                 entity_id: p.entity_id,
                 uuid: p.uuid,
                 username: p.username.clone(),
+                properties: p.properties.clone(),
                 x: p.x,
                 y: p.y,
                 z: p.z,
@@ -1136,6 +1150,15 @@ async fn make_player_join(
         )
         .await
     }
+
+    send_packet(
+        framed,
+        EntityMetadata {
+            entity_id: player.entity_id,
+            flags: 0x00,
+        },
+    )
+    .await;
 
     send_packet(
         framed,

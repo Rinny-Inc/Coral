@@ -1,10 +1,13 @@
 use uuid::Uuid;
 
+use crate::protocol::auth::ProfileProperty;
+
 #[derive(Debug, Clone)]
 pub struct Player {
     pub entity_id: i32,
     pub uuid: Uuid,
     pub username: String,
+    pub properties: Vec<ProfileProperty>,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -24,11 +27,17 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(entity_id: i32, uuid: Uuid, username: String) -> Self {
+    pub fn new(
+        entity_id: i32,
+        uuid: Uuid,
+        username: String,
+        properties: Vec<ProfileProperty>,
+    ) -> Self {
         Self {
             entity_id,
             uuid,
             username,
+            properties,
             x: 0.5,
             y: 5.0,
             z: 0.5,

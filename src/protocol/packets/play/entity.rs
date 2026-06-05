@@ -1,4 +1,5 @@
 use crate::protocol::{
+    auth::ProfileProperty,
     packets::{PacketIn, PacketOut},
     reader::Reader,
 };
@@ -8,6 +9,7 @@ pub struct SpawnPlayer {
     pub entity_id: i32,
     pub uuid: uuid::Uuid,
     pub username: String,
+    pub properties: Vec<ProfileProperty>,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -78,7 +80,18 @@ impl PacketOut for SpawnPlayer {
         writer.write_string(&self.uuid.hyphenated().to_string());
         writer.write_string(&self.username);
 
-        writer.write_varint(0); // properties count
+        writer.write_varint(self.properties.len() as i32);
+        for prop in &self.properties {
+            writer.write_string(&prop.name);
+            writer.write_string(&prop.value);
+            match &prop.signature {
+                Some(sig) => {
+                    writer.write_bool(true);
+                    writer.write_string(sig);
+                }
+                None => writer.write_bool(false),
+            }
+        }
 
         writer.write_i32((self.x * 32.0) as i32);
         writer.write_i32((self.y * 32.0) as i32);
@@ -86,7 +99,7 @@ impl PacketOut for SpawnPlayer {
         writer.write_byte(degrees_to_byte(self.yaw));
         writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_i16(self.current_item);
-        writer.write_byte(127);
+        writer.write_byte(0x7F);
         Ok(())
     }
 }
@@ -288,8 +301,16 @@ impl PacketOut for EntityMetadata {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x1C);
         writer.write_varint(self.entity_id);
+
+        // index 0
         writer.write_byte(0x00);
         writer.write_byte(self.flags);
+
+        // index 10 - skin layers
+        writer.write_byte(0x0A);
+        writer.write_byte(0x7F);
+
+        // end
         writer.write_byte(0x7F);
         Ok(())
     }
