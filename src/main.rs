@@ -13,7 +13,10 @@ use crate::{
     command::{CommandDispatcher, version_command},
     config::Config,
     protocol::encryption::generate_rsa_key,
-    server::{ops::OpsFile, player::Player, registry::PlayerRegistry, whitelist::WhitelistFile},
+    server::{
+        banlist::BanList, ops::OpsFile, player::Player, registry::PlayerRegistry,
+        whitelist::WhitelistFile,
+    },
     world::blocks::WorldBlocks,
 };
 
@@ -56,6 +59,7 @@ pub struct ServerContext {
     public_key_der: Arc<Vec<u8>>,
     ops: Arc<RwLock<OpsFile>>,
     whitelist: Arc<RwLock<WhitelistFile>>,
+    banlist: Arc<RwLock<BanList>>,
 }
 
 #[tokio::main]
@@ -101,6 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         whitelist.read().await.entries.len()
     );
 
+    let banlist = Arc::new(RwLock::new(BanList::load()));
+
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
         server_icon: Arc::new(server_icon),
@@ -122,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         public_key_der: Arc::new(public_key_der),
         ops,
         whitelist,
+        banlist,
     };
 
     loop {

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use std::vec;
@@ -128,6 +129,8 @@ impl Decoder for Codec {
                         id, id
                     );
                     Ok(None)
+                } else if self.state == EnumProtocol::Status {
+                    Ok(None)
                 } else {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -235,6 +238,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         public_key_der,
         ops,
         whitelist,
+        banlist,
     } = ctx;
     let codec = Codec {
         registry: packet_registry,
@@ -242,6 +246,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         encryption: None,
         decrypted_buf: BytesMut::new(),
     };
+    let peer_ip = socket.peer_addr().ok();
     let mut chat_rx = chat_tx.subscribe();
     let mut join_rx = join_tx.subscribe();
     let mut pos_rx = pos_tx.subscribe();
@@ -491,102 +496,115 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             continue;
                         }
 
-                        // TODO: connection throttled
-                        if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                            kick(&mut framed, "Unsupported version. Use 1.7.10 or 1.8.9").await;
-                            break;
-                        }
-                        if player_registry.get_online_count().await > config.server.max_player {
-                            kick(&mut framed, "Server is full!").await;
-                            break;
-                        }
-                        // TODO: login from another location
-
-
-                        if config.server.online_mode {
-                            if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                state.pending_username = Some(login_start.username.clone());
-
-                                send_packet(&mut framed, EncryptionRequest {
-                                    server_id: "".to_string(),
-                                    public_key: public_key_der.to_vec(),
-                                    verify_token: verify_token.clone(),
-                                }).await;
-                                continue;
+                        if framed.codec().state == EnumProtocol::Login {
+                            // TODO: connection throttled
+                            if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
+                                kick(&mut framed, "Unsupported version. Use 1.7.10 or 1.8.9").await;
+                                break;
                             }
+                            if player_registry.get_online_count().await > config.server.max_player {
+                                kick(&mut framed, "Server is full!").await;
+                                break;
+                            }
+                            if let Some(ip) = peer_ip
+                                && let Some(ban) = banlist.read().await.is_ip_banned(&ip.ip())
+                            {
+                                kick(&mut framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
+                                break;
+                            }
+                            if config.server.online_mode {
+                                if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                    state.pending_username = Some(login_start.username.clone());
 
-                            if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
-                                let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
-                                let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
-
-                                if decrypted_token != verify_token {
-                                    kick(&mut framed, "Encryption Error!").await;
-                                    break;
+                                    send_packet(&mut framed, EncryptionRequest {
+                                        server_id: "".to_string(),
+                                        public_key: public_key_der.to_vec(),
+                                        verify_token: verify_token.clone(),
+                                    }).await;
+                                    continue;
                                 }
-                                let username = match state.pending_username.take() {
-                                    Some(u) => u,
-                                    None => break
-                                };
 
-                                let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
+                                if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
+                                    let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
+                                    let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
 
-                                let profile = match authenticate(&username, &server_hash).await {
-                                    Some(p) => p,
-                                    None => {
-                                        kick(&mut framed, "Failed to verify username!").await;
-                                        break
+                                    if decrypted_token != verify_token {
+                                        kick(&mut framed, "Encryption Error!").await;
+                                        break;
                                     }
-                                };
+                                    let username = match state.pending_username.take() {
+                                        Some(u) => u,
+                                        None => break
+                                    };
 
-                                // todo check if banned
-                                if config.server.whitelisted {
+                                    let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
+
+                                    let profile = match authenticate(&username, &server_hash).await {
+                                        Some(p) => p,
+                                        None => {
+                                            kick(&mut framed, "Failed to verify username!").await;
+                                            break
+                                        }
+                                    };
                                     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
-                                    if !whitelist.read().await.is_whitelisted(uuid) {
+                                    if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
+                                        kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
+                                        break;
+                                    }
+                                    else if config.server.whitelisted
+                                    {
+                                        if !whitelist.read().await.is_whitelisted(uuid) {
+                                            kick(&mut framed, "You're not whitelisted on this server!").await;
+                                            break;
+                                        }
+                                    }
+
+                                    framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
+
+                                    let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
+                                    // THIS IS RIDICULOUS
+                                    state.uuid = Some(result.uuid);
+                                    state.entity_id = result.entity_id;
+                                    state.name = Some(result.player_name);
+                                    state.gamemode = result.gamemode;
+                                    keep_alive_interval.reset();
+                                    continue;
+                                }
+                            } else {
+                                if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                    let uuid = Uuid::new_v3(
+                                        &Uuid::NAMESPACE_DNS,
+                                        format!("OfflinePlayer:{}", login_start.username).as_bytes(),
+                                    );
+
+                                    if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
+                                        kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
+                                        break;
+                                    }
+                                    else if config.server.whitelisted
+                                        && !whitelist.read().await.is_whitelisted(uuid)
+                                    {
                                         kick(&mut framed, "You're not whitelisted on this server!").await;
                                         break;
                                     }
+
+                                    let profile = AuthProfile {
+                                        uuid: uuid.to_string(),
+                                        username: login_start.username.clone(),
+                                        properties: vec![]
+                                    };
+
+                                    let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
+                                    // SO IT IS
+                                    state.uuid = Some(result.uuid);
+                                    state.entity_id = result.entity_id;
+                                    state.name = Some(result.player_name);
+                                    state.gamemode = result.gamemode;
+                                    keep_alive_interval.reset();
+                                    continue;
                                 }
-
-                                framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
-
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
-                                // THIS IS RIDICULOUS
-                                state.uuid = Some(result.uuid);
-                                state.entity_id = result.entity_id;
-                                state.name = Some(result.player_name);
-                                state.gamemode = result.gamemode;
-                                keep_alive_interval.reset();
-                                continue;
                             }
-                        } else {
-                            if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                let uuid = Uuid::new_v3(
-                                    &Uuid::NAMESPACE_DNS,
-                                    format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                );
-
-                                if config.server.whitelisted
-                                    && !whitelist.read().await.is_whitelisted(uuid)
-                                {
-                                    kick(&mut framed, "You're not whitelisted on this server!").await;
-                                    break;
-                                }
-
-                                let profile = AuthProfile {
-                                    uuid: uuid.to_string(),
-                                    username: login_start.username.clone(),
-                                    properties: vec![]
-                                };
-
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
-                                // SO IT IS
-                                state.uuid = Some(result.uuid);
-                                state.entity_id = result.entity_id;
-                                state.name = Some(result.player_name);
-                                state.gamemode = result.gamemode;
-                                keep_alive_interval.reset();
-                                continue;
-                            }
+                            // TODO: check login from another location
                         };
 
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
@@ -1025,6 +1043,7 @@ async fn make_player_join(
     client_protocol: i32,
     max_players: u8,
     latency: u32,
+    peer_ip: &Option<SocketAddr>,
     player_registry: &Arc<PlayerRegistry>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
     chat_tx: &Arc<broadcast::Sender<String>>,
@@ -1156,9 +1175,14 @@ async fn make_player_join(
         .ok();
 
     println!(
-        "{} joined the game; Online: {}",
+        "[INFO] {}[/{}:{}] logged in with entity id {}, at ([DEV] {}, {}, {})",
         profile.username,
-        player_registry.get_online_count().await
+        peer_ip.unwrap().ip(),
+        peer_ip.unwrap().port(),
+        entity_id,
+        player.x,
+        player.y,
+        player.z
     );
 
     let existing_players = player_registry.get_all().await;

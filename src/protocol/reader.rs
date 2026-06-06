@@ -23,11 +23,7 @@ impl Reader {
 
     pub fn read_byte(&mut self) -> u8 {
         if self.position >= self.data.len() {
-            panic!(
-                "Attempted to read byte at position {}, but data length is {}",
-                self.position,
-                self.data.len()
-            );
+            return 0;
         }
         let byte = self.data[self.position];
         self.position += 1;
@@ -116,7 +112,7 @@ impl Reader {
         let end = self.position + length;
 
         if end > self.data.len() {
-            panic!("String length goes beyond buffer");
+            return String::new();
         }
 
         let string_bytes = &self.data[self.position..end];
