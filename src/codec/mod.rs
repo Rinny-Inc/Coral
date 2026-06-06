@@ -56,7 +56,7 @@ use crate::protocol::{
 };
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
-use crate::world::blocks::Block;
+use crate::world::blocks::{Block, WorldBlocks};
 use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
 use crate::{JoinLeave, ServerContext};
@@ -549,7 +549,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                 framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
                                 // THIS IS RIDICULOUS
                                 state.uuid = Some(result.uuid);
                                 state.entity_id = result.entity_id;
@@ -578,7 +578,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     properties: vec![]
                                 };
 
-                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &config).await;
+                                let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
                                 // SO IT IS
                                 state.uuid = Some(result.uuid);
                                 state.entity_id = result.entity_id;
@@ -815,7 +815,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     level_type: "flat".to_string()
                                 }).await;
 
-                                send_chunks(&mut framed, client_protocol).await;
+                                send_chunks(&mut framed, client_protocol, &world_blocks).await;
 
                                 send_packet(&mut framed, PlayerPositionAndLook {
                                     x: 0.5,
@@ -1005,18 +1005,15 @@ struct JoinResult {
     gamemode: u8,
 }
 
-async fn send_chunks(framed: &mut Framed<TcpStream, Codec>, client_protocol: i32) {
+async fn send_chunks(
+    framed: &mut Framed<TcpStream, Codec>,
+    client_protocol: i32,
+    world_blocks: &Arc<WorldBlocks>,
+) {
     for cx in -2i32..=2 {
         for cz in -2i32..=2 {
-            send_packet(
-                framed,
-                ChunkData {
-                    chunk_x: cx,
-                    chunk_z: cz,
-                    client_protocol,
-                },
-            )
-            .await;
+            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks).await;
+            send_packet(framed, chunk).await;
         }
     }
 }
@@ -1031,6 +1028,7 @@ async fn make_player_join(
     player_registry: &Arc<PlayerRegistry>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
     chat_tx: &Arc<broadcast::Sender<String>>,
+    world_blocks: &Arc<WorldBlocks>,
     config: &Config,
 ) -> JoinResult {
     let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
@@ -1127,7 +1125,7 @@ async fn make_player_join(
     )
     .await;
 
-    send_chunks(framed, client_protocol).await;
+    send_chunks(framed, client_protocol, world_blocks).await;
 
     send_packet(
         framed,

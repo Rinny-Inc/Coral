@@ -23,7 +23,7 @@ impl Block {
 }
 
 pub struct WorldBlocks {
-    blocks: RwLock<HashMap<(i32, u8, i32), Block>>,
+    pub blocks: RwLock<HashMap<(i32, u8, i32), Block>>,
 }
 impl WorldBlocks {
     pub fn new() -> Self {
@@ -48,10 +48,6 @@ impl WorldBlocks {
 
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
         let mut blocks = self.blocks.write().await;
-        if block.is_air() {
-            blocks.remove(&(x, y, z));
-        } else {
-            blocks.insert((x, y, z), block);
-        }
+        blocks.insert((x, y, z), block);
     }
 }
