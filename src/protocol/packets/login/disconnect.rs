@@ -16,14 +16,14 @@ pub struct PlayDisconnect {
 impl LoginDisconnect {
     pub fn new(reason: &str) -> Self {
         Self {
-            reason: ChatBuilder::plain_json(&format!("{}", reason)),
+            reason: ChatBuilder::plain_json(reason),
         }
     }
 }
 impl PlayDisconnect {
     pub fn new(reason: &str) -> Self {
         Self {
-            reason: ChatBuilder::plain_json(&format!("{}", reason)),
+            reason: ChatBuilder::plain_json(reason),
         }
     }
 }

@@ -103,3 +103,95 @@ impl PacketOut for ConfirmTransaction {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct SetSlot {
+    pub window_id: i8,
+    pub slot: i16,
+    pub item_id: i16,
+    pub count: u8,
+    pub metadata: i16,
+}
+impl PacketOut for SetSlot {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x2F);
+        writer.write_byte(self.window_id as u8);
+        writer.write_i16(self.slot);
+        writer.write_i16(self.item_id);
+        if self.item_id != -1 {
+            writer.write_byte(self.count);
+            writer.write_i16(self.metadata);
+            writer.write_byte(0);
+        }
+        Ok(())
+    }
+}
+
+pub struct Slot {
+    pub item_id: i16,
+    pub count: u8,
+    pub metadata: i16,
+}
+pub struct Inventory {
+    pub slots: [Option<Slot>; 44],
+}
+impl Inventory {
+    pub fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| None),
+        }
+    }
+
+    pub fn add_item_get_slot(&mut self, item_id: i16, count: u8, metadata: i16) -> Option<i16> {
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            if let Some(s) = slot
+                && s.item_id == item_id
+                && s.metadata == metadata
+                && s.count < 64
+            {
+                s.count += count.min(64 - s.count);
+                let packet_slot = Self::internal_to_packet(i);
+                println!(
+                    "DEBUG: stacked item {} in internal slot {}; packet slot {}",
+                    item_id, i, packet_slot
+                );
+                return Some(packet_slot);
+            }
+        }
+        for (i, slot) in self.slots.iter_mut().enumerate().take(36) {
+            if slot.is_none() {
+                *slot = Some(Slot {
+                    item_id,
+                    count,
+                    metadata,
+                });
+                let packet_slot = Self::internal_to_packet(i);
+                println!(
+                    "DEBUG: placed item {} in internal slot {}; packet slot {}",
+                    item_id, i, packet_slot
+                );
+                return Some(packet_slot);
+            }
+        }
+        None
+    }
+
+    fn internal_to_packet(index: usize) -> i16 {
+        match index {
+            0..=8 => (index + 36) as i16, // hotbar: internal 0-8 -> packet 36-44
+            9..=35 => index as i16,       // inventory: internal 9-35 -> packet 9-35
+            36..=39 => (index - 36 + 5) as i16, // armor: 5-8
+            _ => index as i16,
+        }
+    }
+
+    fn packet_to_internal(slot: i16) -> Option<usize> {
+        match slot {
+            0..=8 => Some(slot as usize),                  // hotbar
+            9..=35 => Some(slot as usize),                 // inventory
+            100..=103 => Some((slot - 100 + 36) as usize), // gear
+            80..=83 => Some((slot - 80 + 40) as usize),    // craft
+            _ => None,
+        }
+    }
+}

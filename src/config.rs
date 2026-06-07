@@ -9,36 +9,38 @@ pub struct Config {
     pub chat: ChatConfig,
     #[serde(default)]
     pub world: WorldConfig,
+    #[serde(default)]
+    pub tracking: TrackingConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerConfig {
-    #[serde(default = "default_motd")]
     pub motd: String,
-    #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_max_player")]
     pub max_player: u32,
-    #[serde(default = "default_online_mode")]
     pub online_mode: bool,
-    #[serde(default = "default_sample_amount")]
     pub player_sample_amount: i8,
-    #[serde(default = "default_gamemode")]
     pub default_gamemode: u8,
-    #[serde(default = "default_whitelisted")]
     pub whitelisted: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ChatConfig {
-    #[serde(default = "default_chat_format")]
     pub format: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct WorldConfig {
-    #[serde(default = "default_world_difficulty")]
     pub difficulty: u8,
+    pub item_despawn_seconds: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TrackingConfig {
+    pub player: f64,
+    pub mob: f64,
+    pub item: f64,
+    pub experience_orb: f64,
 }
 
 fn default_motd() -> String {
@@ -70,6 +72,22 @@ fn default_chat_format() -> String {
 fn default_world_difficulty() -> u8 {
     0
 }
+fn default_item_despawn_seconds() -> u64 {
+    300
+}
+
+fn default_tracking_player() -> f64 {
+    512.0
+}
+fn default_tracking_mob() -> f64 {
+    80.0
+}
+fn default_tracking_item() -> f64 {
+    64.0
+}
+fn default_tracking_experience_orb() -> f64 {
+    64.0
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -95,6 +113,17 @@ impl Default for WorldConfig {
     fn default() -> Self {
         Self {
             difficulty: default_world_difficulty(),
+            item_despawn_seconds: default_item_despawn_seconds(),
+        }
+    }
+}
+impl Default for TrackingConfig {
+    fn default() -> Self {
+        Self {
+            player: default_tracking_player(),
+            mob: default_tracking_mob(),
+            item: default_tracking_item(),
+            experience_orb: default_tracking_experience_orb(),
         }
     }
 }
@@ -144,4 +173,11 @@ format = "<{username}> {message}"
 
 [world]
 difficulty = 0
+item_despawn_seconds = 300
+
+[tracking]
+player = 512
+mob = 80
+item = 64
+experience_orb = 64
 "#;

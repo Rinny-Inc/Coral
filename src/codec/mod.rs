@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
@@ -29,11 +29,13 @@ use crate::protocol::packets::play::chat::{
     ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
 };
 use crate::protocol::packets::play::entity::{
-    ArmAnimation, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook, EntityMetadata,
-    EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer, UseEntity,
+    ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook,
+    EntityMetadata, EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer, UseEntity,
 };
 use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
-use crate::protocol::packets::play::inventory::{ClickWindow, CloseWindow, ConfirmTransaction};
+use crate::protocol::packets::play::inventory::{
+    ClickWindow, CloseWindow, ConfirmTransaction, Inventory, SetSlot, Slot,
+};
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
 };
@@ -55,6 +57,7 @@ use crate::protocol::{
     reader::Reader,
     writer::Writer,
 };
+use crate::server::entity_tracker::TrackedEntity;
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
 use crate::world::blocks::{Block, WorldBlocks};
@@ -182,6 +185,7 @@ struct PlayerState {
     entity_id: i32,
     gamemode: u8,
     held_item: i16,
+    held_slot: u8,
     health: f32,
     food: i32,
     food_saturation: f32,
@@ -193,6 +197,7 @@ struct PlayerState {
     pending_username: Option<String>,
     keep_alive_count: i32,
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
+    inventory: Inventory,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -201,6 +206,7 @@ impl PlayerState {
             entity_id: 0,
             gamemode: default_gamemode,
             held_item: -1,
+            held_slot: 0,
             health: 20.0,
             food: 20,
             food_saturation: 5.0,
@@ -212,6 +218,7 @@ impl PlayerState {
             pending_username: None,
             keep_alive_count: 0,
             last_sent_keep_alive: None,
+            inventory: Inventory::new(),
         }
     }
 }
@@ -222,6 +229,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         server_icon,
         config,
         dispatcher,
+        entity_tracker,
+        item_spawn_times,
+        item_positions,
         chat_tx,
         join_tx,
         pos_tx,
@@ -232,6 +242,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         meta_tx,
         dmg_tx,
         item_tx,
+        despawn_tx,
+        pickup_tx,
         world_blocks,
         player_registry,
         private_key,
@@ -257,6 +269,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut meta_rx = meta_tx.subscribe();
     let mut dmg_rx = dmg_tx.subscribe();
     let mut item_rx = item_tx.subscribe();
+    let mut despawn_rx = despawn_tx.subscribe();
+    let mut pickup_rx = pickup_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -276,12 +290,42 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
             }
+            Ok(eid) = despawn_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, DestroyEntities {
+                    entity_ids: vec![eid]
+                }).await;
+            }
+            Ok((collector_eid, collector_uuid, item_eid)) = pickup_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, CollectItem {
+                    collected_entity_id: item_eid,
+                    collector_entity_id: collector_eid,
+                }).await;
+                send_packet(&mut framed, DestroyEntities {
+                    entity_ids: vec![item_eid]
+                }).await;
+            }
 
             Ok((uuid, eid, x, y, z, yaw, pitch, on_ground)) = pos_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
                 if Some(uuid) == state.uuid {
+                    continue;
+                }
+
+                let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                    entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
+                } else {
+                    false
+                };
+
+                if !visible {
                     continue;
                 }
                 let yaw_byte = ((yaw / 360.0 * 256.0) as i32).rem_euclid(256) as u8;
@@ -345,6 +389,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         entity_ids: vec![player.entity_id]
                     }).await;
                 } else {
+                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                        let dx = player.x - me.x;
+                        let dz = player.z - me.z;
+                        let dist = (dx * dx + dz * dz).sqrt();
+                        if dist > config.tracking.player {
+                            continue;
+                        }
+                    }
                     send_packet(&mut framed, SpawnPlayer {
                         entity_id: player.entity_id,
                         uuid: player.uuid,
@@ -552,21 +604,21 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         break;
                                     }
                                     else if config.server.whitelisted
+                                        && !whitelist.read().await.is_whitelisted(uuid)
                                     {
-                                        if !whitelist.read().await.is_whitelisted(uuid) {
-                                            kick(&mut framed, "You're not whitelisted on this server!").await;
-                                            break;
-                                        }
+                                        kick(&mut framed, "You're not whitelisted on this server!").await;
+                                        break;
                                     }
 
                                     framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                    let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
+                                    let result = make_player_join(&mut framed, uuid, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
                                     // THIS IS RIDICULOUS
-                                    state.uuid = Some(result.uuid);
+                                    state.uuid = Some(uuid);
                                     state.entity_id = result.entity_id;
                                     state.name = Some(result.player_name);
                                     state.gamemode = result.gamemode;
+                                    entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
                                     keep_alive_interval.reset();
                                     continue;
                                 }
@@ -594,12 +646,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         properties: vec![]
                                     };
 
-                                    let result = make_player_join(&mut framed, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
+                                    let result = make_player_join(&mut framed, uuid, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
                                     // SO IT IS
-                                    state.uuid = Some(result.uuid);
+                                    state.uuid = Some(uuid);
                                     state.entity_id = result.entity_id;
                                     state.name = Some(result.player_name);
                                     state.gamemode = result.gamemode;
+                                    entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
                                     keep_alive_interval.reset();
                                     continue;
                                 }
@@ -621,11 +674,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }
 
                         if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
-                            let slot = held.slot as u8;
+                            let slot = held.slot.clamp(0, 8) as u8;
+                            state.held_slot = slot;
                             if let Some(uuid) = state.uuid {
                                 player_registry.update_held_slot(uuid, slot).await;
                             }
-                            state.held_item = -1;
+                            state.held_item = state.inventory.slots[slot as usize]
+                                .as_ref()
+                                .map(|s| s.item_id)
+                                .unwrap_or(-1);
                             continue;
                         }
 
@@ -648,12 +705,85 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                     if !block.is_air() && block.id > 0 {
                                         let drop_eid = next_entity_id();
+                                        let x = dig.x as f64 + 0.5;
+                                        let y = dig.y as f64 + 0.5;
+                                        let z = dig.z as f64 + 0.5;
                                         item_tx.send((
                                             drop_eid,
-                                            dig.x as f64 + 0.5,
-                                            dig.y as f64 + 0.5,
-                                            dig.z as f64 + 0.5)
+                                            x,
+                                            y,
+                                            z)
                                         ).ok();
+                                        item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                        entity_tracker.write().await.track(
+                                            TrackedEntity::item(
+                                                drop_eid,
+                                                x, y, z,
+                                                config.tracking.item,
+                                            )
+                                        );
+                                        item_positions.write().await.insert(
+                                            drop_eid,
+                                            (drop_eid, x, y, z, block.id as i16, 1, block.metadata as i16)
+                                        );
+                                    }
+                                }
+                                3 | 4 => {
+                                    if state.held_item == -1 {
+                                        continue;
+                                    }
+                                    let hotbar_slot = state.held_slot as usize;
+                                    let item = if dig.status == 3 {
+                                        state.inventory.slots[hotbar_slot].take()
+                                    } else {
+                                        if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
+                                            slot.count -= 1;
+                                            let dropped = Slot {
+                                                item_id: slot.item_id,
+                                                count: 1,
+                                                metadata: slot.metadata
+                                            };
+                                            if slot.count == 0 {
+                                                state.inventory.slots[hotbar_slot] = None;
+                                            }
+                                            Some(dropped)
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    if let Some(dropped) = item {
+                                        let packet_slot = (36 + hotbar_slot) as i16;
+                                        let remaining = state.inventory.slots[hotbar_slot].as_ref();
+
+                                        send_packet(&mut framed, SetSlot {
+                                            window_id: 0,
+                                            slot: packet_slot,
+                                            item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
+                                            count: remaining.map(|s| s.count).unwrap_or(0),
+                                            metadata: remaining.map(|s| s.metadata).unwrap_or(0)
+                                        }).await;
+
+                                        state.held_item = state.inventory.slots[hotbar_slot]
+                                            .as_ref()
+                                            .map(|s| s.item_id)
+                                            .unwrap_or(-1);
+
+                                        if let Some(p) = player_registry.get(&state.uuid.unwrap()).await {
+                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
+                                            let drop_x = p.x + (-yaw_rad.sin() * 0.5) as f64;
+                                            let drop_y = p.y + 1.0;
+                                            let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
+
+                                            let drop_eid = next_entity_id();
+                                            item_tx.send((drop_eid, drop_x, drop_y, drop_z)).ok();
+                                            item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                            item_positions.write().await.insert(
+                                                drop_eid,
+                                                (drop_eid, drop_x, drop_y, drop_z,
+                                                dropped.item_id, dropped.count, dropped.metadata)
+                                            );
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -763,6 +893,39 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
+                                let mut items = item_positions.write().await;
+                                let mut picked_up = vec![];
+
+                                for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
+                                    let dx = pos.x - ix;
+                                    let dy = pos.y - iy;
+                                    let dz = pos.z - iz;
+                                    let dist_sq = dx * dx + dy * dy + dz * dz;
+
+                                    if dist_sq <= 1.5 * 1.5 {
+                                        let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
+                                        if let Some(slot) = slot_index {
+                                            picked_up.push(*eid);
+
+                                            send_packet(&mut framed, SetSlot {
+                                                window_id: 0,
+                                                slot,
+                                                item_id: *item_id,
+                                                count: *count,
+                                                metadata: *metadata
+                                            }).await;
+                                        }
+                                    }
+                                }
+                                for eid in picked_up {
+                                    items.remove(&eid);
+                                    item_spawn_times.write().await.remove(&eid);
+                                    pickup_tx.send((state.entity_id, uuid, eid)).ok();
+                                }
+                                entity_tracker.write().await.update_position(
+                                    state.entity_id,
+                                    pos.x, pos.y, pos.z
+                                );
                                 if pos.on_ground && !p.on_ground && state.gamemode == 0 {
                                     let fall_distance = p.y - pos.y;
                                     if fall_distance > 3.0 {
@@ -858,7 +1021,20 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 let update = match action.action {
                                     0 => Some((true, true)),   // sneaking on
                                     1 => Some((true, false)),  // sneaking off
-                                    3 => Some((false, true)),  // sprinting on
+                                    3 => {
+                                        // server authority dont allow sprint if food < 6
+                                        if state.food > 6 {
+                                            Some((false, true))  // sprinting on
+                                        } else {
+                                            // deny sprint
+                                            send_packet(&mut framed, PlayerAbilities {
+                                                flags: 0x00,
+                                                fly_speed: 0.05,
+                                                walk_speed: 0.1,
+                                            }).await;
+                                            None
+                                        }
+                                    }
                                     4 => Some((false, false)), // sprinting off
                                     _ => None,
                                 };
@@ -887,7 +1063,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     if target.is_dead {
                                         continue;
                                     }
-                                    let new_health = (target.health - 0.0).max(0.0);
+                                    let new_health = (target.health - 0.0).max(0.0); // FIXME: 0.0 is temprorary until we implement natural regeneration!
                                     player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
                                     dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
@@ -954,6 +1130,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 false,
             ))
             .ok();
+        entity_tracker.write().await.untrack(state.entity_id);
         if !player_registry.players.read().await.is_empty() {
             chat_tx
                 .send(ChatBuilder::colored_json(
@@ -1017,7 +1194,6 @@ async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
 }
 
 struct JoinResult {
-    uuid: Uuid,
     entity_id: i32,
     player_name: String,
     gamemode: u8,
@@ -1039,6 +1215,7 @@ async fn send_chunks(
 #[allow(clippy::too_many_arguments)]
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
+    uuid: Uuid,
     profile: AuthProfile,
     client_protocol: i32,
     max_players: u8,
@@ -1050,7 +1227,6 @@ async fn make_player_join(
     world_blocks: &Arc<WorldBlocks>,
     config: &Config,
 ) -> JoinResult {
-    let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
     let entity_id = next_entity_id();
 
     send_packet(
@@ -1175,10 +1351,11 @@ async fn make_player_join(
         .ok();
 
     println!(
-        "[INFO] {}[/{}:{}] logged in with entity id {}, at ([DEV] {}, {}, {})",
+        "[INFO] {}[/{}] logged in with entity id {}, at ([DEV] {}, {}, {})",
         profile.username,
-        peer_ip.unwrap().ip(),
-        peer_ip.unwrap().port(),
+        peer_ip
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
         entity_id,
         player.x,
         player.y,
@@ -1230,7 +1407,6 @@ async fn make_player_join(
     join_tx.send((player, true)).ok();
 
     JoinResult {
-        uuid,
         entity_id,
         player_name: profile.username,
         gamemode: config.server.default_gamemode,

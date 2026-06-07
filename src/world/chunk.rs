@@ -99,7 +99,7 @@ async fn build_chunk_data_18(
                 for x in 0..16usize {
                     let wx = chunk_x * 16 + x as i32;
                     let wz = chunk_z * 16 + z as i32;
-                    let state = get_block_state(&snapshot, wx, y as u8, wz as i32);
+                    let state = get_block_state(&snapshot, wx, y as u8, wz);
                     data.extend_from_slice(&state.to_le_bytes());
                 }
             }

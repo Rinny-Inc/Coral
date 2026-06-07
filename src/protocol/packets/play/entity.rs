@@ -350,3 +350,17 @@ impl PacketOut for SpawnObject {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct CollectItem {
+    pub collected_entity_id: i32,
+    pub collector_entity_id: i32,
+}
+impl PacketOut for CollectItem {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x0D);
+        writer.write_varint(self.collected_entity_id);
+        writer.write_varint(self.collector_entity_id);
+        Ok(())
+    }
+}
