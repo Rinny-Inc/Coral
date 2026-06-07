@@ -43,87 +43,41 @@ pub struct TrackingConfig {
     pub experience_orb: f64,
 }
 
-fn default_motd() -> String {
-    "Coral Rust Minecraft Server\nTest Server".to_string()
-}
-fn default_port() -> u16 {
-    25565
-}
-fn default_max_player() -> u32 {
-    20
-}
-fn default_online_mode() -> bool {
-    true
-}
-fn default_sample_amount() -> i8 {
-    12
-}
-fn default_gamemode() -> u8 {
-    0
-}
-fn default_whitelisted() -> bool {
-    false
-}
-
-fn default_chat_format() -> String {
-    "<{username}> {message}".to_string()
-}
-
-fn default_world_difficulty() -> u8 {
-    0
-}
-fn default_item_despawn_seconds() -> u64 {
-    300
-}
-
-fn default_tracking_player() -> f64 {
-    512.0
-}
-fn default_tracking_mob() -> f64 {
-    80.0
-}
-fn default_tracking_item() -> f64 {
-    64.0
-}
-fn default_tracking_experience_orb() -> f64 {
-    64.0
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            motd: default_motd(),
-            port: default_port(),
-            max_player: default_max_player(),
-            online_mode: default_online_mode(),
-            player_sample_amount: default_sample_amount(),
-            default_gamemode: default_gamemode(),
-            whitelisted: default_whitelisted(),
+            motd: "Coral Rust Minecraft Server\nTest Server".to_string(),
+            port: 25565,
+            max_player: 20,
+            online_mode: true,
+            player_sample_amount: 12,
+            default_gamemode: 0,
+            whitelisted: false,
         }
     }
 }
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
-            format: default_chat_format(),
+            format: "<{username}> {message}".to_string(),
         }
     }
 }
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            difficulty: default_world_difficulty(),
-            item_despawn_seconds: default_item_despawn_seconds(),
+            difficulty: 0,
+            item_despawn_seconds: 300,
         }
     }
 }
 impl Default for TrackingConfig {
     fn default() -> Self {
         Self {
-            player: default_tracking_player(),
-            mob: default_tracking_mob(),
-            item: default_tracking_item(),
-            experience_orb: default_tracking_experience_orb(),
+            player: 512.0,
+            mob: 80.0,
+            item: 64.0,
+            experience_orb: 64.0,
         }
     }
 }
