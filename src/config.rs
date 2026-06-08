@@ -33,6 +33,7 @@ pub struct ChatConfig {
 pub struct WorldConfig {
     pub difficulty: u8,
     pub item_despawn_seconds: u64,
+    pub disable_weather: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -68,6 +69,7 @@ impl Default for WorldConfig {
         Self {
             difficulty: 0,
             item_despawn_seconds: 300,
+            disable_weather: false,
         }
     }
 }
@@ -128,6 +130,7 @@ format = "<{username}> {message}"
 [world]
 difficulty = 0
 item_despawn_seconds = 300
+disable_weather = false
 
 [tracking]
 player = 512

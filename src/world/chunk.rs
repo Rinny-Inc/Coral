@@ -76,7 +76,7 @@ fn get_block_state(
 ) -> u16 {
     let block = snapshot
         .get(&(wx, wy, wz))
-        .copied()
+        .cloned()
         .unwrap_or_else(|| match wy {
             0 => Block::new(7, 0),
             1 | 2 => Block::new(3, 0),

@@ -23,7 +23,10 @@ use crate::{
         banlist::BanList, entity_tracker::EntityTracker, ops::OpsFile, player::Player,
         registry::PlayerRegistry, whitelist::WhitelistFile,
     },
-    world::blocks::WorldBlocks,
+    world::{
+        blocks::WorldBlocks,
+        weather::{Weather, WeatherState},
+    },
 };
 
 mod codec;
@@ -47,6 +50,7 @@ type DespawnEntity = i32;
 type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
 type ItemPickup = (i32, Uuid, i32);
 type TimeUpdate = (i64, i64);
+type WeatherUpdate = WeatherState;
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -72,6 +76,7 @@ pub struct ServerContext {
     despawn_tx: Arc<broadcast::Sender<DespawnEntity>>,
     pickup_tx: Arc<broadcast::Sender<ItemPickup>>,
     time_tx: Arc<broadcast::Sender<TimeUpdate>>,
+    weather_tx: Arc<broadcast::Sender<WeatherUpdate>>,
     world_blocks: Arc<WorldBlocks>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -151,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         despawn_tx: Arc::new(broadcast::channel::<DespawnEntity>(100).0),
         pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
         time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
+        weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
@@ -161,13 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let time_tx_task = ctx.time_tx.clone();
-    let day_duration = 1200;
-
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50)); // 1 tick
         let mut world_age: i64 = 0;
         let mut time_of_day: i64 = 0;
-        let ticks_per_day = (day_duration * 20) as i64;
 
         loop {
             interval.tick().await;
@@ -179,6 +182,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    if config.world.disable_weather {
+        let weather_tx_task = ctx.weather_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_millis(50));
+            let mut weather = Weather::new();
+
+            loop {
+                interval.tick().await;
+                if let Some(new_state) = weather.tick() {
+                    weather_tx_task.send(new_state).ok();
+                }
+            }
+        });
+    }
 
     let despawn_tx_task = ctx.despawn_tx.clone();
     let item_despawn_secs = config.world.item_despawn_seconds;

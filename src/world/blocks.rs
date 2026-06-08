@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: u8,
     pub metadata: u8,
@@ -37,7 +37,7 @@ impl WorldBlocks {
             .read()
             .await
             .get(&(x, y, z))
-            .copied()
+            .cloned()
             .unwrap_or_else(|| match y {
                 0 => Block::new(7, 0),
                 1 | 2 => Block::new(3, 0),

@@ -6,7 +6,7 @@ use std::vec;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::SinkExt;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
@@ -58,12 +58,13 @@ use crate::protocol::{
     writer::Writer,
 };
 use crate::server::bounding_box::EntityBounds;
-use crate::server::entity_tracker::TrackedEntity;
+use crate::server::entity_tracker::{EntityTracker, TrackedEntity};
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
 use crate::world::blocks::{Block, WorldBlocks};
 use crate::world::chunk::ChunkData;
 use crate::world::time::TimeUpdate;
+use crate::world::weather::WeatherState;
 use crate::{JoinLeave, ServerContext};
 
 pub struct Codec {
@@ -174,7 +175,9 @@ impl Encoder<Box<dyn PacketOut>> for Codec {
 async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
     let boxed_packet: Box<dyn PacketOut> = Box::new(packet);
 
-    if let Err(e) = framed.send(boxed_packet).await {
+    if let Err(e) = framed.send(boxed_packet).await
+        && !is_normal_disconnect(&e)
+    {
         eprintln!("Failed to cleanly dispatch packet frame: {e}");
     }
 }
@@ -200,6 +203,7 @@ struct PlayerState {
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
     inventory: Inventory,
     breaking_block: Option<(i32, i32, i32)>,
+    current_weather: WeatherState,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -222,6 +226,7 @@ impl PlayerState {
             last_sent_keep_alive: None,
             inventory: Inventory::new(),
             breaking_block: None,
+            current_weather: WeatherState::Clear,
         }
     }
 }
@@ -249,6 +254,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         despawn_tx,
         pickup_tx,
         time_tx,
+        weather_tx,
         world_blocks,
         player_registry,
         private_key,
@@ -278,6 +284,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut despawn_rx = despawn_tx.subscribe();
     let mut pickup_rx = pickup_tx.subscribe();
     let mut time_rx = time_tx.subscribe();
+    let mut weather_rx = weather_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -296,6 +303,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 state.keep_alive_count += 1;
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
+            }
+            Ok(weather) = weather_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                state.current_weather = weather.clone();
+                send_weather(&mut framed, weather).await;
             }
             Ok(eid) = despawn_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
@@ -641,31 +655,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                     framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                    let result = make_player_join(&mut framed, uuid, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
-                                    // THIS IS RIDICULOUS
-                                    state.uuid = Some(uuid);
-                                    state.entity_id = result.entity_id;
-                                    state.name = Some(result.player_name);
-                                    state.gamemode = result.gamemode;
-                                    entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
-                                    keep_alive_interval.reset();
-                                    // send initial inventory — 46 slots (0-45)
-                                    let mut slots = Vec::with_capacity(46);
-                                    for i in 0..46 {
-                                        let internal = Inventory::packet_to_internal(i as i16);
-                                        if let Some(idx) = internal {
-                                            if let Some(Some(s)) = state.inventory.slots.get(idx) {
-                                                slots.push((s.item_id, s.count, s.metadata));
-                                                continue;
-                                            }
-                                        }
-                                        slots.push((-1, 0, 0)); // empty
-                                    }
-
-                                    send_packet(&mut framed, WindowItems {
-                                        window_id: 0,
-                                        slots,
-                                    }).await;
+                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &entity_tracker,&config).await;
                                     continue;
                                 }
                             } else {
@@ -692,30 +682,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         properties: vec![]
                                     };
 
-                                    let result = make_player_join(&mut framed, uuid, profile, client_protocol, config.server.max_player as u8, state.latency_ms, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &config).await;
-                                    // SO IT IS
-                                    state.uuid = Some(uuid);
-                                    state.entity_id = result.entity_id;
-                                    state.name = Some(result.player_name);
-                                    state.gamemode = result.gamemode;
-                                    entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
-                                    keep_alive_interval.reset();
-                                    let mut slots = Vec::with_capacity(46);
-                                    for i in 0..46 {
-                                        let internal = Inventory::packet_to_internal(i as i16);
-                                        if let Some(idx) = internal {
-                                            if let Some(Some(s)) = state.inventory.slots.get(idx) {
-                                                slots.push((s.item_id, s.count, s.metadata));
-                                                continue;
-                                            }
-                                        }
-                                        slots.push((-1, 0, 0)); // empty
-                                    }
-
-                                    send_packet(&mut framed, WindowItems {
-                                        window_id: 0,
-                                        slots,
-                                    }).await;
+                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &entity_tracker, &config).await;
                                     continue;
                                 }
                             }
@@ -972,7 +939,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 continue;
                             }
                             if let Some(ref name) = state.name {
-                                if chat.message.len() > 100 { // FIXME: check the correct length
+                                if chat.message.len() > 100 { // FIXME: IF VANILLA = 100; IF FORGE 256 BECAUSE OF MOD
                                     continue;
                                 }
                                 let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
@@ -1205,7 +1172,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         if dist > reach {
                                             continue;
                                         }
-                                        let new_health = (target.health - 0.0).max(0.0); // FIXME: 0.0 is temprorary until we implement natural regeneration!
+                                        let new_health = (target.health - 1.0).max(2.0);
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
                                         dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
@@ -1249,15 +1216,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         continue;
                     }
                     Err(e) => {
-                        match e.kind() {
-                            std::io::ErrorKind::TimedOut |
-                            std::io::ErrorKind::ConnectionReset |
-                            std::io::ErrorKind::ConnectionAborted |
-                            std::io::ErrorKind::UnexpectedEof |
-                            std::io::ErrorKind::BrokenPipe => {
-                                // NO LOG
-                            }
-                            _ => eprintln!("Error processing packet: {:?}", e),
+                        if !is_normal_disconnect(&e) {
+                            eprintln!("Error processing packet: {:?}", e);
                         }
                         break;
                     }
@@ -1324,6 +1284,73 @@ async fn damage_player(
     }
 }
 
+async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: WeatherState) {
+    match weather {
+        WeatherState::Clear => {
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 1,
+                    value: 0.0,
+                },
+            )
+            .await;
+        }
+        WeatherState::Rain => {
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 2,
+                    value: 0.0,
+                },
+            )
+            .await;
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 7,
+                    value: 1.0,
+                },
+            )
+            .await;
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 8,
+                    value: 0.0,
+                },
+            )
+            .await;
+        }
+        WeatherState::Thunder => {
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 2,
+                    value: 0.0,
+                },
+            )
+            .await;
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 7,
+                    value: 1.0,
+                },
+            )
+            .await;
+            send_packet(
+                framed,
+                ChangeGameState {
+                    reason: 8,
+                    value: 1.0,
+                },
+            )
+            .await;
+        }
+    }
+}
+
 async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
     match framed.codec().state {
         EnumProtocol::Login => {
@@ -1334,12 +1361,6 @@ async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
         }
         _ => {}
     }
-}
-
-struct JoinResult {
-    entity_id: i32,
-    player_name: String,
-    gamemode: u8,
 }
 
 async fn send_chunks(
@@ -1358,18 +1379,19 @@ async fn send_chunks(
 #[allow(clippy::too_many_arguments)]
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
     uuid: Uuid,
     profile: AuthProfile,
     client_protocol: i32,
     max_players: u8,
-    latency: u32,
     peer_ip: &Option<SocketAddr>,
     player_registry: &Arc<PlayerRegistry>,
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
     chat_tx: &Arc<broadcast::Sender<String>>,
     world_blocks: &Arc<WorldBlocks>,
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
-) -> JoinResult {
+) {
     let entity_id = next_entity_id();
 
     send_packet(
@@ -1411,7 +1433,7 @@ async fn make_player_join(
                 username: profile.username.clone(),
                 properties: profile.properties.clone(),
                 gamemode: config.server.default_gamemode as i32,
-                ping: latency as i32,
+                ping: state.latency_ms as i32,
             },
         )
         .await;
@@ -1432,7 +1454,7 @@ async fn make_player_join(
             PlayerListItem17 {
                 username: profile.username.clone(),
                 online: true,
-                ping: latency as i16,
+                ping: state.latency_ms as i16,
             },
         )
         .await;
@@ -1549,9 +1571,48 @@ async fn make_player_join(
 
     join_tx.send((player, true)).ok();
 
-    JoinResult {
+    state.uuid = Some(uuid);
+    state.entity_id = entity_id;
+    state.name = Some(profile.username);
+    state.gamemode = config.server.default_gamemode;
+    entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,
-        player_name: profile.username,
-        gamemode: config.server.default_gamemode,
+        uuid,
+        0.5,
+        4.5,
+        0.5,
+        config.tracking.player,
+    ));
+    let mut slots = Vec::with_capacity(46);
+    for i in 0..46 {
+        let internal = Inventory::packet_to_internal(i as i16);
+        if let Some(idx) = internal
+            && let Some(Some(s)) = state.inventory.slots.get(idx)
+        {
+            slots.push((s.item_id, s.count, s.metadata));
+            continue;
+        }
+        slots.push((-1, 0, 0)); // empty
     }
+
+    send_packet(
+        framed,
+        WindowItems {
+            window_id: 0,
+            slots,
+        },
+    )
+    .await;
+    send_weather(framed, state.current_weather.clone()).await;
+}
+
+fn is_normal_disconnect(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+    )
 }
