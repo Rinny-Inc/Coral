@@ -122,6 +122,13 @@ impl PacketIn for HeldItemChange {
         self
     }
 }
+impl PacketOut for HeldItemChange {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x09);
+        writer.write_byte(self.slot as u8);
+        Ok(())
+    }
+}
 impl PacketOut for BlockChange {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x23);

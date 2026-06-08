@@ -21,7 +21,7 @@ use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnec
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
 use crate::protocol::packets::play::PluginMessage;
 use crate::protocol::packets::play::block::{
-    BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
+    BlockBreakAnimation, BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
 };
 use crate::protocol::packets::play::chat::builder::ChatBuilder;
 use crate::protocol::packets::play::chat::builder::ChatColor;
@@ -34,7 +34,7 @@ use crate::protocol::packets::play::entity::{
 };
 use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
 use crate::protocol::packets::play::inventory::{
-    ClickWindow, CloseWindow, ConfirmTransaction, Inventory, SetSlot, Slot,
+    ClickWindow, CloseWindow, ConfirmTransaction, Inventory, SetSlot, Slot, WindowItems,
 };
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
@@ -57,6 +57,7 @@ use crate::protocol::{
     reader::Reader,
     writer::Writer,
 };
+use crate::server::bounding_box::EntityBounds;
 use crate::server::entity_tracker::TrackedEntity;
 use crate::server::player::Player;
 use crate::server::registry::{PlayerRegistry, next_entity_id};
@@ -198,6 +199,7 @@ struct PlayerState {
     keep_alive_count: i32,
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
     inventory: Inventory,
+    breaking_block: Option<(i32, i32, i32)>,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -219,6 +221,7 @@ impl PlayerState {
             keep_alive_count: 0,
             last_sent_keep_alive: None,
             inventory: Inventory::new(),
+            breaking_block: None,
         }
     }
 }
@@ -238,12 +241,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         gm_tx,
         ping_tx,
         block_tx,
+        break_tx,
         anim_tx,
         meta_tx,
         dmg_tx,
         item_tx,
         despawn_tx,
         pickup_tx,
+        time_tx,
         world_blocks,
         player_registry,
         private_key,
@@ -265,12 +270,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut gm_rx = gm_tx.subscribe();
     let mut ping_rx = ping_tx.subscribe();
     let mut block_rx = block_tx.subscribe();
+    let mut break_rx = break_tx.subscribe();
     let mut anim_rx = anim_tx.subscribe();
     let mut meta_rx = meta_tx.subscribe();
     let mut dmg_rx = dmg_tx.subscribe();
     let mut item_rx = item_tx.subscribe();
     let mut despawn_rx = despawn_tx.subscribe();
     let mut pickup_rx = pickup_tx.subscribe();
+    let mut time_rx = time_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -308,6 +315,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 }).await;
                 send_packet(&mut framed, DestroyEntities {
                     entity_ids: vec![item_eid]
+                }).await;
+            }
+            Ok((world_age, time_of_day)) = time_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, TimeUpdate {
+                    world_age,
+                    time_of_day
                 }).await;
             }
 
@@ -375,6 +391,19 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     x, y, z,
                     block_id,
                     block_metadata: metadata
+                }).await;
+            }
+            Ok((eid, x, y, z, stage)) = break_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(&mut framed, BlockBreakAnimation {
+                    entity_id: eid,
+                    x, y, z,
+                    destroy_stage: stage
                 }).await;
             }
             Ok((player, join_event)) = join_rx.recv() => {
@@ -620,6 +649,23 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     state.gamemode = result.gamemode;
                                     entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
                                     keep_alive_interval.reset();
+                                    // send initial inventory — 46 slots (0-45)
+                                    let mut slots = Vec::with_capacity(46);
+                                    for i in 0..46 {
+                                        let internal = Inventory::packet_to_internal(i as i16);
+                                        if let Some(idx) = internal {
+                                            if let Some(Some(s)) = state.inventory.slots.get(idx) {
+                                                slots.push((s.item_id, s.count, s.metadata));
+                                                continue;
+                                            }
+                                        }
+                                        slots.push((-1, 0, 0)); // empty
+                                    }
+
+                                    send_packet(&mut framed, WindowItems {
+                                        window_id: 0,
+                                        slots,
+                                    }).await;
                                     continue;
                                 }
                             } else {
@@ -654,6 +700,22 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     state.gamemode = result.gamemode;
                                     entity_tracker.write().await.track(TrackedEntity::player(result.entity_id, uuid, 0.5, 4.5, 0.5, config.tracking.player));
                                     keep_alive_interval.reset();
+                                    let mut slots = Vec::with_capacity(46);
+                                    for i in 0..46 {
+                                        let internal = Inventory::packet_to_internal(i as i16);
+                                        if let Some(idx) = internal {
+                                            if let Some(Some(s)) = state.inventory.slots.get(idx) {
+                                                slots.push((s.item_id, s.count, s.metadata));
+                                                continue;
+                                            }
+                                        }
+                                        slots.push((-1, 0, 0)); // empty
+                                    }
+
+                                    send_packet(&mut framed, WindowItems {
+                                        window_id: 0,
+                                        slots,
+                                    }).await;
                                     continue;
                                 }
                             }
@@ -692,47 +754,61 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
                                     block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                 }
+                                0 if state.gamemode == 0 => {
+                                    state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
+                                    break_tx.send((state.entity_id, dig.x, dig.y as i32, dig.z, 0)).ok();
+                                }
+                                1 => {
+                                    if let Some((bx, by, bz)) = state.breaking_block.take() {
+                                        break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
+                                    }
+                                }
                                 2 if state.gamemode == 0 => {
-                                    let block = world_blocks.get(dig.x, dig.y, dig.z).await;
-                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
-                                    block_tx.send((
-                                        dig.x,
-                                        dig.y as i32,
-                                        dig.z,
-                                        0,
-                                        0)
-                                    ).ok();
-
-                                    if !block.is_air() && block.id > 0 {
-                                        let drop_eid = next_entity_id();
-                                        let x = dig.x as f64 + 0.5;
-                                        let y = dig.y as f64 + 0.5;
-                                        let z = dig.z as f64 + 0.5;
-                                        item_tx.send((
-                                            drop_eid,
-                                            x,
-                                            y,
-                                            z)
+                                    if let Some((bx, by, bz)) = state.breaking_block.take() {
+                                        let block = world_blocks.get(bx, by as u8, bz).await;
+                                        world_blocks.set(bx, by as u8, bz, Block::air()).await;
+                                        block_tx.send((
+                                            bx,
+                                            by,
+                                            bz,
+                                            0,
+                                            0)
                                         ).ok();
-                                        item_spawn_times.write().await.insert(drop_eid, Instant::now());
-                                        entity_tracker.write().await.track(
-                                            TrackedEntity::item(
+                                        break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
+
+                                        if !block.is_air() && block.id > 0 {
+                                            let drop_eid = next_entity_id();
+                                            let x = bx as f64 + 0.5;
+                                            let y = by as f64 + 0.5;
+                                            let z = bz as f64 + 0.5;
+                                            item_tx.send((
                                                 drop_eid,
-                                                x, y, z,
-                                                config.tracking.item,
-                                            )
-                                        );
-                                        item_positions.write().await.insert(
-                                            drop_eid,
-                                            (drop_eid, x, y, z, block.id as i16, 1, block.metadata as i16)
-                                        );
+                                                x,
+                                                y,
+                                                z)
+                                            ).ok();
+                                            item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                            entity_tracker.write().await.track(
+                                                TrackedEntity::item(
+                                                    drop_eid,
+                                                    x, y, z,
+                                                    config.tracking.item,
+                                                )
+                                            );
+                                            item_positions.write().await.insert(
+                                                drop_eid,
+                                                (drop_eid, x, y, z, block.id as i16, 1, block.metadata as i16)
+                                            );
+                                        }
                                     }
                                 }
                                 3 | 4 => {
-                                    if state.held_item == -1 {
+                                    let hotbar_slot = state.held_slot as usize;
+
+                                    if state.inventory.slots[hotbar_slot].is_none() {
                                         continue;
                                     }
-                                    let hotbar_slot = state.held_slot as usize;
+
                                     let item = if dig.status == 3 {
                                         state.inventory.slots[hotbar_slot].take()
                                     } else {
@@ -784,6 +860,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                                 dropped.item_id, dropped.count, dropped.metadata)
                                             );
                                         }
+
+                                        send_packet(&mut framed, HeldItemChange {
+                                            slot: state.held_slot as i16
+                                        }).await;
                                     }
                                 }
                                 _ => {}
@@ -815,6 +895,36 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             let block_id = place.held_item_id as i32;
                             if block_id <= 0 || block_id > 255 {
                                 continue;
+                            }
+
+                            if state.gamemode == 0 {
+                                let hotbar_slot = state.held_slot as usize;
+                                if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
+                                    slot.count -= 1;
+                                    let remaining_count = slot.count;
+                                    let item_id = slot.item_id;
+                                    let metadata = slot.metadata;
+
+                                    if remaining_count == 0 {
+                                        state.inventory.slots[hotbar_slot] = None;
+                                    }
+
+                                    let packed_slot = (36 + hotbar_slot) as i16;
+                                    send_packet(&mut framed, SetSlot {
+                                        window_id: 0,
+                                        slot: packed_slot,
+                                        item_id: if remaining_count > 0 { item_id } else { -1 },
+                                        count: remaining_count,
+                                        metadata
+                                    }).await;
+
+                                    state.held_item = state.inventory.slots[hotbar_slot]
+                                        .as_ref()
+                                        .map(|s| s.item_id)
+                                        .unwrap_or(-1);
+                                } else {
+                                    continue;
+                                }
                             }
 
                             state.held_item = place.held_item_id;
@@ -897,12 +1007,29 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 let mut picked_up = vec![];
 
                                 for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-                                    let dx = pos.x - ix;
-                                    let dy = pos.y - iy;
-                                    let dz = pos.z - iz;
-                                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                                    let player_bb = if state.is_sneaking {
+                                        EntityBounds::player_sneaking()
+                                    } else {
+                                        EntityBounds::player()
+                                    };
 
-                                    if dist_sq <= 1.5 * 1.5 {
+                                    let item_bb = EntityBounds::item();
+
+                                    if player_bb.intersects(
+                                        pos.x, pos.y, pos.z,
+                                        &item_bb, *ix, *iy, *iz
+                                    ){
+                                        let age = {
+                                            let spawn_time = item_spawn_times.read().await;
+                                            spawn_time.get(eid)
+                                                .map(|t| t.elapsed().as_secs_f32())
+                                                .unwrap_or(0.0)
+                                        };
+
+                                        if age < 0.5 {
+                                            continue;
+                                        }
+
                                         let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
                                         if let Some(slot) = slot_index {
                                             picked_up.push(*eid);
@@ -1059,15 +1186,31 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
                             if use_entity.action == 1 && state.gamemode != 3 {
                                 let players = player_registry.get_all().await;
-                                if let Some(target) = players.iter().find(|p| p.entity_id == use_entity.target_entity_id) {
+                                if let Some(target) = players.iter()
+                                    .find(|p| p.entity_id == use_entity.target_entity_id)
+                                {
                                     if target.is_dead {
                                         continue;
                                     }
-                                    let new_health = (target.health - 0.0).max(0.0); // FIXME: 0.0 is temprorary until we implement natural regeneration!
-                                    player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
+                                    if let Some(me) = player_registry.get(&state.uuid.unwrap()).await {
+                                        let reach = if state.gamemode == 1 {
+                                            5.0
+                                        } else {
+                                            3.0
+                                        };
+                                        let dx = me.x - target.x;
+                                        let dy = me.y - target.y;
+                                        let dz = me.z - target.z;
+                                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                                        if dist > reach {
+                                            continue;
+                                        }
+                                        let new_health = (target.health - 0.0).max(0.0); // FIXME: 0.0 is temprorary until we implement natural regeneration!
+                                        player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
-                                    dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
-                                    anim_tx.send((use_entity.target_entity_id, 1)).ok();
+                                        dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                        anim_tx.send((use_entity.target_entity_id, 1)).ok();
+                                    }
                                 }
                             }
                             continue;
@@ -1295,14 +1438,14 @@ async fn make_player_join(
         .await;
     }
 
-    send_packet(
+    /*send_packet(
         framed,
         TimeUpdate {
             world_age: 0,
             time_of_day: 6000,
         },
     )
-    .await;
+    .await;*/
 
     if client_protocol == 47 {
         send_packet(framed, SpawnPosition { x: 0, y: 64, z: 0 }).await;

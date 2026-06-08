@@ -1,4 +1,5 @@
 pub mod banlist;
+pub mod bounding_box;
 pub mod entity_tracker;
 pub mod ops;
 pub mod player;

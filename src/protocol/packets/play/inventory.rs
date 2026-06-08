@@ -185,7 +185,7 @@ impl Inventory {
         }
     }
 
-    fn packet_to_internal(slot: i16) -> Option<usize> {
+    pub fn packet_to_internal(slot: i16) -> Option<usize> {
         match slot {
             0..=8 => Some(slot as usize),                  // hotbar
             9..=35 => Some(slot as usize),                 // inventory
@@ -193,5 +193,26 @@ impl Inventory {
             80..=83 => Some((slot - 80 + 40) as usize),    // craft
             _ => None,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct WindowItems {
+    pub window_id: u8,
+    pub slots: Vec<(i16, u8, i16)>,
+}
+impl PacketOut for WindowItems {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x30);
+        writer.write_byte(self.window_id);
+        writer.write_i16(self.slots.len() as i16);
+        for (item_id, count, metadata) in &self.slots {
+            writer.write_i16(*item_id);
+            if *item_id != -1 {
+                writer.write_byte(*count);
+                writer.write_i16(*metadata);
+            }
+        }
+        Ok(())
     }
 }

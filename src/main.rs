@@ -33,18 +33,20 @@ mod protocol;
 pub mod server;
 pub mod world;
 
-pub type PositionUpdate = (uuid::Uuid, i32, f64, f64, f64, f32, f32, bool);
-pub type JoinLeave = (Player, bool);
-pub type GamemodeUpdate = (Uuid, u8);
-pub type PingUpdate = (Uuid, u32);
-pub type BlockUpdate = (i32, i32, i32, i32, u8);
-pub type AnimationUpdate = (i32, u8);
-pub type MetadataUpdate = (i32, u8);
-pub type DamageEvent = (Uuid, f32, i32, f32, i32);
-pub type ItemDrop = (i32, f64, f64, f64);
-pub type DespawnEntity = i32;
-pub type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
-pub type ItemPickup = (i32, Uuid, i32);
+type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
+type JoinLeave = (Player, bool);
+type GamemodeUpdate = (Uuid, u8);
+type PingUpdate = (Uuid, u32);
+type BlockUpdate = (i32, i32, i32, i32, u8);
+type BreakAnimation = (i32, i32, i32, i32, u8);
+type AnimationUpdate = (i32, u8);
+type MetadataUpdate = (i32, u8);
+type DamageEvent = (Uuid, f32, i32, f32, i32);
+type ItemDrop = (i32, f64, f64, f64);
+type DespawnEntity = i32;
+type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
+type ItemPickup = (i32, Uuid, i32);
+type TimeUpdate = (i64, i64);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -62,12 +64,14 @@ pub struct ServerContext {
     gm_tx: Arc<broadcast::Sender<GamemodeUpdate>>,
     ping_tx: Arc<broadcast::Sender<PingUpdate>>,
     block_tx: Arc<broadcast::Sender<BlockUpdate>>,
+    break_tx: Arc<broadcast::Sender<BreakAnimation>>,
     anim_tx: Arc<broadcast::Sender<AnimationUpdate>>,
     meta_tx: Arc<broadcast::Sender<MetadataUpdate>>,
     dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
     item_tx: Arc<broadcast::Sender<ItemDrop>>,
     despawn_tx: Arc<broadcast::Sender<DespawnEntity>>,
     pickup_tx: Arc<broadcast::Sender<ItemPickup>>,
+    time_tx: Arc<broadcast::Sender<TimeUpdate>>,
     world_blocks: Arc<WorldBlocks>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -139,12 +143,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gm_tx: Arc::new(broadcast::channel::<GamemodeUpdate>(16).0),
         ping_tx: Arc::new(broadcast::channel::<PingUpdate>(16).0),
         block_tx: Arc::new(broadcast::channel::<BlockUpdate>(100).0),
+        break_tx: Arc::new(broadcast::channel::<BreakAnimation>(100).0),
         anim_tx: Arc::new(broadcast::channel::<AnimationUpdate>(100).0),
         meta_tx: Arc::new(broadcast::channel::<MetadataUpdate>(100).0),
         dmg_tx: Arc::new(broadcast::channel::<DamageEvent>(100).0),
         item_tx: Arc::new(broadcast::channel::<ItemDrop>(1000).0),
         despawn_tx: Arc::new(broadcast::channel::<DespawnEntity>(100).0),
         pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
+        time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
@@ -153,6 +159,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         whitelist,
         banlist,
     };
+
+    let time_tx_task = ctx.time_tx.clone();
+    let day_duration = 1200;
+
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_millis(50)); // 1 tick
+        let mut world_age: i64 = 0;
+        let mut time_of_day: i64 = 0;
+        let ticks_per_day = (day_duration * 20) as i64;
+
+        loop {
+            interval.tick().await;
+            world_age += 1;
+            time_of_day = (time_of_day + 1) % 24000;
+
+            if world_age % 20 == 0 {
+                time_tx_task.send((world_age, time_of_day)).ok();
+            }
+        }
+    });
 
     let despawn_tx_task = ctx.despawn_tx.clone();
     let item_despawn_secs = config.world.item_despawn_seconds;
