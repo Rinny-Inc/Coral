@@ -331,6 +331,57 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                 state.tick_count += 1;
 
+                if let Some(uuid) = state.uuid
+                    && let Some(p) = player_registry.get(&uuid).await
+                {
+                    let mut items = item_positions.write().await;
+                    let mut picked_up = vec![];
+
+                    for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
+                        let player_bb = if state.is_sneaking {
+                            EntityBounds::player_sneaking()
+                        } else {
+                            EntityBounds::player()
+                        };
+
+                        let item_bb = EntityBounds::item();
+
+                        if player_bb.intersects(
+                            p.x, p.y, p.z,
+                            &item_bb, *ix, *iy, *iz
+                        ){
+                        let age = {
+                        let spawn_time = item_spawn_times.read().await;
+                            spawn_time.get(eid)
+                                .map(|t| t.elapsed().as_secs_f32())
+                                .unwrap_or(0.0)
+                            };
+
+                            if age < 0.5 {
+                                continue;
+                            }
+
+                            let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
+                            if let Some(slot) = slot_index {
+                                picked_up.push(*eid);
+
+                                send_packet(&mut framed, SetSlot {
+                                    window_id: 0,
+                                    slot,
+                                    item_id: *item_id,
+                                    count: *count,
+                                    metadata: *metadata
+                                }).await;
+                            }
+                        }
+                    }
+                    for eid in picked_up {
+                        items.remove(&eid);
+                        item_spawn_times.write().await.remove(&eid);
+                        pickup_tx.send((state.entity_id, uuid, eid)).ok();
+                    }
+                }
+
                 if config.world.difficulty == 0 {
                     if state.health < 20.0 {
                         state.regen_timer += 1;
@@ -416,57 +467,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             food: state.food,
                             food_saturation: state.food_saturation
                         }).await;
-                    }
-                }
-
-                if let Some(uuid) = state.uuid
-                    && let Some(p) = player_registry.get(&uuid).await
-                {
-                    let mut items = item_positions.write().await;
-                    let mut picked_up = vec![];
-
-                    for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-                        let player_bb = if state.is_sneaking {
-                            EntityBounds::player_sneaking()
-                        } else {
-                            EntityBounds::player()
-                        };
-
-                        let item_bb = EntityBounds::item();
-
-                        if player_bb.intersects(
-                            p.x, p.y, p.z,
-                            &item_bb, *ix, *iy, *iz
-                        ){
-                        let age = {
-                        let spawn_time = item_spawn_times.read().await;
-                            spawn_time.get(eid)
-                                .map(|t| t.elapsed().as_secs_f32())
-                                .unwrap_or(0.0)
-                            };
-
-                            if age < 0.5 {
-                                continue;
-                            }
-
-                            let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
-                            if let Some(slot) = slot_index {
-                                picked_up.push(*eid);
-
-                                send_packet(&mut framed, SetSlot {
-                                    window_id: 0,
-                                    slot,
-                                    item_id: *item_id,
-                                    count: *count,
-                                    metadata: *metadata
-                                }).await;
-                            }
-                        }
-                    }
-                    for eid in picked_up {
-                        items.remove(&eid);
-                        item_spawn_times.write().await.remove(&eid);
-                        pickup_tx.send((state.entity_id, uuid, eid)).ok();
                     }
                 }
             }
