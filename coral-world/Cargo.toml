@@ -1,0 +1,10 @@
+[package]
+name = "coral-world"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+coral-protocol = { path = "../coral-protocol" }
+flate2.workspace = true
+rand.workspace = true
+tokio.workspace = true

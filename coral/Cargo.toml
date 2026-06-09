@@ -1,0 +1,19 @@
+[package]
+name = "coral"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+coral-command = { path = "../coral-command" }
+coral-config = { path = "../coral-config" }
+coral-protocol = { path = "../coral-protocol" }
+coral-server = { path = "../coral-server" }
+coral-world = { path = "../coral-world" }
+futures.workspace = true
+rsa.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true

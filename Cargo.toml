@@ -1,9 +1,15 @@
-[package]
-name = "coral"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+  "coral",
+  "coral-command",
+  "coral-config",
+  "coral-protocol",
+  "coral-server",
+  "coral-world"
+]
 
-[dependencies]
+[workspace.dependencies]
 aes = "0.9.1"
 base64 = "0.22.1"
 bytes = "1.11.1"
