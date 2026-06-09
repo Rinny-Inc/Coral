@@ -237,15 +237,16 @@ pub struct UseEntity {
 #[derive(Debug)]
 pub struct EntityVelocity {
     pub entity_id: i32,
-    pub vx: i16, // fixed point * 8000
-    pub vy: i16,
-    pub vz: i16,
+    pub vx: f64,
+    pub vy: f64,
+    pub vz: f64,
 }
 
 #[derive(Debug)]
 pub struct EntityMetadata {
     pub entity_id: i32,
-    pub flags: u8, // bit 1 = sneaking, bit 3 = sprinting
+    pub entity_flags: u8, // bit 1 = sneaking, bit 3 = sprinting
+    pub skin_parts: u8,
 }
 
 impl PacketIn for EntityAction {
@@ -289,11 +290,14 @@ impl PacketIn for UseEntity {
 
 impl PacketOut for EntityVelocity {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        let factor = 8000.0f64;
+        let max = 3.9f64;
+
         writer.write_varint(0x12);
         writer.write_varint(self.entity_id);
-        writer.write_i16(self.vx);
-        writer.write_i16(self.vy);
-        writer.write_i16(self.vz);
+        writer.write_i16((self.vx.clamp(-max, max) * factor) as i16);
+        writer.write_i16((self.vy.clamp(-max, max) * factor) as i16);
+        writer.write_i16((self.vz.clamp(-max, max) * factor) as i16);
         Ok(())
     }
 }
@@ -304,11 +308,11 @@ impl PacketOut for EntityMetadata {
 
         // index 0
         writer.write_byte(0x00);
-        writer.write_byte(self.flags);
+        writer.write_byte(self.entity_flags);
 
         // index 10 - skin layers
         writer.write_byte(0x0A);
-        writer.write_byte(0x7F);
+        writer.write_byte(self.skin_parts);
 
         // end
         writer.write_byte(0x7F);

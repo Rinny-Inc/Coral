@@ -94,6 +94,26 @@ impl PacketOut for OpenWindow {
     }
 }
 
+impl PacketIn for ConfirmTransaction {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let window_id = reader.read_byte();
+        let action_number = reader.read_i16();
+        let accepted = reader.read_bool();
+        Ok(ConfirmTransaction {
+            window_id,
+            action_number,
+            accepted,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 impl PacketOut for ConfirmTransaction {
     fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x32);
@@ -211,8 +231,42 @@ impl PacketOut for WindowItems {
             if *item_id != -1 {
                 writer.write_byte(*count);
                 writer.write_i16(*metadata);
+                writer.write_byte(0);
             }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct CreativeInventoryAction {
+    pub slot: i16,
+    pub item_id: i16,
+    pub item_count: u8,
+    pub item_damage: i16,
+}
+impl PacketIn for CreativeInventoryAction {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let slot = reader.read_i16();
+        let item_id = reader.read_i16();
+        let (item_count, item_damage) = if item_id != -1 {
+            (reader.read_byte(), reader.read_i16())
+        } else {
+            (0, 0)
+        };
+        Ok(CreativeInventoryAction {
+            slot,
+            item_id,
+            item_count,
+            item_damage,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

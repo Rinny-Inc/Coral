@@ -24,6 +24,8 @@ pub struct Player {
     pub is_dead: bool,
     pub is_sneaking: bool,
     pub is_sprinting: bool,
+    pub skin_parts: u8,
+    pub no_damage_ticks: i32,
 }
 
 impl Player {
@@ -54,6 +56,8 @@ impl Player {
             is_dead: false,
             is_sneaking: false,
             is_sprinting: false,
+            skin_parts: 0x7F,
+            no_damage_ticks: 0,
         }
     }
 

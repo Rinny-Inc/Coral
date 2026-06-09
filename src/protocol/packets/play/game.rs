@@ -91,3 +91,38 @@ impl PacketIn for ClientStatus {
         self
     }
 }
+
+#[derive(Debug)]
+pub struct SetExperience {
+    pub experience_bar: f32, // 0.0 = empty | 1.0 = full
+    pub level: i32,
+    pub total_experience: i32,
+}
+
+#[derive(Debug)]
+pub struct EntityStatus {
+    pub entity_id: i32,
+    // 2 = hurt animation + red flash
+    // 3 = dead
+    // 6 = tame failed (smoke particles)
+    // 7 = tame succeeded (hearts)
+    pub status: u8,
+}
+
+impl PacketOut for SetExperience {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1F);
+        writer.write_f32(self.experience_bar);
+        writer.write_varint(self.level);
+        writer.write_varint(self.total_experience);
+        Ok(())
+    }
+}
+impl PacketOut for EntityStatus {
+    fn encode(&self, writer: &mut crate::protocol::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1A);
+        writer.write_i32(self.entity_id);
+        writer.write_byte(self.status);
+        Ok(())
+    }
+}

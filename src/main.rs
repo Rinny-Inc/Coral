@@ -43,7 +43,7 @@ type PingUpdate = (Uuid, u32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
 type AnimationUpdate = (i32, u8);
-type MetadataUpdate = (i32, u8);
+type MetadataUpdate = (i32, u8, u8);
 type DamageEvent = (Uuid, f32, i32, f32, i32);
 type ItemDrop = (i32, f64, f64, f64);
 type DespawnEntity = i32;
@@ -51,6 +51,7 @@ type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
 type ItemPickup = (i32, Uuid, i32);
 type TimeUpdate = (i64, i64);
 type WeatherUpdate = WeatherState;
+type EntityStatusUpdate = (i32, u8);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -77,6 +78,8 @@ pub struct ServerContext {
     pickup_tx: Arc<broadcast::Sender<ItemPickup>>,
     time_tx: Arc<broadcast::Sender<TimeUpdate>>,
     weather_tx: Arc<broadcast::Sender<WeatherUpdate>>,
+    tick_tx: Arc<broadcast::Sender<()>>,
+    status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
     world_blocks: Arc<WorldBlocks>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -157,6 +160,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
         time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
         weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
+        tick_tx: Arc::new(broadcast::channel(4).0),
+        status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
@@ -165,6 +170,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         whitelist,
         banlist,
     };
+
+    let tick_tx_task = ctx.tick_tx.clone();
+    let players_registry_tick = ctx.player_registry.clone();
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_millis(50));
+        loop {
+            interval.tick().await;
+            players_registry_tick.tick().await;
+            tick_tx_task.send(()).ok();
+        }
+    });
 
     let time_tx_task = ctx.time_tx.clone();
     tokio::spawn(async move {
@@ -183,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    if config.world.disable_weather {
+    if !config.world.disable_weather {
         let weather_tx_task = ctx.weather_tx.clone();
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_millis(50));

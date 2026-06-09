@@ -144,3 +144,36 @@ impl PacketOut for PluginMessage {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct ClientSettings {
+    pub locale: String,
+    pub view_distance: u8,
+    pub chat_mode: u8,
+    pub chat_colors: bool,
+    pub skin_parts: u8,
+}
+impl PacketIn for ClientSettings {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let locale = reader.read_string();
+        let view_distance = reader.read_byte();
+        let chat_mode = reader.read_varint() as u8;
+        let chat_colors = reader.read_bool();
+        let skin_parts = reader.read_byte();
+        Ok(ClientSettings {
+            locale,
+            view_distance,
+            chat_mode,
+            chat_colors,
+            skin_parts,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}

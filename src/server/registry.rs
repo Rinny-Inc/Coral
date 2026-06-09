@@ -41,6 +41,14 @@ impl PlayerRegistry {
         self.players.read().await.len() as u32
     }
 
+    pub async fn tick(&self) {
+        for p in self.players.write().await.values_mut() {
+            if p.no_damage_ticks > 0 {
+                p.no_damage_ticks -= 1;
+            }
+        }
+    }
+
     pub async fn get(&self, uuid: &Uuid) -> Option<Player> {
         self.players.read().await.get(uuid).cloned()
     }
@@ -89,7 +97,18 @@ impl PlayerRegistry {
         }
     }
 
-    // TODO: could prolly have less argument by doing structs
+    pub async fn update_skin_parts(&self, uuid: Uuid, skin_parts: u8) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.skin_parts = skin_parts;
+        }
+    }
+
+    pub async fn update_no_damage_ticks(&self, uuid: Uuid, no_damage_ticks: i32) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.no_damage_ticks = no_damage_ticks;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn update_position(
         &self,

@@ -19,7 +19,6 @@ use crate::protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token
 use crate::protocol::packets::handshake::keepalive::KeepAlive;
 use crate::protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use crate::protocol::packets::login::{EncryptionRequest, EncryptionResponse};
-use crate::protocol::packets::play::PluginMessage;
 use crate::protocol::packets::play::block::{
     BlockBreakAnimation, BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
 };
@@ -32,9 +31,12 @@ use crate::protocol::packets::play::entity::{
     ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook,
     EntityMetadata, EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer, UseEntity,
 };
-use crate::protocol::packets::play::game::{ChangeGameState, ClientStatus, Respawn, UpdateHealth};
+use crate::protocol::packets::play::game::{
+    ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth,
+};
 use crate::protocol::packets::play::inventory::{
-    ClickWindow, CloseWindow, ConfirmTransaction, Inventory, SetSlot, Slot, WindowItems,
+    ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory, SetSlot,
+    Slot, WindowItems,
 };
 use crate::protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
@@ -42,6 +44,7 @@ use crate::protocol::packets::play::movement::{
 use crate::protocol::packets::play::player_list::{
     BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
 };
+use crate::protocol::packets::play::{ClientSettings, PluginMessage};
 use crate::protocol::packets::{PacketIn, PacketOut};
 use crate::protocol::{
     packets::{
@@ -193,6 +196,8 @@ struct PlayerState {
     health: f32,
     food: i32,
     food_saturation: f32,
+    food_exhaustion: f32,
+    regen_timer: i32,
     is_dead: bool,
     is_sneaking: bool,
     is_sprinting: bool,
@@ -204,6 +209,9 @@ struct PlayerState {
     inventory: Inventory,
     breaking_block: Option<(i32, i32, i32)>,
     current_weather: WeatherState,
+    client_brand: Option<String>,
+    skin_parts: u8,
+    tick_count: i64,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -216,6 +224,8 @@ impl PlayerState {
             health: 20.0,
             food: 20,
             food_saturation: 5.0,
+            food_exhaustion: 0.0,
+            regen_timer: 0,
             is_dead: false,
             is_sneaking: false,
             is_sprinting: false,
@@ -227,6 +237,9 @@ impl PlayerState {
             inventory: Inventory::new(),
             breaking_block: None,
             current_weather: WeatherState::Clear,
+            client_brand: None,
+            skin_parts: 0x7F,
+            tick_count: 0,
         }
     }
 }
@@ -255,6 +268,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         pickup_tx,
         time_tx,
         weather_tx,
+        tick_tx,
+        status_tx,
         world_blocks,
         player_registry,
         private_key,
@@ -285,6 +300,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut pickup_rx = pickup_tx.subscribe();
     let mut time_rx = time_tx.subscribe();
     let mut weather_rx = weather_tx.subscribe();
+    let mut tick_rx = tick_tx.subscribe();
+    let mut status_rx = status_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -304,6 +321,155 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
             }
+            Ok(()) = tick_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play
+                    || state.is_dead
+                    || state.gamemode != 0
+                {
+                    continue;
+                }
+
+                state.tick_count += 1;
+
+                if config.world.difficulty == 0 {
+                    if state.health < 20.0 {
+                        state.regen_timer += 1;
+                        if state.regen_timer >= 80 {
+                            state.regen_timer = 0;
+                            state.health = (state.health + 1.0).min(20.0);
+                            if let Some(uuid) = state.uuid {
+                                player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                            }
+                            send_packet(&mut framed, UpdateHealth {
+                                health: state.health,
+                                food: state.food,
+                                food_saturation: state.food_saturation,
+                            }).await;
+                        }
+                    } else {
+                        state.regen_timer = 0;
+                    }
+                    continue;
+                }
+
+                if state.food_exhaustion >= 4.0 {
+                    state.food_exhaustion -= 4.0;
+
+                    if state.food_saturation > 0.0 {
+                        state.food_saturation = (state.food_saturation - 1.0).max(0.0);
+                    } else if state.food > 0 {
+                        state.food -= 1;
+                        state.food_saturation = 0.0;
+
+                        if let Some(uuid) = state.uuid {
+                            player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                        }
+
+                        send_packet(&mut framed, UpdateHealth {
+                            health: state.health,
+                            food: state.food,
+                            food_saturation: state.food_saturation
+                        }).await;
+                    }
+                }
+                if state.food >= 18 && state.health < 20.0 {
+                    state.regen_timer += 1;
+
+                    if state.regen_timer >= 80 {
+                        state.regen_timer = 0;
+                        state.health = (state.health + 1.0).min(20.0);
+                        state.food_exhaustion += 3.0;
+
+                        if let Some(uuid) = state.uuid {
+                            player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                        }
+                        send_packet(&mut framed, UpdateHealth {
+                            health: state.health,
+                            food: state.food,
+                            food_saturation: state.food_saturation
+                        }).await;
+                    }
+                } else {
+                    state.regen_timer = 0;
+                }
+
+                if state.food == 0
+                    && state.tick_count % 80 == 0
+                {
+                    let min_health = match config.world.difficulty {
+                        1 => 10.0,
+                        2 => 1.0,
+                        3 => 0.0,
+                        _ => 1.0
+                    };
+
+                    if state.health > min_health {
+                        state.health = (state.health - 1.0).max(min_health);
+                        state.is_dead = state.health <= 0.0;
+
+                        if let Some(uuid) = state.uuid {
+                            player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                        }
+
+                        send_packet(&mut framed, UpdateHealth {
+                            health: state.health,
+                            food: state.food,
+                            food_saturation: state.food_saturation
+                        }).await;
+                    }
+                }
+
+                if let Some(uuid) = state.uuid
+                    && let Some(p) = player_registry.get(&uuid).await
+                {
+                    let mut items = item_positions.write().await;
+                    let mut picked_up = vec![];
+
+                    for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
+                        let player_bb = if state.is_sneaking {
+                            EntityBounds::player_sneaking()
+                        } else {
+                            EntityBounds::player()
+                        };
+
+                        let item_bb = EntityBounds::item();
+
+                        if player_bb.intersects(
+                            p.x, p.y, p.z,
+                            &item_bb, *ix, *iy, *iz
+                        ){
+                        let age = {
+                        let spawn_time = item_spawn_times.read().await;
+                            spawn_time.get(eid)
+                                .map(|t| t.elapsed().as_secs_f32())
+                                .unwrap_or(0.0)
+                            };
+
+                            if age < 0.5 {
+                                continue;
+                            }
+
+                            let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
+                            if let Some(slot) = slot_index {
+                                picked_up.push(*eid);
+
+                                send_packet(&mut framed, SetSlot {
+                                    window_id: 0,
+                                    slot,
+                                    item_id: *item_id,
+                                    count: *count,
+                                    metadata: *metadata
+                                }).await;
+                            }
+                        }
+                    }
+                    for eid in picked_up {
+                        items.remove(&eid);
+                        item_spawn_times.write().await.remove(&eid);
+                        pickup_tx.send((state.entity_id, uuid, eid)).ok();
+                    }
+                }
+            }
             Ok(weather) = weather_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
@@ -317,6 +483,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 }
                 send_packet(&mut framed, DestroyEntities {
                     entity_ids: vec![eid]
+                }).await;
+            }
+            Ok((eid, status)) = status_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, EntityStatus {
+                    entity_id: eid,
+                    status,
                 }).await;
             }
             Ok((collector_eid, collector_uuid, item_eid)) = pickup_rx.recv() => {
@@ -385,7 +560,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     animation: anim
                 }).await;
             }
-            Ok((eid, flags)) = meta_rx.recv() => {
+            Ok((eid, entity_flags, skin_parts)) = meta_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
@@ -394,7 +569,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 }
                 send_packet(&mut framed, EntityMetadata {
                     entity_id: eid,
-                    flags
+                    entity_flags,
+                    skin_parts
                 }).await;
             }
             Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
@@ -455,7 +631,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                     send_packet(&mut framed, EntityMetadata {
                         entity_id: player.entity_id,
-                        flags: 0x00
+                        entity_flags: player.entity_flags(),
+                        skin_parts: player.skin_parts
                     }).await;
                 }
             }
@@ -474,6 +651,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     food_saturation,
                 }).await;
 
+                send_packet(&mut framed, EntityStatus {
+                    entity_id: state.entity_id,
+                    status: 2,
+                }).await;
+
                 if health > 0.0
                     && let Some(uuid_val) = state.uuid
                     && let Some(me) = player_registry.get(&uuid_val).await
@@ -482,12 +664,24 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     if let Some(attacker) = players.iter().find(|p| p.entity_id == attacker_eid) {
                         let dx = me.x - attacker.x;
                         let dz = me.z - attacker.z;
-                        let len = (dx * dx + dz * dz).sqrt().max(0.001);
-                        let knockback = 0.4;
-                        let vx = (dx / len * knockback * 8000.0) as i16;
-                        let vz = (dz / len * knockback * 8000.0) as i16;
-                        let vy = 2000i16;
+                        let magnitude = (dx * dx + dz * dz).sqrt().max(0.0001);
 
+                        let horizontal = 0.4f64;
+                        let mut vx = -(dx / magnitude) * horizontal;
+                        let mut vy = 0.2f64;
+                        let mut vz = -(dz / magnitude) * horizontal;
+
+                        if attacker.is_sprinting {
+                            let yaw_rad = attacker.yaw * std::f32::consts::PI / 180.0;
+                            let sin_yaw = -yaw_rad.sin() as f64;
+                            let cos_yaw = yaw_rad.cos() as f64;
+                            let sprint_horizontal = 0.5f64;
+                            let sprint_vertical = 0.1f64;
+
+                            vx += sin_yaw * sprint_horizontal;
+                            vy = sprint_vertical;
+                            vz += cos_yaw * sprint_horizontal;
+                        }
                         send_packet(&mut framed, EntityVelocity {
                             entity_id: state.entity_id,
                             vx,
@@ -939,7 +1133,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 continue;
                             }
                             if let Some(ref name) = state.name {
-                                if chat.message.len() > 100 { // FIXME: IF VANILLA = 100; IF FORGE 256 BECAUSE OF MOD
+                                let max_len = match state.client_brand.as_deref() {
+                                    Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
+                                    _ => 100,
+                                };
+                                if chat.message.len() > max_len {
                                     continue;
                                 }
                                 let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
@@ -970,52 +1168,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
-                                let mut items = item_positions.write().await;
-                                let mut picked_up = vec![];
-
-                                for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-                                    let player_bb = if state.is_sneaking {
-                                        EntityBounds::player_sneaking()
-                                    } else {
-                                        EntityBounds::player()
-                                    };
-
-                                    let item_bb = EntityBounds::item();
-
-                                    if player_bb.intersects(
-                                        pos.x, pos.y, pos.z,
-                                        &item_bb, *ix, *iy, *iz
-                                    ){
-                                        let age = {
-                                            let spawn_time = item_spawn_times.read().await;
-                                            spawn_time.get(eid)
-                                                .map(|t| t.elapsed().as_secs_f32())
-                                                .unwrap_or(0.0)
-                                        };
-
-                                        if age < 0.5 {
-                                            continue;
-                                        }
-
-                                        let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
-                                        if let Some(slot) = slot_index {
-                                            picked_up.push(*eid);
-
-                                            send_packet(&mut framed, SetSlot {
-                                                window_id: 0,
-                                                slot,
-                                                item_id: *item_id,
-                                                count: *count,
-                                                metadata: *metadata
-                                            }).await;
-                                        }
-                                    }
-                                }
-                                for eid in picked_up {
-                                    items.remove(&eid);
-                                    item_spawn_times.write().await.remove(&eid);
-                                    pickup_tx.send((state.entity_id, uuid, eid)).ok();
-                                }
                                 entity_tracker.write().await.update_position(
                                     state.entity_id,
                                     pos.x, pos.y, pos.z
@@ -1041,8 +1193,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     || (pos.z - p.z).abs() > 0.01;
 
                                 if moved {
-                                    player_registry.update_position(&uuid, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground).await;
-                                    pos_tx.send((uuid, state.entity_id, pos.x, pos.y, pos.z, 90.0, 0.0, pos.on_ground)).ok();
+                                    let distance = ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt();
+
+                                    if state.is_sprinting {
+                                        state.food_exhaustion += 0.1 * distance as f32;
+                                    } else {
+                                        state.food_exhaustion += 0.01 * distance as f32;
+                                    }
+                                    player_registry.update_position(&uuid, pos.x, pos.y, pos.z, p.yaw, p.pitch, pos.on_ground).await;
+                                    pos_tx.send((uuid, state.entity_id, pos.x, pos.y, pos.z, p.yaw, p.pitch, pos.on_ground)).ok();
                                 }
                             }
                             continue;
@@ -1060,6 +1219,39 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                         if packet.as_any().downcast_ref::<CloseWindow>().is_some() {
                             // TODO
+                            continue;
+                        }
+
+                        if packet.as_any().downcast_ref::<ConfirmTransaction>().is_some() {
+                            // client acknowledged our confirmation
+                            continue;
+                        }
+
+                        if let Some(creative) = packet.as_any().downcast_ref::<CreativeInventoryAction>() {
+                            if state.gamemode != 1 {
+                                continue;
+                            }
+
+                            let internal = Inventory::packet_to_internal(creative.slot);
+                            if let Some(idx) = internal {
+                                if creative.item_id == -1 {
+                                    state.inventory.slots[idx] = None;
+                                } else {
+                                    state.inventory.slots[idx] = Some(Slot {
+                                        item_id: creative.item_id,
+                                        count: creative.item_count,
+                                        metadata: creative.item_damage
+                                    });
+                                }
+                                if idx < 9
+                                    && idx == state.held_slot as usize
+                                {
+                                    state.held_item = creative.item_id;
+                                    if let Some(uuid) = state.uuid {
+                                        player_registry.update_held_item(uuid, state.held_item).await;
+                                    }
+                                }
+                            }
                             continue;
                         }
 
@@ -1143,7 +1335,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
 
                                     if let Some(player) = player_registry.get(&uuid).await {
-                                        meta_tx.send((state.entity_id, player.entity_flags())).ok();
+                                        meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
                                     }
                                 }
                             }
@@ -1156,9 +1348,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 if let Some(target) = players.iter()
                                     .find(|p| p.entity_id == use_entity.target_entity_id)
                                 {
-                                    if target.is_dead {
+                                    if target.is_dead || target.no_damage_ticks > 0 {
                                         continue;
                                     }
+                                    player_registry.update_no_damage_ticks(target.uuid, 10).await;
                                     if let Some(me) = player_registry.get(&state.uuid.unwrap()).await {
                                         let reach = if state.gamemode == 1 {
                                             5.0
@@ -1176,6 +1369,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
                                         dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                        status_tx.send((use_entity.target_entity_id, 2)).ok();
                                         anim_tx.send((use_entity.target_entity_id, 1)).ok();
                                     }
                                 }
@@ -1205,8 +1399,21 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             continue;
                         }
 
+                        if let Some(settings) = packet.as_any().downcast_ref::<ClientSettings>() {
+                            state.skin_parts = settings.skin_parts;
+                            if let Some(uuid) = state.uuid {
+                                player_registry.update_skin_parts(uuid, settings.skin_parts).await;
+                            }
+                            meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
+                            continue;
+                        }
+
                         if let Some(plugin) = packet.as_any().downcast_ref::<PluginMessage>() {
                             if plugin.channel == "MC|Brand" {
+                                if let Ok(brand) = String::from_utf8(plugin.data.clone()) {
+                                    let brand = brand.trim_matches('\0').to_string();
+                                    state.client_brand = Some(brand);
+                                }
                                 send_packet(&mut framed, PluginMessage::brand("Coral")).await;
                             }
                             continue;
@@ -1263,11 +1470,9 @@ async fn damage_player(
 ) {
     *health = (*health - amount).max(0.0);
 
-    if let Some(uuid) = Some(uuid) {
-        player_registry
-            .update_health(uuid, *health, *food, *food_saturation)
-            .await;
-    }
+    player_registry
+        .update_health(uuid, *health, *food, *food_saturation)
+        .await;
 
     send_packet(
         framed,
@@ -1547,14 +1752,24 @@ async fn make_player_join(
                 current_item: 0,
             },
         )
-        .await
+        .await;
+        send_packet(
+            framed,
+            EntityMetadata {
+                entity_id: p.entity_id,
+                entity_flags: p.entity_flags(),
+                skin_parts: p.skin_parts,
+            },
+        )
+        .await;
     }
 
     send_packet(
         framed,
         EntityMetadata {
             entity_id: player.entity_id,
-            flags: 0x00,
+            entity_flags: 0x00,
+            skin_parts: state.skin_parts,
         },
     )
     .await;
@@ -1565,6 +1780,16 @@ async fn make_player_join(
             health: 20.0,
             food: 20,
             food_saturation: 5.0,
+        },
+    )
+    .await;
+
+    send_packet(
+        framed,
+        SetExperience {
+            experience_bar: 0.0,
+            level: 0,
+            total_experience: 0,
         },
     )
     .await;
