@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -40,7 +41,7 @@ use coral_protocol::packets::play::inventory::{
     Slot, WindowItems,
 };
 use coral_protocol::packets::play::movement::{
-    PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLookIn,
+    PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
 };
 use coral_protocol::packets::play::player_list::{
     BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
@@ -52,21 +53,20 @@ use coral_protocol::{
         PacketKey, PacketRegistry,
         handshake::{self, EnumProtocol, PacketHandshake},
         login::{LoginStart, LoginSuccess},
-        play::{
-            PlayerAbilities, PlayerPositionAndLook, SpawnPosition, SpawnPosition17,
-            join_game::JoinGame,
-        },
+        play::{PlayerAbilities, SpawnPosition, SpawnPosition17, join_game::JoinGame},
         status::{Ping, Pong, Request, Response},
     },
     reader::Reader,
     writer::Writer,
 };
-use coral_server::bounding_box::EntityBounds;
-use coral_server::entity_tracker::{EntityTracker, TrackedEntity};
-use coral_server::player::Player;
-use coral_server::registry::{PlayerRegistry, next_entity_id};
+use coral_server::{
+    bounding_box::EntityBounds,
+    entity_tracker::{EntityTracker, TrackedEntity},
+    player::Player,
+    registry::{PlayerRegistry, next_entity_id},
+};
 use coral_world::blocks::{Block, WorldBlocks};
-use coral_world::chunk::ChunkData;
+use coral_world::chunk::{ChunkData, UnloadChunk};
 use coral_world::time::TimeUpdate;
 use coral_world::weather::WeatherState;
 
@@ -212,6 +212,9 @@ struct PlayerState {
     client_brand: Option<String>,
     skin_parts: u8,
     tick_count: i64,
+    chunk_x: i32,
+    chunk_z: i32,
+    loaded_chunks: HashSet<(i32, i32)>,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -240,6 +243,9 @@ impl PlayerState {
             client_brand: None,
             skin_parts: 0x7F,
             tick_count: 0,
+            chunk_x: 0,
+            chunk_z: 0,
+            loaded_chunks: HashSet::new(),
         }
     }
 }
@@ -324,7 +330,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             Ok(()) = tick_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play
                     || state.is_dead
-                    || state.gamemode != 0
                 {
                     continue;
                 }
@@ -362,14 +367,19 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             }
 
                             let slot_index = state.inventory.add_item_get_slot(*item_id, *count, *metadata);
-                            if let Some(slot) = slot_index {
+                            if let Some((packet_slot, internal_idx)) = slot_index {
                                 picked_up.push(*eid);
+
+                                let actual_count = state.inventory.slots[internal_idx]
+                                    .as_ref()
+                                    .map(|s| s.count)
+                                    .unwrap_or(*count);
 
                                 send_packet(&mut framed, SetSlot {
                                     window_id: 0,
-                                    slot,
+                                    slot: packet_slot,
                                     item_id: *item_id,
-                                    count: *count,
+                                    count: actual_count,
                                     metadata: *metadata
                                 }).await;
                             }
@@ -380,6 +390,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         item_spawn_times.write().await.remove(&eid);
                         pickup_tx.send((state.entity_id, uuid, eid)).ok();
                     }
+                }
+
+                if state.gamemode != 0 {
+                    continue;
                 }
 
                 if config.world.difficulty == 0 {
@@ -1168,10 +1182,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
-                                entity_tracker.write().await.update_position(
-                                    state.entity_id,
-                                    pos.x, pos.y, pos.z
-                                );
                                 if pos.on_ground && !p.on_ground && state.gamemode == 0 {
                                     let fall_distance = p.y - pos.y;
                                     if fall_distance > 3.0 {
@@ -1193,6 +1203,18 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     || (pos.z - p.z).abs() > 0.01;
 
                                 if moved {
+                                    entity_tracker.write().await.update_position(
+                                        state.entity_id,
+                                        pos.x, pos.y, pos.z
+                                    );
+                                    let new_chunk_x = (pos.x as i32) >> 4;
+                                    let new_chunk_z = (pos.z as i32) >> 4;
+
+                                    if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
+                                        state.chunk_x = new_chunk_x;
+                                        state.chunk_z = new_chunk_z;
+                                        update_chunks(&mut framed, client_protocol, &world_blocks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                    }
                                     let distance = ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt();
 
                                     if state.is_sprinting {
@@ -1282,7 +1304,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     level_type: "flat".to_string()
                                 }).await;
 
-                                send_chunks(&mut framed, client_protocol, &world_blocks).await;
+                                state.loaded_chunks.clear();
+                                send_chunks(
+                                    &mut framed,
+                                    client_protocol,
+                                    &world_blocks,
+                                    0, 0,
+                                    config.server.view_distance,
+                                    &mut state.loaded_chunks
+                                ).await;
 
                                 send_packet(&mut framed, PlayerPositionAndLook {
                                     x: 0.5,
@@ -1377,8 +1407,16 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             continue;
                         }
 
-                        if let Some(pos_look) = packet.as_any().downcast_ref::<PlayerPositionAndLookIn>() {
+                        if let Some(pos_look) = packet.as_any().downcast_ref::<PlayerPositionAndLook>() {
                             if let Some(uuid) = state.uuid {
+                                let new_chunk_x = (pos_look.x as i32) >> 4;
+                                let new_chunk_z = (pos_look.z as i32) >> 4;
+
+                                if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
+                                    state.chunk_x = new_chunk_x;
+                                    state.chunk_z = new_chunk_z;
+                                    update_chunks(&mut framed, client_protocol, &world_blocks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                }
                                 player_registry.update_position(&uuid, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground).await;
                                 pos_tx.send((uuid, state.entity_id, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground)).ok();
                             }
@@ -1572,12 +1610,62 @@ async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world_blocks: &Arc<WorldBlocks>,
+    center_x: i32,
+    center_z: i32,
+    view_distance: i32,
+    loaded_chunks: &mut HashSet<(i32, i32)>,
 ) {
-    for cx in -2i32..=2 {
-        for cz in -2i32..=2 {
+    for cx in (center_x - view_distance)..=(center_x + view_distance) {
+        for cz in (center_z - view_distance)..=(center_z + view_distance) {
+            if loaded_chunks.contains(&(cx, cz)) {
+                continue;
+            }
             let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks).await;
             send_packet(framed, chunk).await;
+            loaded_chunks.insert((cx, cz));
         }
+    }
+}
+
+async fn update_chunks(
+    framed: &mut Framed<TcpStream, Codec>,
+    client_protocol: i32,
+    world_blocks: &Arc<WorldBlocks>,
+    new_chunk_x: i32,
+    new_chunk_z: i32,
+    view_distance: i32,
+    loaded_chunks: &mut std::collections::HashSet<(i32, i32)>,
+) {
+    send_chunks(
+        framed,
+        client_protocol,
+        world_blocks,
+        new_chunk_x,
+        new_chunk_z,
+        view_distance,
+        loaded_chunks,
+    )
+    .await;
+
+    let to_unload: Vec<(i32, i32)> = loaded_chunks
+        .iter()
+        .filter(|(cx, cz)| {
+            (cx - new_chunk_x).abs() > view_distance + 1
+                || (cz - new_chunk_z).abs() > view_distance + 1
+        })
+        .copied()
+        .collect();
+
+    for (cx, cz) in to_unload {
+        loaded_chunks.remove(&(cx, cz));
+        send_packet(
+            framed,
+            UnloadChunk {
+                chunk_x: cx,
+                chunk_z: cz,
+            },
+        )
+        .await;
     }
 }
 
@@ -1690,7 +1778,16 @@ async fn make_player_join(
     )
     .await;
 
-    send_chunks(framed, client_protocol, world_blocks).await;
+    send_chunks(
+        framed,
+        client_protocol,
+        world_blocks,
+        0,
+        0,
+        config.server.view_distance,
+        &mut state.loaded_chunks,
+    )
+    .await;
 
     send_packet(
         framed,

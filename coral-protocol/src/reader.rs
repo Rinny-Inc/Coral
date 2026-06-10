@@ -78,8 +78,8 @@ impl Reader {
         match self.read_byte() {
             0x00 => false,
             0x01 => true,
-            other => {
-                eprintln!("Invalid boolean value: {} treating as false", other);
+            _other => {
+                //eprintln!("Invalid boolean value: {} treating as false", other);
                 false
             }
         }

@@ -1,4 +1,7 @@
-use crate::{packets::PacketIn, reader::Reader};
+use crate::{
+    packets::{PacketIn, PacketOut},
+    reader::Reader,
+};
 
 #[derive(Debug)]
 pub struct PlayerPosition {
@@ -16,7 +19,12 @@ pub struct PlayerLook {
 }
 
 #[derive(Debug)]
-pub struct PlayerPositionAndLookIn {
+pub struct PlayerOnGround {
+    pub on_ground: bool,
+}
+
+#[derive(Debug)]
+pub struct PlayerPositionAndLook {
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -25,9 +33,43 @@ pub struct PlayerPositionAndLookIn {
     pub on_ground: bool,
 }
 
-#[derive(Debug)]
-pub struct PlayerOnGround {
-    pub on_ground: bool,
+impl PacketOut for PlayerPositionAndLook {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x08);
+        writer.write_f64(self.x);
+        writer.write_f64(self.y);
+        writer.write_f64(self.z);
+        writer.write_f32(self.yaw);
+        writer.write_f32(self.pitch);
+        writer.write_bool(self.on_ground);
+        Ok(())
+    }
+}
+impl PacketIn for PlayerPositionAndLook {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let x = reader.read_double();
+        let y = reader.read_double();
+        let z = reader.read_double();
+        let yaw = reader.read_float();
+        let pitch = reader.read_float();
+        let on_ground = reader.read_bool();
+        Ok(PlayerPositionAndLook {
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            on_ground,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl PacketIn for PlayerPosition {
@@ -58,33 +100,6 @@ impl PacketIn for PlayerLook {
         let pitch = reader.read_float();
         let on_ground = reader.read_bool();
         Ok(PlayerLook {
-            yaw,
-            pitch,
-            on_ground,
-        })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-impl PacketIn for PlayerPositionAndLookIn {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        let mut reader = Reader::new(buf);
-        let x = reader.read_double();
-        let y = reader.read_double();
-        let z = reader.read_double();
-        let yaw = reader.read_float();
-        let pitch = reader.read_float();
-        let on_ground = reader.read_bool();
-        Ok(PlayerPositionAndLookIn {
-            x,
-            y,
-            z,
             yaw,
             pitch,
             on_ground,

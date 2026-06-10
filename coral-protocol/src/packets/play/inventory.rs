@@ -162,7 +162,13 @@ impl Inventory {
         }
     }
 
-    pub fn add_item_get_slot(&mut self, item_id: i16, count: u8, metadata: i16) -> Option<i16> {
+    pub fn add_item_get_slot(
+        &mut self,
+        item_id: i16,
+        count: u8,
+        metadata: i16,
+    ) -> Option<(i16, usize)> {
+        // stack with existing
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if let Some(s) = slot
                 && s.item_id == item_id
@@ -170,14 +176,10 @@ impl Inventory {
                 && s.count < 64
             {
                 s.count += count.min(64 - s.count);
-                let packet_slot = Self::internal_to_packet(i);
-                println!(
-                    "DEBUG: stacked item {} in internal slot {}; packet slot {}",
-                    item_id, i, packet_slot
-                );
-                return Some(packet_slot);
+                return Some((Self::internal_to_packet(i), i));
             }
         }
+        // empty slot
         for (i, slot) in self.slots.iter_mut().enumerate().take(36) {
             if slot.is_none() {
                 *slot = Some(Slot {
@@ -185,12 +187,7 @@ impl Inventory {
                     count,
                     metadata,
                 });
-                let packet_slot = Self::internal_to_packet(i);
-                println!(
-                    "DEBUG: placed item {} in internal slot {}; packet slot {}",
-                    item_id, i, packet_slot
-                );
-                return Some(packet_slot);
+                return Some((Self::internal_to_packet(i), i));
             }
         }
         None

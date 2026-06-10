@@ -155,3 +155,20 @@ fn zlib_compress(data: &[u8]) -> Vec<u8> {
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
 }
+
+#[derive(Debug)]
+pub struct UnloadChunk {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+}
+impl PacketOut for UnloadChunk {
+    fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
+        writer.write_varint(0x21);
+        writer.write_i32(self.chunk_x);
+        writer.write_i32(self.chunk_z);
+        writer.write_bool(true);
+        writer.write_u16(0x0000);
+        writer.write_varint(0);
+        Ok(())
+    }
+}

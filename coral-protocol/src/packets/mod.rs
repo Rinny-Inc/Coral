@@ -124,7 +124,7 @@ impl PacketRegistry {
                 id: 0x06,
             },
             |buf| {
-                play::movement::PlayerPositionAndLookIn::decode(buf)
+                play::movement::PlayerPositionAndLook::decode(buf)
                     .map(|p| Box::new(p) as Box<dyn PacketIn>)
             },
         );

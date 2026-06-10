@@ -28,17 +28,6 @@ pub struct PlayerAbilities {
     pub walk_speed: f32,
 }
 
-// 0x08
-#[derive(Debug)]
-pub struct PlayerPositionAndLook {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub on_ground: bool,
-}
-
 impl PacketOut for SpawnPosition {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x05);
@@ -74,19 +63,6 @@ impl PacketOut for PlayerAbilities {
         writer.write_byte(self.flags);
         writer.write_f32(self.fly_speed);
         writer.write_f32(self.walk_speed);
-        Ok(())
-    }
-}
-
-impl PacketOut for PlayerPositionAndLook {
-    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
-        writer.write_varint(0x08);
-        writer.write_f64(self.x);
-        writer.write_f64(self.y);
-        writer.write_f64(self.z);
-        writer.write_f32(self.yaw);
-        writer.write_f32(self.pitch);
-        writer.write_bool(self.on_ground);
         Ok(())
     }
 }

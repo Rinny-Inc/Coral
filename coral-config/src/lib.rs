@@ -22,6 +22,7 @@ pub struct ServerConfig {
     pub player_sample_amount: i8,
     pub default_gamemode: u8,
     pub whitelisted: bool,
+    pub view_distance: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -54,6 +55,7 @@ impl Default for ServerConfig {
             player_sample_amount: 12,
             default_gamemode: 0,
             whitelisted: false,
+            view_distance: 10,
         }
     }
 }
@@ -123,6 +125,7 @@ online_mode = true
 player_sample_amount = 12
 default_gamemode = 0
 whitelisted = false
+view_distance = 10
 
 [chat]
 format = "<{username}> {message}"
