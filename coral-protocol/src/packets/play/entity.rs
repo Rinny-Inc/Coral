@@ -8,7 +8,7 @@ use crate::{
 pub struct SpawnPlayer {
     pub entity_id: i32,
     pub uuid: uuid::Uuid,
-    pub username: String,
+    // pub username: String,
     pub properties: Vec<ProfileProperty>,
     pub x: f64,
     pub y: f64,
@@ -77,9 +77,11 @@ impl PacketOut for SpawnPlayer {
         writer.write_varint(0x0C);
         writer.write_varint(self.entity_id);
 
-        writer.write_string(&self.uuid.hyphenated().to_string());
-        writer.write_string(&self.username);
+        writer.write_uuid(&self.uuid); // 1.7 = String UUID
 
+        // 1.7 only
+        /*
+        writer.write_string(&self.username);
         writer.write_varint(self.properties.len() as i32);
         for prop in &self.properties {
             writer.write_string(&prop.name);
@@ -92,6 +94,7 @@ impl PacketOut for SpawnPlayer {
                 None => writer.write_bool(false),
             }
         }
+        */
 
         writer.write_i32((self.x * 32.0) as i32);
         writer.write_i32((self.y * 32.0) as i32);

@@ -166,3 +166,24 @@ impl PacketOut for BlockBreakAnimation {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct ItemEntityMetadata {
+    pub entity_id: i32,
+    pub item_id: i16,
+    pub item_count: u8,
+    pub item_damage: i16,
+}
+impl PacketOut for ItemEntityMetadata {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1C);
+        writer.write_varint(self.entity_id);
+        writer.write_byte(0xAA);
+        writer.write_i16(self.item_id);
+        writer.write_byte(self.item_count);
+        writer.write_i16(self.item_damage);
+        writer.write_byte(0);
+        writer.write_byte(0x7F);
+        Ok(())
+    }
+}

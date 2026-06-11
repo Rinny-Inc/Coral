@@ -22,7 +22,8 @@ use coral_protocol::packets::handshake::keepalive::KeepAlive;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use coral_protocol::packets::login::{EncryptionRequest, EncryptionResponse};
 use coral_protocol::packets::play::block::{
-    BlockBreakAnimation, BlockChange, HeldItemChange, PlayerBlockPlacement, PlayerDig,
+    BlockBreakAnimation, BlockChange, HeldItemChange, ItemEntityMetadata, PlayerBlockPlacement,
+    PlayerDig,
 };
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
@@ -65,10 +66,12 @@ use coral_server::{
     player::Player,
     registry::{PlayerRegistry, next_entity_id},
 };
-use coral_world::blocks::{Block, WorldBlocks};
-use coral_world::chunk::{ChunkData, UnloadChunk};
-use coral_world::time::TimeUpdate;
-use coral_world::weather::WeatherState;
+use coral_world::{
+    blocks::{Block, WorldBlocks},
+    chunk::{ChunkData, UnloadChunk},
+    time::TimeUpdate,
+    weather::WeatherState,
+};
 
 pub struct Codec {
     pub registry: Arc<PacketRegistry>,
@@ -328,14 +331,31 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
             }
             Ok(()) = tick_rx.recv() => {
-                if framed.codec().state != EnumProtocol::Play
-                    || state.is_dead
-                {
+                if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
 
                 state.tick_count += 1;
 
+                if state.is_dead {
+                    continue;
+                }
+                if state.tick_count % 10 == 0
+                    && let Some(uuid) = state.uuid
+                    && let Some(p) = player_registry.get(&uuid).await
+                    && p.y < -64.0
+                {
+                    damage_player(
+                        &mut framed,
+                        &mut state.health,
+                        &mut state.food,
+                        &mut state.food_saturation,
+                        &mut state.is_dead,
+                        4.0,
+                        &player_registry,
+                        uuid,
+                    ).await;
+                }
                 if let Some(uuid) = state.uuid
                     && let Some(p) = player_registry.get(&uuid).await
                 {
@@ -633,7 +653,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     send_packet(&mut framed, SpawnPlayer {
                         entity_id: player.entity_id,
                         uuid: player.uuid,
-                        username: player.username.clone(),
+                        //username: player.username.clone(),
                         properties: player.properties.clone(),
                         x: player.x,
                         y: player.y,
@@ -705,7 +725,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     }
                 }
             }
-            Ok((eid, x, y, z)) = item_rx.recv() => {
+            Ok((eid, x, y, z, item_id, count, metadata)) = item_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
@@ -719,6 +739,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     vx: 0,
                     vy: 100,
                     vz: 0,
+                }).await;
+                send_packet(&mut framed, ItemEntityMetadata {
+                    entity_id: eid,
+                    item_id,
+                    item_count: count,
+                    item_damage: metadata
                 }).await;
             }
             Ok(message) = chat_rx.recv() => {
@@ -958,10 +984,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             let z = bz as f64 + 0.5;
                                             item_tx.send((
                                                 drop_eid,
-                                                x,
-                                                y,
-                                                z)
-                                            ).ok();
+                                                x, y, z,
+                                                block.id as i16,
+                                                1,
+                                                block.metadata as i16
+                                            )).ok();
                                             item_spawn_times.write().await.insert(drop_eid, Instant::now());
                                             entity_tracker.write().await.track(
                                                 TrackedEntity::item(
@@ -1027,7 +1054,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
 
                                             let drop_eid = next_entity_id();
-                                            item_tx.send((drop_eid, drop_x, drop_y, drop_z)).ok();
+                                            item_tx.send((
+                                                drop_eid,
+                                                drop_x, drop_y, drop_z,
+                                                dropped.item_id,
+                                                dropped.count,
+                                                dropped.metadata
+                                            )).ok();
                                             item_spawn_times.write().await.insert(drop_eid, Instant::now());
                                             item_positions.write().await.insert(
                                                 drop_eid,
@@ -1839,7 +1872,7 @@ async fn make_player_join(
             SpawnPlayer {
                 entity_id: p.entity_id,
                 uuid: p.uuid,
-                username: p.username.clone(),
+                //username: p.username.clone(),
                 properties: p.properties.clone(),
                 x: p.x,
                 y: p.y,
