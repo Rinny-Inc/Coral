@@ -371,3 +371,26 @@ impl PacketOut for CollectItem {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct EntityEquipment {
+    pub entity_id: i32,
+    pub slot: i16,
+    pub item_id: i16,
+    pub count: u8,
+    pub metadata: i16,
+}
+impl PacketOut for EntityEquipment {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x04);
+        writer.write_varint(self.entity_id);
+        writer.write_i16(self.slot);
+        writer.write_i16(self.item_id);
+        if self.item_id != -1 {
+            writer.write_byte(self.count);
+            writer.write_i16(self.metadata);
+            writer.write_byte(0);
+        }
+        Ok(())
+    }
+}

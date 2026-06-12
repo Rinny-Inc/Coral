@@ -45,6 +45,7 @@ type ItemPickup = (i32, Uuid, i32);
 type TimeUpdate = (i64, i64);
 type WeatherUpdate = WeatherState;
 type EntityStatusUpdate = (i32, u8);
+type EquipmentUpdate = (i32, i16, i16, u8, i16);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -73,6 +74,7 @@ pub struct ServerContext {
     weather_tx: Arc<broadcast::Sender<WeatherUpdate>>,
     tick_tx: Arc<broadcast::Sender<()>>,
     status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
+    equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
     world_blocks: Arc<WorldBlocks>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -155,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
         tick_tx: Arc::new(broadcast::channel(4).0),
         status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
+        equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),

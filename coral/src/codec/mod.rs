@@ -13,7 +13,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
-use crate::{JoinLeave, ServerContext};
+use crate::{EquipmentUpdate, JoinLeave, ServerContext};
 use coral_command::{CommandContext, CommandResult};
 use coral_config::Config;
 use coral_protocol::auth::{AuthProfile, authenticate, compute_server_hash};
@@ -31,8 +31,9 @@ use coral_protocol::packets::play::chat::{
     ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
 };
 use coral_protocol::packets::play::entity::{
-    ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation, EntityHeadLook,
-    EntityMetadata, EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer, UseEntity,
+    ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation, EntityEquipment,
+    EntityHeadLook, EntityMetadata, EntityTeleport, EntityVelocity, SpawnObject, SpawnPlayer,
+    UseEntity,
 };
 use coral_protocol::packets::play::game::{
     ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth,
@@ -218,6 +219,7 @@ struct PlayerState {
     chunk_x: i32,
     chunk_z: i32,
     loaded_chunks: HashSet<(i32, i32)>,
+    fall_distance: f32,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -249,6 +251,7 @@ impl PlayerState {
             chunk_x: 0,
             chunk_z: 0,
             loaded_chunks: HashSet::new(),
+            fall_distance: 0.0,
         }
     }
 }
@@ -279,6 +282,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         weather_tx,
         tick_tx,
         status_tx,
+        equip_tx,
         world_blocks,
         player_registry,
         private_key,
@@ -311,6 +315,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut weather_rx = weather_tx.subscribe();
     let mut tick_rx = tick_tx.subscribe();
     let mut status_rx = status_tx.subscribe();
+    let mut equip_rx = equip_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -345,7 +350,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     && let Some(p) = player_registry.get(&uuid).await
                     && p.y < -64.0
                 {
-                    damage_player(
+                    let died = damage_player(
                         &mut framed,
                         &mut state.health,
                         &mut state.food,
@@ -355,6 +360,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         &player_registry,
                         uuid,
                     ).await;
+                    if died && let Some(ref name) = state.name {
+                        chat_tx.send(ChatBuilder::plain_json(&format!("{} fell out of the world", name))).ok();
+                    }
                 }
                 if let Some(uuid) = state.uuid
                     && let Some(p) = player_registry.get(&uuid).await
@@ -402,6 +410,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     count: actual_count,
                                     metadata: *metadata
                                 }).await;
+
+                                if internal_idx == state.held_slot as usize {
+                                    state.held_item = *item_id;
+                                    if let Some(uuid) = state.uuid {
+                                        player_registry.update_held_item(uuid, *item_id).await;
+                                    }
+                                    send_held_equip(&equip_tx, &state);
+                                }
                             }
                         }
                     }
@@ -490,7 +506,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                     if state.health > min_health {
                         state.health = (state.health - 1.0).max(min_health);
+                        let just_died = state.health <= 0.0 && !state.is_dead;
                         state.is_dead = state.health <= 0.0;
+
+                        if just_died && let Some(ref name) = state.name {
+                            chat_tx.send(ChatBuilder::plain_json(&format!("{} starved to death", name))).ok();
+                        }
 
                         if let Some(uuid) = state.uuid {
                             player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
@@ -547,6 +568,22 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 send_packet(&mut framed, TimeUpdate {
                     world_age,
                     time_of_day
+                }).await;
+            }
+
+            Ok((eid, slot, item_id, count, metadata)) = equip_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(&mut framed, EntityEquipment {
+                    entity_id: eid,
+                    slot,
+                    item_id,
+                    count,
+                    metadata
                 }).await;
             }
 
@@ -668,6 +705,16 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         entity_flags: player.entity_flags(),
                         skin_parts: player.skin_parts
                     }).await;
+
+                    if player.held_item_id != -1 {
+                        send_packet(&mut framed, EntityEquipment {
+                            entity_id: player.entity_id,
+                            slot: 0,
+                            item_id: player.held_item_id,
+                            count: 1,
+                            metadata: 0
+                        }).await;
+                    }
                 }
             }
             Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
@@ -939,13 +986,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
                             let slot = held.slot.clamp(0, 8) as u8;
                             state.held_slot = slot;
-                            if let Some(uuid) = state.uuid {
-                                player_registry.update_held_slot(uuid, slot).await;
-                            }
                             state.held_item = state.inventory.slots[slot as usize]
                                 .as_ref()
                                 .map(|s| s.item_id)
                                 .unwrap_or(-1);
+                            if let Some(uuid) = state.uuid {
+                                player_registry.update_held_slot(uuid, slot).await;
+                                player_registry.update_held_item(uuid, state.held_item).await;
+                            }
+                            send_held_equip(&equip_tx, &state);
                             continue;
                         }
 
@@ -1046,8 +1095,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             .as_ref()
                                             .map(|s| s.item_id)
                                             .unwrap_or(-1);
+                                        if let Some(uuid) = state.uuid {
+                                            player_registry.update_held_item(uuid, state.held_item).await;
+                                        }
+                                        send_held_equip(&equip_tx, &state);
 
-                                        if let Some(p) = player_registry.get(&state.uuid.unwrap()).await {
+                                        if let Some(p) = player_registry.get(&state.uuid.unwrap_or_default()).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
                                             let drop_x = p.x + (-yaw_rad.sin() * 0.5) as f64;
                                             let drop_y = p.y + 1.0;
@@ -1130,14 +1183,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         .as_ref()
                                         .map(|s| s.item_id)
                                         .unwrap_or(-1);
+                                    if let Some(uuid) = state.uuid {
+                                        player_registry.update_held_item(uuid, state.held_item).await;
+                                    }
+                                    send_held_equip(&equip_tx, &state);
                                 } else {
                                     continue;
                                 }
-                            }
-
-                            state.held_item = place.held_item_id;
-                            if let Some(uuid) = state.uuid {
-                                player_registry.update_held_item(uuid, state.held_item).await;
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0)).await;
@@ -1215,11 +1267,17 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
-                                if pos.on_ground && !p.on_ground && state.gamemode == 0 {
-                                    let fall_distance = p.y - pos.y;
-                                    if fall_distance > 3.0 {
-                                        let damage = (fall_distance - 3.0) as f32;
-                                        damage_player(
+                                if !pos.on_ground {
+                                    if pos.y < p.y {
+                                        state.fall_distance += (p.y - pos.y) as f32;
+                                    } else if pos.y > p.y {
+                                        state.fall_distance = 0.0;
+                                    }
+                                }
+                                if pos.on_ground && !p.on_ground {
+                                    if state.fall_distance > 3.0 && state.gamemode == 0 {
+                                        let damage = (state.fall_distance - 3.0).round();
+                                        let died = damage_player(
                                             &mut framed,
                                             &mut state.health,
                                             &mut state.food,
@@ -1229,7 +1287,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             &player_registry,
                                             uuid
                                         ).await;
+                                        if died && let Some(ref name) = state.name {
+                                            chat_tx.send(ChatBuilder::plain_json(&format!("{} hit the ground too hard", name))).ok();
+                                        }
                                     }
+                                    state.fall_distance = 0.0;
                                 }
                                 let moved = (pos.x - p.x).abs() > 0.01
                                     || (pos.y - p.y).abs() > 0.01
@@ -1305,6 +1367,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     if let Some(uuid) = state.uuid {
                                         player_registry.update_held_item(uuid, state.held_item).await;
                                     }
+                                    send_held_equip(&equip_tx, &state);
                                 }
                             }
                             continue;
@@ -1415,7 +1478,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         continue;
                                     }
                                     player_registry.update_no_damage_ticks(target.uuid, 10).await;
-                                    if let Some(me) = player_registry.get(&state.uuid.unwrap()).await {
+                                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
                                         let reach = if state.gamemode == 1 {
                                             5.0
                                         } else {
@@ -1428,8 +1491,16 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         if dist > reach {
                                             continue;
                                         }
-                                        let new_health = (target.health - 1.0).max(2.0);
+                                        let new_health = (target.health - 1.0).max(0.0);
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
+
+                                        if new_health <= 0.0 {
+                                            chat_tx.send(ChatBuilder::plain_json(&format!(
+                                                "{} was slain by {}",
+                                                target.username,
+                                                state.name.clone().unwrap_or_default()
+                                            ))).ok();
+                                        }
 
                                         dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
                                         status_tx.send((use_entity.target_entity_id, 2)).ok();
@@ -1528,6 +1599,17 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     }
 }
 
+fn send_held_equip(equip_tx: &Arc<broadcast::Sender<EquipmentUpdate>>, state: &PlayerState) {
+    let (item_id, count, metadata) = state.inventory.slots[state.held_slot as usize]
+        .as_ref()
+        .map(|s| (s.item_id, s.count, s.metadata))
+        .unwrap_or((-1, 0, 0));
+
+    equip_tx
+        .send((state.entity_id, 0, item_id, count, metadata))
+        .ok();
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn damage_player(
     framed: &mut Framed<TcpStream, Codec>,
@@ -1538,7 +1620,7 @@ async fn damage_player(
     amount: f32,
     player_registry: &Arc<PlayerRegistry>,
     uuid: Uuid,
-) {
+) -> bool {
     *health = (*health - amount).max(0.0);
 
     player_registry
@@ -1557,7 +1639,9 @@ async fn damage_player(
 
     if *health <= 0.0 {
         *is_dead = true;
+        return true;
     }
+    false
 }
 
 async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: WeatherState) {
@@ -1892,6 +1976,20 @@ async fn make_player_join(
             },
         )
         .await;
+
+        if p.held_item_id != -1 {
+            send_packet(
+                framed,
+                EntityEquipment {
+                    entity_id: p.entity_id,
+                    slot: 0,
+                    item_id: p.held_item_id,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+        }
     }
 
     send_packet(
