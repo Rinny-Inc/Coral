@@ -153,3 +153,25 @@ impl PacketIn for ClientSettings {
         self
     }
 }
+
+#[derive(Debug)]
+pub struct NamedSoundEffect {
+    pub sound: String,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub volume: f32,
+    pub pitch: u8,
+}
+impl PacketOut for NamedSoundEffect {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x29);
+        writer.write_string(&self.sound);
+        writer.write_i32((self.x * 8.0) as i32);
+        writer.write_i32((self.y * 8.0) as i32);
+        writer.write_i32((self.z * 8.0) as i32);
+        writer.write_f32(self.volume);
+        writer.write_byte(self.pitch);
+        Ok(())
+    }
+}

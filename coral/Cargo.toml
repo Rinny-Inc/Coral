@@ -17,3 +17,5 @@ tokio.workspace = true
 tokio-stream.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+rand.workspace = true
+flate2.workspace = true

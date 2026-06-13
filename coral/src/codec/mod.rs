@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral_world::generator::FlatWorldGenerator;
 use futures::SinkExt;
+use rand::RngExt;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, broadcast};
 use tokio::time::interval;
@@ -20,7 +22,7 @@ use coral_protocol::auth::{AuthProfile, authenticate, compute_server_hash};
 use coral_protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token};
 use coral_protocol::packets::handshake::keepalive::KeepAlive;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
-use coral_protocol::packets::login::{EncryptionRequest, EncryptionResponse};
+use coral_protocol::packets::login::{EncryptionRequest, EncryptionResponse, SetCompression};
 use coral_protocol::packets::play::block::{
     BlockBreakAnimation, BlockChange, HeldItemChange, ItemEntityMetadata, PlayerBlockPlacement,
     PlayerDig,
@@ -48,7 +50,7 @@ use coral_protocol::packets::play::movement::{
 use coral_protocol::packets::play::player_list::{
     BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
 };
-use coral_protocol::packets::play::{ClientSettings, PluginMessage};
+use coral_protocol::packets::play::{ClientSettings, NamedSoundEffect, PluginMessage};
 use coral_protocol::packets::{PacketIn, PacketOut};
 use coral_protocol::{
     packets::{
@@ -78,7 +80,24 @@ pub struct Codec {
     pub registry: Arc<PacketRegistry>,
     pub state: EnumProtocol,
     pub encryption: Option<Encryption>,
+    compression_threshold: i32,
     decrypted_buf: BytesMut,
+}
+
+fn zlib_compress(data: &[u8]) -> Vec<u8> {
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Default::default());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
+}
+fn zlib_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use flate2::read::ZlibDecoder;
+    use std::io::Read;
+    let mut decoder = ZlibDecoder::new(data);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out)?;
+    Ok(out)
 }
 
 impl Decoder for Codec {
@@ -117,7 +136,23 @@ impl Decoder for Codec {
         self.decrypted_buf.advance(length_prefix_size);
         let payload = self.decrypted_buf.split_to(length);
 
-        let mut bytes = Bytes::from(payload.to_vec());
+        let inner: Bytes = if self.compression_threshold >= 0 {
+            let mut r = Reader::new(&payload);
+            let data_length = r.read_varint();
+            let header_size = r.position;
+            let rest = &payload[header_size..];
+
+            if data_length == 0 {
+                Bytes::from(rest.to_vec())
+            } else {
+                let decompressed = zlib_decompress(rest)?;
+                Bytes::from(decompressed)
+            }
+        } else {
+            Bytes::from(payload.to_vec())
+        };
+
+        let mut bytes = inner;
 
         let id = {
             let mut inner_reader = Reader::new(&bytes);
@@ -159,15 +194,31 @@ impl Encoder<Box<dyn PacketOut>> for Codec {
 
     fn encode(&mut self, item: Box<dyn PacketOut>, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let mut writer = Writer::new();
-
         item.encode(&mut writer)?;
         let data = writer.data;
 
+        let body: Vec<u8> = if self.compression_threshold >= 0 {
+            if data.len() >= self.compression_threshold as usize {
+                let compressed = zlib_compress(&data);
+                let mut w = Writer::new();
+                w.write_varint(data.len() as i32);
+                w.data.extend_from_slice(&compressed);
+                w.data
+            } else {
+                let mut w = Writer::new();
+                w.write_varint(0);
+                w.data.extend_from_slice(&data);
+                w.data
+            }
+        } else {
+            data
+        };
+
         let mut length_writer = Writer::new();
-        length_writer.write_varint(data.len() as i32);
+        length_writer.write_varint(body.len() as i32);
 
         let mut frame = length_writer.data;
-        frame.extend_from_slice(&data);
+        frame.extend_from_slice(&body);
 
         if let Some(enc) = &mut self.encryption {
             enc.encrypt(&mut frame);
@@ -283,7 +334,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         tick_tx,
         status_tx,
         equip_tx,
+        sound_tx,
+        shutdown_tx,
         world_blocks,
+        generator,
         player_registry,
         private_key,
         public_key_der,
@@ -295,6 +349,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         registry: packet_registry,
         state: EnumProtocol::Handshaking,
         encryption: None,
+        compression_threshold: -1,
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
@@ -316,6 +371,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut tick_rx = tick_tx.subscribe();
     let mut status_rx = status_tx.subscribe();
     let mut equip_rx = equip_tx.subscribe();
+    let mut sound_rx = sound_tx.subscribe();
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -334,6 +391,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 state.keep_alive_count += 1;
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(&mut framed, KeepAlive { id: state.keep_alive_count }).await;
+            }
+            Ok(()) = shutdown_rx.recv() => {
+                if framed.codec().state == EnumProtocol::Play || framed.codec().state == EnumProtocol::Login {
+                    kick(&mut framed, "Server closed.").await;
+                }
+                break;
             }
             Ok(()) = tick_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
@@ -425,6 +488,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         items.remove(&eid);
                         item_spawn_times.write().await.remove(&eid);
                         pickup_tx.send((state.entity_id, uuid, eid)).ok();
+                        let pitch = 63 + (rand::rng().random_range(-12i8..=12) as i16) as u8;
+                        sound_tx.send(("random.pop".to_string(), p.x, p.y, p.z, 0.2, pitch)).ok();
                     }
                 }
 
@@ -547,6 +612,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 send_packet(&mut framed, EntityStatus {
                     entity_id: eid,
                     status,
+                }).await;
+            }
+            Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, NamedSoundEffect {
+                    sound, x, y, z, volume, pitch
                 }).await;
             }
             Ok((collector_eid, collector_uuid, item_eid)) = pickup_rx.recv() => {
@@ -936,7 +1009,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                     framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &entity_tracker,&config).await;
+                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &generator, &entity_tracker,&config).await;
                                     continue;
                                 }
                             } else {
@@ -963,7 +1036,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         properties: vec![]
                                     };
 
-                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &entity_tracker, &config).await;
+                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_player as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &generator, &entity_tracker, &config).await;
                                     continue;
                                 }
                             }
@@ -1001,8 +1074,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
                             match dig.status {
                                 0 if state.gamemode == 1 => {
+                                    let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
                                     world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
                                     block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                    sound_tx.send((
+                                        block_break_sound(block.id).to_string(),
+                                        dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
+                                        1.0, 63
+                                    )).ok();
                                 }
                                 0 if state.gamemode == 0 => {
                                     state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
@@ -1015,7 +1094,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 }
                                 2 if state.gamemode == 0 => {
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
-                                        let block = world_blocks.get(bx, by as u8, bz).await;
+                                        let block = world_blocks.get(bx, by as u8, bz, &generator).await;
                                         world_blocks.set(bx, by as u8, bz, Block::air()).await;
                                         block_tx.send((
                                             bx,
@@ -1025,6 +1104,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             0)
                                         ).ok();
                                         break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
+                                        sound_tx.send((
+                                            block_break_sound(block.id).to_string(),
+                                            bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
+                                            1.0, 63
+                                        )).ok();
 
                                         if !block.is_air() && block.id > 0 {
                                             let drop_eid = next_entity_id();
@@ -1194,6 +1278,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0)).await;
                             block_tx.send((tx, ty, tz, block_id, 0)).ok();
+                            sound_tx.send((
+                                block_break_sound(block_id as u8).to_string(),
+                                tx as f64 + 0.5, ty as f64 + 0.5, tz as f64 + 0.5,
+                                1.0, 63
+                            )).ok();
                             continue;
                         }
 
@@ -1287,6 +1376,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             &player_registry,
                                             uuid
                                         ).await;
+                                        let sound = if state.fall_distance > 7.0 {
+                                            "game.player.hurt.fall.big"
+                                        } else {
+                                            "game.player.hurt.fall.small"
+                                        };
+                                        sound_tx.send((sound.to_string(), pos.x, pos.y, pos.z, 1.0, 63)).ok();
                                         if died && let Some(ref name) = state.name {
                                             chat_tx.send(ChatBuilder::plain_json(&format!("{} hit the ground too hard", name))).ok();
                                         }
@@ -1308,7 +1403,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
                                         state.chunk_x = new_chunk_x;
                                         state.chunk_z = new_chunk_z;
-                                        update_chunks(&mut framed, client_protocol, &world_blocks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                        update_chunks(&mut framed, client_protocol, &world_blocks, &generator, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                     }
                                     let distance = ((pos.x - p.x).powi(2) + (pos.z - p.z).powi(2)).sqrt();
 
@@ -1405,6 +1500,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     &mut framed,
                                     client_protocol,
                                     &world_blocks,
+                                    &generator,
                                     0, 0,
                                     config.server.view_distance,
                                     &mut state.loaded_chunks
@@ -1412,7 +1508,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                 send_packet(&mut framed, PlayerPositionAndLook {
                                     x: 0.5,
-                                    y: 5.0,
+                                    y: generator.spawn_y(),
                                     z: 0.5,
                                     yaw: 90.0,
                                     pitch: 0.0,
@@ -1503,6 +1599,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }
 
                                         dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                        sound_tx.send((
+                                            "game.player.hurt".to_string(),
+                                            target.x, target.y, target.z,
+                                            1.0, 63
+                                        )).ok();
                                         status_tx.send((use_entity.target_entity_id, 2)).ok();
                                         anim_tx.send((use_entity.target_entity_id, 1)).ok();
                                     }
@@ -1519,7 +1620,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
                                     state.chunk_x = new_chunk_x;
                                     state.chunk_z = new_chunk_z;
-                                    update_chunks(&mut framed, client_protocol, &world_blocks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                    update_chunks(&mut framed, client_protocol, &world_blocks, &generator, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                 }
                                 player_registry.update_position(&uuid, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground).await;
                                 pos_tx.send((uuid, state.entity_id, pos_look.x, pos_look.y, pos_look.z, pos_look.yaw, pos_look.pitch, pos_look.on_ground)).ok();
@@ -1727,6 +1828,7 @@ async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
     center_x: i32,
     center_z: i32,
     view_distance: i32,
@@ -1737,7 +1839,7 @@ async fn send_chunks(
             if loaded_chunks.contains(&(cx, cz)) {
                 continue;
             }
-            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks).await;
+            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, &generator).await;
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
         }
@@ -1748,6 +1850,7 @@ async fn update_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
     new_chunk_x: i32,
     new_chunk_z: i32,
     view_distance: i32,
@@ -1757,6 +1860,7 @@ async fn update_chunks(
         framed,
         client_protocol,
         world_blocks,
+        &generator,
         new_chunk_x,
         new_chunk_z,
         view_distance,
@@ -1786,6 +1890,20 @@ async fn update_chunks(
     }
 }
 
+fn block_break_sound(block_id: u8) -> &'static str {
+    match block_id {
+        2 | 3 | 60 => "dig.grass",
+        1 | 4 | 7 | 14..=16 | 24 => "dig.stone",
+        5 | 17 | 47 | 53 | 54 => "dig.wood",
+        12 => "dig.sand",
+        13 => "dig.gravel",
+        20 | 102 => "dig.glass",
+        35 => "dig.cloth",
+        78 | 80 => "dig.snow",
+        _ => "dig.stone",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
@@ -1799,9 +1917,22 @@ async fn make_player_join(
     join_tx: &Arc<broadcast::Sender<JoinLeave>>,
     chat_tx: &Arc<broadcast::Sender<String>>,
     world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
 ) {
+    if config.server.compression_threshold >= 0 {
+        send_packet(
+            framed,
+            SetCompression {
+                threshold: config.server.compression_threshold,
+            },
+        )
+        .await;
+
+        framed.codec_mut().compression_threshold = config.server.compression_threshold;
+    }
+
     let entity_id = next_entity_id();
 
     send_packet(
@@ -1899,6 +2030,7 @@ async fn make_player_join(
         framed,
         client_protocol,
         world_blocks,
+        &generator,
         0,
         0,
         config.server.view_distance,

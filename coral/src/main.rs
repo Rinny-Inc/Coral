@@ -24,6 +24,7 @@ use coral_server::{
 };
 use coral_world::{
     blocks::WorldBlocks,
+    generator::FlatWorldGenerator,
     weather::{Weather, WeatherState},
 };
 
@@ -46,6 +47,7 @@ type TimeUpdate = (i64, i64);
 type WeatherUpdate = WeatherState;
 type EntityStatusUpdate = (i32, u8);
 type EquipmentUpdate = (i32, i16, i16, u8, i16);
+type SoundEffect = (String, f64, f64, f64, f32, u8);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -75,7 +77,10 @@ pub struct ServerContext {
     tick_tx: Arc<broadcast::Sender<()>>,
     status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
     equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
+    sound_tx: Arc<broadcast::Sender<SoundEffect>>,
+    shutdown_tx: Arc<broadcast::Sender<()>>,
     world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
     ops: Arc<RwLock<OpsFile>>,
@@ -158,7 +163,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tick_tx: Arc::new(broadcast::channel(4).0),
         status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
         equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
+        sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
+        shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
         world_blocks: Arc::new(WorldBlocks::new()),
+        generator: Arc::new(FlatWorldGenerator::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
@@ -166,6 +174,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         whitelist,
         banlist,
     };
+
+    let shutdown_signal = ctx.shutdown_tx.clone();
+    let player_registry_shutdown = ctx.player_registry.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        println!("Shutting down, kicking players..");
+        shutdown_signal.send(()).ok();
+
+        for _ in 0..50 {
+            if player_registry_shutdown.get_online_count().await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        println!("Server closed.");
+        std::process::exit(0);
+    });
 
     let tick_tx_task = ctx.tick_tx.clone();
     let players_registry_tick = ctx.player_registry.clone();

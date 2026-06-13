@@ -102,6 +102,9 @@ impl PacketOut for SpawnPlayer {
         writer.write_byte(degrees_to_byte(self.yaw));
         writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_i16(self.current_item);
+        // metadata
+        writer.write_byte(0x66);
+        writer.write_f32(20.0);
         writer.write_byte(0x7F);
         Ok(())
     }

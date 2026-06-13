@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
+use crate::generator::FlatWorldGenerator;
+
 #[derive(Debug, Clone)]
 pub struct Block {
     pub id: u8,
@@ -32,18 +34,13 @@ impl WorldBlocks {
         }
     }
 
-    pub async fn get(&self, x: i32, y: u8, z: i32) -> Block {
+    pub async fn get(&self, x: i32, y: u8, z: i32, generator: &FlatWorldGenerator) -> Block {
         self.blocks
             .read()
             .await
             .get(&(x, y, z))
             .cloned()
-            .unwrap_or_else(|| match y {
-                0 => Block::new(7, 0),
-                1 | 2 => Block::new(3, 0),
-                3 => Block::new(2, 0),
-                _ => Block::air(),
-            })
+            .unwrap_or_else(|| generator.get(y))
     }
 
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {

@@ -23,6 +23,7 @@ pub struct ServerConfig {
     pub default_gamemode: u8,
     pub whitelisted: bool,
     pub view_distance: i32,
+    pub compression_threshold: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -56,6 +57,7 @@ impl Default for ServerConfig {
             default_gamemode: 0,
             whitelisted: false,
             view_distance: 10,
+            compression_threshold: 256,
         }
     }
 }
@@ -126,6 +128,7 @@ player_sample_amount = 12
 default_gamemode = 0
 whitelisted = false
 view_distance = 10
+compression_threshold = 256
 
 [chat]
 format = "<{username}> {message}"

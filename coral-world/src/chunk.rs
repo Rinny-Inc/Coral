@@ -1,5 +1,6 @@
 use crate::blocks::Block;
 use crate::blocks::WorldBlocks;
+use crate::generator::FlatWorldGenerator;
 use coral_protocol::packets::PacketOut;
 use coral_protocol::writer::Writer;
 use std::io::Result;
@@ -19,19 +20,15 @@ impl ChunkData {
         chunk_z: i32,
         client_protocol: i32,
         world_blocks: &Arc<WorldBlocks>,
+        generator: &FlatWorldGenerator,
     ) -> Self {
         let data = if client_protocol == 47 {
-            build_chunk_data_18(chunk_x, chunk_z, world_blocks).await
+            build_chunk_data_18(chunk_x, chunk_z, world_blocks, generator).await
         } else {
-            build_chunk_data_17(chunk_x, chunk_z, world_blocks).await
+            build_chunk_data_17(chunk_x, chunk_z, world_blocks, generator).await
         };
 
-        println!(
-            "DEBUG ChunkData ({},{}) data_len={}",
-            chunk_x,
-            chunk_z,
-            data.len()
-        );
+        //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
 
         Self {
             chunk_x,
@@ -73,16 +70,12 @@ fn get_block_state(
     wx: i32,
     wy: u8,
     wz: i32,
+    generator: &FlatWorldGenerator,
 ) -> u16 {
     let block = snapshot
         .get(&(wx, wy, wz))
         .cloned()
-        .unwrap_or_else(|| match wy {
-            0 => Block::new(7, 0),
-            1 | 2 => Block::new(3, 0),
-            3 => Block::new(2, 0),
-            _ => Block::air(),
-        });
+        .unwrap_or_else(|| generator.get(wy));
     ((block.id as u16) << 4) | (block.metadata as u16 & 0xF)
 }
 
@@ -90,6 +83,7 @@ async fn build_chunk_data_18(
     chunk_x: i32,
     chunk_z: i32,
     world_blocks: &Arc<WorldBlocks>,
+    generator: &FlatWorldGenerator,
 ) -> Vec<u8> {
     let block_data = {
         let snapshot = world_blocks.blocks.read().await;
@@ -99,7 +93,7 @@ async fn build_chunk_data_18(
                 for x in 0..16usize {
                     let wx = chunk_x * 16 + x as i32;
                     let wz = chunk_z * 16 + z as i32;
-                    let state = get_block_state(&snapshot, wx, y as u8, wz);
+                    let state = get_block_state(&snapshot, wx, y as u8, wz, generator);
                     data.extend_from_slice(&state.to_le_bytes());
                 }
             }
@@ -121,6 +115,7 @@ async fn build_chunk_data_17(
     chunk_x: i32,
     chunk_z: i32,
     world_blocks: &Arc<WorldBlocks>,
+    generator: &FlatWorldGenerator,
 ) -> Vec<u8> {
     let mut blocks = vec![0u8; 4096];
 
@@ -131,7 +126,7 @@ async fn build_chunk_data_17(
                 let wy = y as u8;
                 let wz = chunk_z * 16 + z as i32;
 
-                let block = world_blocks.get(wx, wy, wz).await;
+                let block = world_blocks.get(wx, wy, wz, generator).await;
                 let index = y * 256 + z * 16 + x;
                 blocks[index] = block.id;
             }

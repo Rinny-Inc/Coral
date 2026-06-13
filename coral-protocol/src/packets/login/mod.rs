@@ -92,3 +92,15 @@ impl PacketIn for EncryptionResponse {
         self
     }
 }
+
+#[derive(Debug)]
+pub struct SetCompression {
+    pub threshold: i32,
+}
+impl PacketOut for SetCompression {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x03);
+        writer.write_varint(self.threshold);
+        Ok(())
+    }
+}
