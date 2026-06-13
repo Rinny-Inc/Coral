@@ -271,6 +271,7 @@ struct PlayerState {
     chunk_z: i32,
     loaded_chunks: HashSet<(i32, i32)>,
     fall_distance: f32,
+    eating: Option<Instant>,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -303,6 +304,7 @@ impl PlayerState {
             chunk_z: 0,
             loaded_chunks: HashSet::new(),
             fall_distance: 0.0,
+            eating: None,
         }
     }
 }
@@ -408,6 +410,57 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 if state.is_dead {
                     continue;
                 }
+                if let Some(started) = state.eating {
+                    if started.elapsed().as_millis() >= 1600 {
+                        state.eating = None;
+
+                        if let Some((hunger, saturation)) = food_values(state.held_item) {
+                            state.food = (state.food + hunger).min(20);
+                            state.food_saturation = (state.food_saturation + saturation).min(state.food as f32);
+
+                            let hotbar_slot = state.held_slot as usize;
+                            if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
+                                slot.count -= 1;
+                                let remaining = if slot.count == 0 {
+                                    state.inventory.slots[hotbar_slot] = None;
+                                    None
+                                } else {
+                                    Some((slot.item_id, slot.count, slot.metadata))
+                                };
+
+                                let packed_slot = (36 + hotbar_slot) as i16;
+                                send_packet(&mut framed, SetSlot {
+                                    window_id: 0,
+                                    slot: packed_slot,
+                                    item_id: remaining.map(|(id, _, _)| id).unwrap_or(-1),
+                                    count: remaining.map(|(_, c, _)| c).unwrap_or(0),
+                                    metadata: remaining.map(|(_, _, m)| m).unwrap_or(0),
+                                }).await;
+
+                                state.held_item = remaining.map(|(id, _, _)| id).unwrap_or(-1);
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_held_item(uuid, state.held_item).await;
+                                }
+                                send_held_equip(&equip_tx, &state);
+                                // todo
+                            }
+                            if let Some(uuid) = state.uuid {
+                                player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
+                            }
+                            send_packet(&mut framed, UpdateHealth {
+                                health: state.health,
+                                food: state.food,
+                                food_saturation: state.food_saturation
+                            }).await;
+
+                            if let Some(uuid) = state.uuid
+                                && let Some(player) = player_registry.get(&uuid).await
+                            {
+                                sound_tx.send(("random.burp".to_string(), player.x, player.y, player.z, 0.5, 63)).ok();
+                            }
+                        }
+                    }
+                }
                 if state.tick_count % 10 == 0
                     && let Some(uuid) = state.uuid
                     && let Some(p) = player_registry.get(&uuid).await
@@ -433,7 +486,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     let mut items = item_positions.write().await;
                     let mut picked_up = vec![];
 
-                    for (eid, (item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
+                    for (eid, (_item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
                         let player_bb = if state.is_sneaking {
                             EntityBounds::player_sneaking()
                         } else {
@@ -622,7 +675,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     sound, x, y, z, volume, pitch
                 }).await;
             }
-            Ok((collector_eid, collector_uuid, item_eid)) = pickup_rx.recv() => {
+            Ok((collector_eid, _collector_uuid, item_eid)) = pickup_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
@@ -1068,6 +1121,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 player_registry.update_held_item(uuid, state.held_item).await;
                             }
                             send_held_equip(&equip_tx, &state);
+                            state.eating = None;
                             continue;
                         }
 
@@ -1217,7 +1271,17 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }
 
                         if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
-                            if place.held_item_id == -1 || place.face == 255 {
+                            if place.face == 255 {
+                                if let Some((_hunger, _saturation)) = food_values(state.held_item)
+                                    && state.food < 20
+                                    && state.eating.is_none()
+                                {
+                                    state.eating = Some(Instant::now());
+                                    anim_tx.send((state.entity_id, 3)).ok();
+                                }
+                                continue;
+                            }
+                            if place.held_item_id == -1 {
                                 continue;
                             }
                             if state.gamemode == 2 || state.gamemode == 3 {
@@ -1584,10 +1648,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         let dy = me.y - target.y;
                                         let dz = me.z - target.z;
                                         let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+
                                         if dist > reach {
                                             continue;
                                         }
-                                        let new_health = (target.health - 1.0).max(0.0);
+                                        let base_damage = item_attack_damage(state.held_item);
+                                        let is_critical = !me.on_ground && state.fall_distance > 0.0;
+                                        let damage = if is_critical { base_damage * 1.5 } else { base_damage };
+                                        let new_health = (target.health - damage).max(0.0);
+
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
                                         if new_health <= 0.0 {
@@ -1606,6 +1675,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         )).ok();
                                         status_tx.send((use_entity.target_entity_id, 2)).ok();
                                         anim_tx.send((use_entity.target_entity_id, 1)).ok();
+
+                                        if is_critical {
+                                            anim_tx.send((state.entity_id, 4)).ok();
+                                        }
                                     }
                                 }
                             }
@@ -1824,6 +1897,67 @@ async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
     }
 }
 
+pub fn food_values(item_id: i16) -> Option<(i32, f32)> {
+    match item_id {
+        297 => Some((5, 6.0)),   // bread
+        260 => Some((4, 2.4)),   // apple
+        322 => Some((10, 12.0)), // golden apple
+        319 => Some((3, 1.8)),   // raw porkchop
+        320 => Some((8, 12.8)),  // cooked porkchop
+        363 => Some((3, 1.8)),   // raw beef
+        364 => Some((8, 12.8)),  // cooked beef (steak)
+        365 => Some((2, 1.2)),   // raw chicken
+        366 => Some((6, 7.2)),   // cooked chicken
+        349 => Some((2, 0.2)),   // raw fish
+        350 => Some((5, 6.0)),   // cooked fish
+        357 => Some((6, 7.2)),   // cookie (each)
+        391 => Some((1, 0.6)),   // carrot
+        392 => Some((1, 0.6)),   // potato
+        393 => Some((6, 7.2)),   // baked potato
+        400 => Some((6, 7.2)),   // pumpkin pie
+        367 => Some((3, 1.8)),   // rotten flesh
+        423 => Some((1, 0.6)),   // raw rabbit
+        424 => Some((5, 6.0)),   // cooked rabbit
+        _ => None,
+    }
+}
+
+pub fn item_attack_damage(item_id: i16) -> f32 {
+    match item_id {
+        // wooden to diamond
+        // Swords
+        268 => 4.0, // Wooden Sword
+        272 => 5.0, // Stone Sword
+        267 => 6.0, // Iron Sword
+        283 => 4.0, // Golden Sword
+        276 => 7.0, // Diamond Sword
+
+        // Axes
+        271 => 3.0,
+        275 => 4.0,
+        258 => 5.0,
+        286 => 3.0,
+        279 => 6.0,
+
+        // Pickaxes
+        270 => 2.0,
+        274 => 3.0,
+        257 => 4.0,
+        285 => 2.0,
+        278 => 5.0,
+
+        // Shovels
+        269 => 1.0,
+        273 => 2.0,
+        256 => 3.0,
+        284 => 1.0,
+        277 => 4.0,
+
+        _ => 1.0,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
@@ -1839,13 +1973,14 @@ async fn send_chunks(
             if loaded_chunks.contains(&(cx, cz)) {
                 continue;
             }
-            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, &generator).await;
+            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, generator).await;
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn update_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
@@ -1860,7 +1995,7 @@ async fn update_chunks(
         framed,
         client_protocol,
         world_blocks,
-        &generator,
+        generator,
         new_chunk_x,
         new_chunk_z,
         view_distance,
@@ -2030,7 +2165,7 @@ async fn make_player_join(
         framed,
         client_protocol,
         world_blocks,
-        &generator,
+        generator,
         0,
         0,
         config.server.view_distance,
