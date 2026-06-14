@@ -7,7 +7,7 @@
 ![Protocol](https://img.shields.io/badge/Protocol-47-blue)
 [![Build](https://github.com/Rinny-Inc/Coral/actions/workflows/rust.yml/badge.svg)](https://github.com/Rinny-Inc/Coral/actions/workflows/rust.yml)
 ![Status](https://img.shields.io/badge/Status-In%20Development-yellow)
-[![Discord](https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord)](https://discord.gg/B2BgjwDX8m)
+[![Discord](https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord)](https://discord.com/invite/B2BgjwDX8m)
 ![License](https://img.shields.io/badge/License-Custom%20Restrictive-red)
 
 **Coral** is a high-performance, lightweight legacy Minecraft server implementation written entirely in Rust. Coral targets **Minecraft 1.8.9 (Protocol 47)** as its primary platform while laying the foundation for **Minecraft 1.7.10 compatibility** through native multi-version protocol support.
