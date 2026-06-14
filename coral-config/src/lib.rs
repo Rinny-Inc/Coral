@@ -17,9 +17,9 @@ pub struct Config {
 pub struct ServerConfig {
     pub motd: String,
     pub port: u16,
-    pub max_player: u32,
+    pub max_players: u32,
     pub online_mode: bool,
-    pub player_sample_amount: i8,
+    pub player_sample_size: i8,
     pub default_gamemode: u8,
     pub whitelisted: bool,
     pub view_distance: i32,
@@ -51,9 +51,9 @@ impl Default for ServerConfig {
         Self {
             motd: "Coral Rust Minecraft Server\nTest Server".to_string(),
             port: 25565,
-            max_player: 20,
+            max_players: 20,
             online_mode: true,
-            player_sample_amount: 12,
+            player_sample_size: 12,
             default_gamemode: 0,
             whitelisted: false,
             view_distance: 10,
@@ -122,9 +122,9 @@ const DEFAULT_CONFIG: &str = r#"
 [server]
 motd = "Coral Rust Minecraft Server\nTest Server"
 port = 25565
-max_player = 20
+max_players = 20
 online_mode = true
-player_sample_amount = 12
+player_sample_size = 12
 default_gamemode = 0
 whitelisted = false
 view_distance = 10

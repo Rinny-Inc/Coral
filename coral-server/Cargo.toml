@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 coral-protocol = { path = "../coral-protocol" }
+coral-world = { path = "../coral-world"}
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

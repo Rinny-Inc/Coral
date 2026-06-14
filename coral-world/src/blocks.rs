@@ -48,3 +48,18 @@ impl WorldBlocks {
         blocks.insert((x, y, z), block);
     }
 }
+
+pub fn block_hardness_secs(block_id: u8) -> f32 {
+    match block_id {
+        0 => 0.0,
+        1 | 4 | 5 | 17 | 47 => 2.0,
+        2 | 3 | 13 => 0.6,
+        12 => 0.5,
+        7 => f32::INFINITY,
+        14 | 15 | 16 | 21 | 56 | 73 | 74 => 3.0,
+        18 => 0.2,
+        20 => 0.3,
+        24 | 35 => 0.8,
+        _ => 1.0,
+    }
+}

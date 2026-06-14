@@ -19,8 +19,8 @@ use coral_command::{CommandDispatcher, version_command};
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
-    banlist::BanList, entity_tracker::EntityTracker, ops::OpsFile, player::Player,
-    registry::PlayerRegistry, whitelist::WhitelistFile,
+    banlist::BanList, entity_tracker::EntityTracker, items::ItemRegistry, ops::OpsFile,
+    player::Player, registry::PlayerRegistry, whitelist::WhitelistFile,
 };
 use coral_world::{
     blocks::WorldBlocks,
@@ -53,6 +53,7 @@ type SoundEffect = (String, f64, f64, f64, f32, u8);
 pub struct ServerContext {
     packet_registry: Arc<PacketRegistry>,
     player_registry: Arc<PlayerRegistry>,
+    item_registry: Arc<ItemRegistry>,
     server_icon: Arc<Option<String>>,
     config: Arc<Config>,
     dispatcher: Arc<CommandDispatcher>,
@@ -140,6 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
         server_icon: Arc::new(server_icon),
+        item_registry: Arc::new(ItemRegistry::new()),
         config: config.clone(),
         dispatcher,
         entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
