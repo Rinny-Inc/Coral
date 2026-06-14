@@ -249,7 +249,7 @@ fn spawn_item_despawn_task(
     despawn_tx: Arc<broadcast::Sender<i32>>,
     item_despawn_secs: u64,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
-    item_positions: Arc<RwLock<HashMap<i32, (i32, f64, f64, f64, i16, u8, i16)>>>,
+    item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
 ) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(1));
@@ -289,8 +289,8 @@ fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<broadcast
                 continue;
             }
 
-            let input = if line.starts_with('/') {
-                line[1..].to_string()
+            let input = if let Some(stripped) = line.strip_prefix('/') {
+                stripped.to_string()
             } else {
                 line.clone()
             };

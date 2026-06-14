@@ -950,11 +950,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     ping: ping as i32
                 }).await;
             }
-            Ok((uuid, gamemode)) = gm_rx.recv() => {
+            Ok((_uuid, gamemode)) = gm_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
                     continue;
                 }
-                if let Some(uuid) = state.uuid {
+                if state.uuid.is_some() {
                     state.gamemode = gamemode;
                     send_packet(&mut framed, ChangeGameState::set_gamemode(gamemode)).await;
 
