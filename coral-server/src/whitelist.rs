@@ -25,6 +25,8 @@ impl WhitelistFile {
             eprintln!("Failed to parse whitelist.json: {}", e);
             vec![]
         });
+        println!("Loaded {} whitelisted players!", entries.len());
+
         Self { entries }
     }
 

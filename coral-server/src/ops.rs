@@ -27,6 +27,8 @@ impl OpsFile {
             eprintln!("Failed to parse ops.json: {}", e);
             vec![]
         });
+
+        println!("Loaded {} opped players!", entries.len());
         Self { entries }
     }
 

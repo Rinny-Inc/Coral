@@ -151,6 +151,7 @@ pub struct Slot {
     pub item_id: i16,
     pub count: u8,
     pub metadata: i16,
+    pub durability: i16,
 }
 pub struct Inventory {
     pub slots: [Option<Slot>; 44],
@@ -186,6 +187,7 @@ impl Inventory {
                     item_id,
                     count,
                     metadata,
+                    durability: 0,
                 });
                 return Some((Self::internal_to_packet(i), i));
             }

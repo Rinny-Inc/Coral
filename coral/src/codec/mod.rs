@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral_server::items::ItemRegistry;
 use coral_server::mining::break_time_ticks;
 use coral_world::generator::FlatWorldGenerator;
 use futures::SinkExt;
@@ -1223,6 +1224,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             );
                                         }
                                     }
+                                    let broke = damage_item(&mut state, 1, &item_registry);
+                                    sync_held_slot(&mut framed, &mut state, &player_registry, &equip_tx, broke).await;
                                 }
                                 3 | 4 => {
                                     let hotbar_slot = state.held_slot as usize;
@@ -1239,7 +1242,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             let dropped = Slot {
                                                 item_id: slot.item_id,
                                                 count: 1,
-                                                metadata: slot.metadata
+                                                metadata: slot.metadata,
+                                                durability: 0
                                             };
                                             if slot.count == 0 {
                                                 state.inventory.slots[hotbar_slot] = None;
@@ -1549,7 +1553,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     state.inventory.slots[idx] = Some(Slot {
                                         item_id: creative.item_id,
                                         count: creative.item_count,
-                                        metadata: creative.item_damage
+                                        metadata: creative.item_damage,
+                                        durability: 0,
                                     });
                                 }
                                 if idx < 9
@@ -1701,6 +1706,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }
 
                                         dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+
+                                        let broke = damage_item(&mut state, 2, &item_registry);
+                                        sync_held_slot(&mut framed, &mut state, &player_registry, &equip_tx, broke).await;
+
                                         sound_tx.send((
                                             "game.player.hurt".to_string(),
                                             target.x, target.y, target.z,
@@ -1927,6 +1936,54 @@ async fn kick(framed: &mut Framed<TcpStream, Codec>, reason: &str) {
             send_packet(framed, PlayDisconnect::new(reason)).await;
         }
         _ => {}
+    }
+}
+
+fn damage_item(state: &mut PlayerState, cost: i16, item_registry: &Arc<ItemRegistry>) -> bool {
+    let slot_idx = state.held_slot as usize;
+    let Some(slot) = state.inventory.slots[slot_idx].as_mut() else {
+        return false;
+    };
+
+    let Some(max_dur) = item_registry.max_durability(slot.item_id) else {
+        return false;
+    };
+
+    slot.metadata += cost;
+    if slot.metadata >= max_dur {
+        state.inventory.slots[slot_idx] = None;
+        state.held_item = -1;
+        return true;
+    }
+    false
+}
+
+async fn sync_held_slot(
+    framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
+    player_registry: &Arc<PlayerRegistry>,
+    equip_tx: &Arc<broadcast::Sender<EquipmentUpdate>>,
+    broke: bool,
+) {
+    let slot_idx = state.held_slot as usize;
+    let packet_slot = (36 + slot_idx) as i16;
+    let remaining = state.inventory.slots[slot_idx].as_ref();
+    send_packet(
+        framed,
+        SetSlot {
+            window_id: 0,
+            slot: packet_slot,
+            item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
+            count: remaining.map(|s| s.count).unwrap_or(0),
+            metadata: remaining.map(|s| s.metadata).unwrap_or(0),
+        },
+    )
+    .await;
+    if broke {
+        if let Some(uuid) = state.uuid {
+            player_registry.update_held_item(uuid, -1).await;
+        }
+        send_held_equip(equip_tx, state);
     }
 }
 

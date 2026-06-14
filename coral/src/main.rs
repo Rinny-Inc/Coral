@@ -6,16 +6,17 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coral_protocol::packets::PacketRegistry;
+use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
 use rsa::RsaPrivateKey;
 use tokio::{
+    io::{AsyncBufReadExt, BufReader},
     net::TcpListener,
     sync::{RwLock, broadcast},
     time::interval,
 };
 use uuid::Uuid;
 
-use coral_command::{CommandDispatcher, version_command};
+use coral_command::{CommandContext, CommandDispatcher, CommandResult, version_command};
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
@@ -92,15 +93,10 @@ pub struct ServerContext {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(coral_config::Config::load());
-    println!(
-        "Loaded config: online_mode={}, port={}",
-        config.server.online_mode, config.server.port
-    );
-
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => {
-            println!("Minecraft Server started at {}", addr);
+            println!("Minecraft Server 1.8.9 started at {}", addr);
             l
         }
         Err(e) => {
@@ -112,7 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
-    let server_icon = load_server_icon();
+
+    let server_icon = load_server_icon_file();
     match &server_icon {
         Some(_) => println!("Server icon loaded successfully"),
         None => println!("No server icon found or invalid size"),
@@ -123,21 +120,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (private_key, public_key_der) = generate_rsa_key();
 
-    let ops = Arc::new(RwLock::new(OpsFile::load()));
-    println!("Loaded {} opped players!", ops.read().await.entries.len());
-
-    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
-    println!(
-        "Loaded {} whitelisted players!",
-        whitelist.read().await.entries.len()
-    );
-
-    let banlist = Arc::new(RwLock::new(BanList::load()));
-    let item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>> =
-        Arc::new(RwLock::new(HashMap::new()));
-
-    let item_positions = Arc::new(RwLock::new(HashMap::new()));
-
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
         server_icon: Arc::new(server_icon),
@@ -145,8 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config.clone(),
         dispatcher,
         entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
-        item_spawn_times: item_spawn_times.clone(),
-        item_positions: item_positions.clone(),
+        item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
+        item_positions: Arc::new(RwLock::new(HashMap::new())),
         chat_tx: Arc::new(broadcast::channel::<String>(50).0),
         join_tx: Arc::new(broadcast::channel::<JoinLeave>(16).0),
         pos_tx: Arc::new(broadcast::channel::<PositionUpdate>(100).0),
@@ -172,20 +154,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
-        ops,
-        whitelist,
-        banlist,
+        ops: Arc::new(RwLock::new(OpsFile::load())),
+        whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
+        banlist: Arc::new(RwLock::new(BanList::load())),
     };
 
-    let shutdown_signal = ctx.shutdown_tx.clone();
-    let player_registry_shutdown = ctx.player_registry.clone();
+    spawn_console_task(ctx.dispatcher.clone(), ctx.chat_tx.clone());
+    spawn_shutdown_task(ctx.shutdown_tx.clone(), ctx.player_registry.clone());
+    spawn_tick_task(ctx.tick_tx.clone(), ctx.player_registry.clone());
+    spawn_world_time_task(ctx.time_tx.clone());
+
+    if !config.world.disable_weather {
+        spawn_weather_task(ctx.weather_tx.clone());
+    }
+
+    spawn_item_despawn_task(
+        ctx.despawn_tx.clone(),
+        config.world.item_despawn_seconds,
+        ctx.item_spawn_times.clone(),
+        ctx.item_positions.clone(),
+    );
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let ctx = ctx.clone();
+
+        tokio::spawn(async move {
+            codec::process(socket, ctx).await;
+        });
+    }
+}
+
+fn spawn_shutdown_task(
+    shutdown_signal: Arc<broadcast::Sender<()>>,
+    player_registry: Arc<PlayerRegistry>,
+) {
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         println!("Shutting down, kicking players..");
         shutdown_signal.send(()).ok();
 
         for _ in 0..50 {
-            if player_registry_shutdown.get_online_count().await == 0 {
+            if player_registry.get_online_count().await == 0 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -194,19 +204,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Server closed.");
         std::process::exit(0);
     });
-
-    let tick_tx_task = ctx.tick_tx.clone();
-    let players_registry_tick = ctx.player_registry.clone();
+}
+fn spawn_tick_task(tick_tx: Arc<broadcast::Sender<()>>, player_registry: Arc<PlayerRegistry>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50));
         loop {
             interval.tick().await;
-            players_registry_tick.tick().await;
-            tick_tx_task.send(()).ok();
+            player_registry.tick().await;
+            tick_tx.send(()).ok();
         }
     });
-
-    let time_tx_task = ctx.time_tx.clone();
+}
+fn spawn_world_time_task(time_tx: Arc<broadcast::Sender<(i64, i64)>>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50)); // 1 tick
         let mut world_age: i64 = 0;
@@ -218,58 +227,98 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             time_of_day = (time_of_day + 1) % 24000;
 
             if world_age % 20 == 0 {
-                time_tx_task.send((world_age, time_of_day)).ok();
+                time_tx.send((world_age, time_of_day)).ok();
             }
         }
     });
+}
+fn spawn_weather_task(weather_tx: Arc<broadcast::Sender<WeatherState>>) {
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_millis(50));
+        let mut weather = Weather::new();
 
-    if !config.world.disable_weather {
-        let weather_tx_task = ctx.weather_tx.clone();
-        tokio::spawn(async move {
-            let mut interval = interval(Duration::from_millis(50));
-            let mut weather = Weather::new();
-
-            loop {
-                interval.tick().await;
-                if let Some(new_state) = weather.tick() {
-                    weather_tx_task.send(new_state).ok();
-                }
+        loop {
+            interval.tick().await;
+            if let Some(new_state) = weather.tick() {
+                weather_tx.send(new_state).ok();
             }
-        });
-    }
-
-    let despawn_tx_task = ctx.despawn_tx.clone();
-    let item_despawn_secs = config.world.item_despawn_seconds;
-
+        }
+    });
+}
+fn spawn_item_despawn_task(
+    despawn_tx: Arc<broadcast::Sender<i32>>,
+    item_despawn_secs: u64,
+    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: Arc<RwLock<HashMap<i32, (i32, f64, f64, f64, i16, u8, i16)>>>,
+) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
+            let expired: Vec<i32> = {
+                let times = item_spawn_times.read().await;
+                times
+                    .iter()
+                    .filter(|(_, t)| t.elapsed().as_secs() >= item_despawn_secs)
+                    .map(|(eid, _)| *eid)
+                    .collect()
+            };
+
+            if expired.is_empty() {
+                continue;
+            }
             let mut times = item_spawn_times.write().await;
-            let expired: Vec<i32> = times
-                .iter()
-                .filter(|(_, t)| t.elapsed().as_secs() >= item_despawn_secs)
-                .map(|(eid, _)| *eid)
-                .collect();
+            let mut positions = item_positions.write().await;
 
             for eid in expired {
                 times.remove(&eid);
-                item_positions.write().await.remove(&eid);
-                despawn_tx_task.send(eid).ok();
+                positions.remove(&eid);
+                despawn_tx.send(eid).ok();
             }
         }
     });
-    loop {
-        let (socket, _) = listener.accept().await?;
-        let ctx = ctx.clone();
+}
+fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<broadcast::Sender<String>>) {
+    tokio::spawn(async move {
+        let stdin = tokio::io::stdin();
+        let mut lines = BufReader::new(stdin).lines();
 
-        tokio::spawn(async move {
-            codec::process(socket, ctx).await;
-        });
-    }
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                continue;
+            }
+
+            let input = if line.starts_with('/') {
+                line[1..].to_string()
+            } else {
+                line.clone()
+            };
+
+            let args: Vec<String> = input.split_whitespace().map(|s| s.to_string()).collect();
+
+            if args.is_empty() {
+                continue;
+            }
+
+            let ctx = CommandContext {
+                sender: "CONSOLE".to_string(),
+                args,
+            };
+
+            match dispatcher.dispatch(ctx).await {
+                CommandResult::Success(msg) => println!("[CONSOLE] {}", msg),
+                CommandResult::Error(msg) => eprintln!("[CONSOLE ERROR] {}", msg),
+                CommandResult::Broadcast(msg) => {
+                    chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
+                }
+                CommandResult::None => {}
+            }
+        }
+    });
 }
 
-fn load_server_icon() -> Option<String> {
+fn load_server_icon_file() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let icon_path = cwd.join("server-icon.png");
     let bytes = std::fs::read(&icon_path).ok()?;

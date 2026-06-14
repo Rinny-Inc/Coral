@@ -114,6 +114,8 @@ impl Config {
                 .unwrap_or_else(|e| eprintln!("Failed to update config.toml: {}", e));
         }
 
+        println!("Loaded config: {:#?}", config);
+
         config
     }
 }
