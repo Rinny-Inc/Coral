@@ -1,18 +1,10 @@
+pub mod drops;
 pub mod food;
 pub mod registry;
 pub mod swords;
 pub mod tools;
 
 pub use registry::ItemRegistry;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolMaterial {
-    Wood,
-    Stone,
-    Iron,
-    Gold,
-    Diamond,
-}
 
 pub trait Item: Send + Sync {
     fn id(&self) -> i16;

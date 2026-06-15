@@ -86,3 +86,17 @@ impl PacketOut for PlayerListItem17 {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct PlayerListHeaderFooter {
+    pub header: String,
+    pub footer: String,
+}
+impl PacketOut for PlayerListHeaderFooter {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x48);
+        writer.write_string(&self.header);
+        writer.write_string(&self.footer);
+        Ok(())
+    }
+}

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 coral-protocol = { path = "../coral-protocol" }
+coral-types = { path = "../coral-types" }
 flate2.workspace = true
 rand.workspace = true
 tokio.workspace = true

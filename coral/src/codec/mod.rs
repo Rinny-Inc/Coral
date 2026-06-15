@@ -6,6 +6,7 @@ use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use coral_server::items::ItemRegistry;
+use coral_server::items::drops::block_drop;
 use coral_server::mining::break_time_ticks;
 use coral_world::generator::FlatWorldGenerator;
 use futures::SinkExt;
@@ -1199,29 +1200,31 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         )).ok();
 
                                         if !block.is_air() && block.id > 0 {
-                                            let drop_eid = next_entity_id();
-                                            let x = bx as f64 + 0.5;
-                                            let y = by as f64 + 0.5;
-                                            let z = bz as f64 + 0.5;
-                                            item_tx.send((
-                                                drop_eid,
-                                                x, y, z,
-                                                block.id as i16,
-                                                1,
-                                                block.metadata as i16
-                                            )).ok();
-                                            item_spawn_times.write().await.insert(drop_eid, Instant::now());
-                                            entity_tracker.write().await.track(
-                                                TrackedEntity::item(
+                                            if let Some((drop_id, drop_count, drop_metadata)) = block_drop(block.id, block.metadata) {
+                                                let drop_eid = next_entity_id();
+                                                let x = bx as f64 + 0.5;
+                                                let y = by as f64 + 0.5;
+                                                let z = bz as f64 + 0.5;
+                                                item_tx.send((
                                                     drop_eid,
                                                     x, y, z,
-                                                    config.tracking.item,
-                                                )
-                                            );
-                                            item_positions.write().await.insert(
-                                                drop_eid,
-                                                (drop_eid, x, y, z, block.id as i16, 1, block.metadata as i16)
-                                            );
+                                                    drop_id,
+                                                    drop_count,
+                                                    drop_metadata
+                                                )).ok();
+                                                item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                                entity_tracker.write().await.track(
+                                                    TrackedEntity::item(
+                                                        drop_eid,
+                                                        x, y, z,
+                                                        config.tracking.item,
+                                                    )
+                                                );
+                                                item_positions.write().await.insert(
+                                                    drop_eid,
+                                                    (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
+                                                );
+                                            }
                                         }
                                     }
                                     let broke = damage_item(&mut state, 1, &item_registry);

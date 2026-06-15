@@ -1,4 +1,6 @@
-use super::{Item, ToolMaterial};
+use coral_types::ToolMaterial;
+
+use super::Item;
 
 pub struct Sword {
     pub id: i16,

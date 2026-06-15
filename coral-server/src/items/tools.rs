@@ -1,11 +1,6 @@
-use super::{Item, ToolMaterial};
+use coral_types::{ToolKind, ToolMaterial};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolKind {
-    Pickaxe,
-    Axe,
-    Shovel,
-}
+use super::Item;
 
 pub struct Tool {
     pub id: i16,
@@ -34,6 +29,8 @@ impl Item for Tool {
             ToolKind::Pickaxe => matches!(block_id, 1 | 4 | 16 | 21 | 56 | 73 | 74),
             ToolKind::Axe => matches!(block_id, 17 | 5 | 47 | 162),
             ToolKind::Shovel => matches!(block_id, 2 | 3 | 12 | 13),
+            ToolKind::Sword => block_id == 30,
+            ToolKind::None => false,
         };
         if !correct {
             return 1.0;
@@ -44,13 +41,13 @@ impl Item for Tool {
             ToolMaterial::Iron => 6.0,
             ToolMaterial::Diamond => 8.0,
             ToolMaterial::Gold => 12.0,
+            ToolMaterial::Any => 1.0,
         }
     }
 }
 
 pub fn all() -> Vec<Tool> {
-    use ToolKind::*;
-    use ToolMaterial::*;
+    use coral_types::{ToolKind::*, ToolMaterial::*};
 
     vec![
         // pickaxes
