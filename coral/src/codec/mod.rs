@@ -981,9 +981,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     send_packet(&mut framed, ChangeGameState::set_gamemode(gamemode)).await;
 
                     let (flags, fly_speed, walk_speed) = match gamemode {
-                        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.5, 0.1),
+                        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
                         3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
-                        _ => (0x00, 0.5, 0.1),
+                        _ => (0x00, 0.05, 0.1),
                     };
                     send_packet(&mut framed, PlayerAbilities {
                         flags,
@@ -2230,12 +2230,18 @@ async fn make_player_join(
         send_packet(framed, SpawnPosition17 { x: 0, y: 64, z: 0 }).await;
     }
 
+    let (ability_flags, fly_speed, walk_speed) = match config.server.default_gamemode {
+        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
+        3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
+        _ => (0x00, 0.05, 0.1),
+    };
+
     send_packet(
         framed,
         PlayerAbilities {
-            flags: 0x00,
-            fly_speed: 0.05,
-            walk_speed: 0.1,
+            flags: ability_flags,
+            fly_speed,
+            walk_speed,
         },
     )
     .await;
