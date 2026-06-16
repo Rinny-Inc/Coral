@@ -1,15 +1,16 @@
-use coral_world::blocks::block_hardness_secs;
+use coral_world::blocks::registry::BlockRegistry;
 
 use crate::items::ItemRegistry;
 
 pub fn break_time_ticks(
     item_registry: &ItemRegistry,
+    block_registry: &BlockRegistry,
     item_id: i16,
     block_id: u8,
     in_water: bool,
     on_ground: bool,
 ) -> u32 {
-    let hardness = block_hardness_secs(block_id);
+    let hardness = block_registry.hardness(block_id);
     if hardness <= 0.0 {
         return 0;
     }

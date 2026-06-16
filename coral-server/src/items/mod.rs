@@ -4,6 +4,7 @@ pub mod registry;
 pub mod swords;
 pub mod tools;
 
+use coral_types::ToolMaterial;
 pub use registry::ItemRegistry;
 
 pub trait Item: Send + Sync {
@@ -43,6 +44,10 @@ pub trait Item: Send + Sync {
         } else {
             None
         }
+    }
+
+    fn tool_material(&self) -> Option<ToolMaterial> {
+        None
     }
 }
 

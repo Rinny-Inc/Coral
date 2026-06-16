@@ -8,6 +8,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use coral_server::items::ItemRegistry;
 use coral_server::items::drops::block_drop;
 use coral_server::mining::break_time_ticks;
+use coral_types::ToolMaterial;
 use coral_world::generator::FlatWorldGenerator;
 use futures::SinkExt;
 use rand::RngExt;
@@ -53,7 +54,9 @@ use coral_protocol::packets::play::movement::{
 use coral_protocol::packets::play::player_list::{
     BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
 };
-use coral_protocol::packets::play::{ClientSettings, NamedSoundEffect, PluginMessage};
+use coral_protocol::packets::play::{
+    ClientSettings, NamedSoundEffect, PluginMessage, WorldParticles,
+};
 use coral_protocol::packets::{PacketIn, PacketOut};
 use coral_protocol::{
     packets::{
@@ -321,6 +324,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         packet_registry,
         player_registry,
         item_registry,
+        block_registry,
         server_icon,
         config,
         dispatcher,
@@ -347,6 +351,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         equip_tx,
         sound_tx,
         shutdown_tx,
+        particle_tx,
         world_blocks,
         generator,
         private_key,
@@ -383,6 +388,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut equip_rx = equip_tx.subscribe();
     let mut sound_rx = sound_tx.subscribe();
     let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut particle_rx = particle_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -658,6 +664,21 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }).await;
                     }
                 }
+            }
+            Ok((id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, WorldParticles {
+                    particle_id: id,
+                    long_distance: false,
+                    x, y, z,
+                    offset_x: ox,
+                    offset_y: oy,
+                    offset_z: oz,
+                    particle_data: data,
+                    count
+                }).await;
             }
             Ok(weather) = weather_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
@@ -1155,7 +1176,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 }
                                 0 if state.gamemode == 0 => {
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
-                                    let required = break_time_ticks(&item_registry, state.held_item, block.id, false, true);
+                                    let required = break_time_ticks(&item_registry, &block_registry, state.held_item, block.id, false, true);
 
                                     state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
                                     state.breaking_started_tick = state.tick_count;
@@ -1173,6 +1194,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         let required_ticks = break_time_ticks(
                                             &item_registry,
+                                            &block_registry,
                                             state.held_item,
                                             block.id,
                                             false,
@@ -1193,6 +1215,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             0)
                                         ).ok();
                                         break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
+                                        particle_tx.send((37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
                                         sound_tx.send((
                                             block_break_sound(block.id).to_string(),
                                             bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
@@ -1200,7 +1223,18 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         )).ok();
 
                                         if !block.is_air() && block.id > 0 {
-                                            if let Some((drop_id, drop_count, drop_metadata)) = block_drop(block.id, block.metadata) {
+                                            let can_drop = if let Some(req_mat) = block_registry.required_material(block.id) {
+                                                item_registry.get(state.held_item)
+                                                    .and_then(|item| item.tool_material())
+                                                    .map(|mat| material_meets(mat, req_mat))
+                                                    .unwrap_or(false)
+                                            } else {
+                                                true
+                                            };
+
+                                            if can_drop
+                                                && let Some((drop_id, drop_count, drop_metadata)) = block_drop(block.id, block.metadata)
+                                            {
                                                 let drop_eid = next_entity_id();
                                                 let x = bx as f64 + 0.5;
                                                 let y = by as f64 + 0.5;
@@ -1723,6 +1757,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         if is_critical {
                                             anim_tx.send((state.entity_id, 4)).ok();
+                                            particle_tx.send((1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
                                         }
                                     }
                                 }
@@ -1861,6 +1896,17 @@ async fn damage_player(
         return true;
     }
     false
+}
+
+fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
+    let rank = |m: ToolMaterial| match m {
+        ToolMaterial::Wood | ToolMaterial::Gold => 0,
+        ToolMaterial::Stone => 1,
+        ToolMaterial::Iron => 2,
+        ToolMaterial::Diamond => 3,
+        ToolMaterial::Any => 0,
+    };
+    rank(have) >= rank(need)
 }
 
 async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: WeatherState) {

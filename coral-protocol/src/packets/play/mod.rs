@@ -1,5 +1,5 @@
 use crate::{
-    packets::{PacketIn, PacketOut},
+    packets::{PacketIn, PacketOut, play::chat::builder::ChatBuilder},
     reader::Reader,
 };
 
@@ -172,6 +172,108 @@ impl PacketOut for NamedSoundEffect {
         writer.write_i32((self.z * 8.0) as i32);
         writer.write_f32(self.volume);
         writer.write_byte(self.pitch);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct WorldParticles {
+    pub particle_id: i32,
+    pub long_distance: bool,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub offset_z: f32,
+    pub particle_data: f32,
+    pub count: i32,
+}
+impl PacketOut for WorldParticles {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x2A);
+        writer.write_i32(self.particle_id);
+        writer.write_bool(self.long_distance);
+        writer.write_f32(self.x);
+        writer.write_f32(self.y);
+        writer.write_f32(self.z);
+        writer.write_f32(self.offset_x);
+        writer.write_f32(self.offset_y);
+        writer.write_f32(self.offset_z);
+        writer.write_f32(self.particle_data);
+        writer.write_i32(self.count);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct Title {
+    pub action: i32,
+    pub text: Option<String>,
+    pub fade_in: Option<i32>,
+    pub stay: Option<i32>,
+    pub fade_out: Option<i32>,
+}
+impl Title {
+    pub fn show(text: &str) -> Self {
+        Self {
+            action: 0,
+            text: Some(ChatBuilder::plain_json(text)),
+            fade_in: None,
+            stay: None,
+            fade_out: None,
+        }
+    }
+    pub fn subtitle(text: &str) -> Self {
+        Self {
+            action: 1,
+            text: Some(ChatBuilder::plain_json(text)),
+            fade_in: None,
+            stay: None,
+            fade_out: None,
+        }
+    }
+    pub fn times(fade_in: i32, stay: i32, fade_out: i32) -> Self {
+        Self {
+            action: 2,
+            text: None,
+            fade_in: Some(fade_in),
+            stay: Some(stay),
+            fade_out: Some(fade_out),
+        }
+    }
+    pub fn clear() -> Self {
+        Self {
+            action: 3,
+            text: None,
+            fade_in: None,
+            stay: None,
+            fade_out: None,
+        }
+    }
+    pub fn reset() -> Self {
+        Self {
+            action: 4,
+            text: None,
+            fade_in: None,
+            stay: None,
+            fade_out: None,
+        }
+    }
+}
+impl PacketOut for Title {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x45);
+        writer.write_varint(self.action);
+        match self.action {
+            0 | 1 => writer.write_string(self.text.as_deref().unwrap_or("{\"text\":\"\"}")),
+            2 => {
+                writer.write_i32(self.fade_in.unwrap_or(10));
+                writer.write_i32(self.stay.unwrap_or(70));
+                writer.write_i32(self.fade_out.unwrap_or(20));
+            }
+            _ => {}
+        }
         Ok(())
     }
 }

@@ -24,7 +24,7 @@ use coral_server::{
     player::Player, registry::PlayerRegistry, whitelist::WhitelistFile,
 };
 use coral_world::{
-    blocks::WorldBlocks,
+    blocks::{WorldBlocks, registry::BlockRegistry},
     generator::FlatWorldGenerator,
     weather::{Weather, WeatherState},
 };
@@ -49,12 +49,14 @@ type WeatherUpdate = WeatherState;
 type EntityStatusUpdate = (i32, u8);
 type EquipmentUpdate = (i32, i16, i16, u8, i16);
 type SoundEffect = (String, f64, f64, f64, f32, u8);
+type ParticleEffect = (i32, f32, f32, f32, f32, f32, f32, f32, i32);
 
 #[derive(Clone)]
 pub struct ServerContext {
     packet_registry: Arc<PacketRegistry>,
     player_registry: Arc<PlayerRegistry>,
     item_registry: Arc<ItemRegistry>,
+    block_registry: Arc<BlockRegistry>,
     server_icon: Arc<Option<String>>,
     config: Arc<Config>,
     dispatcher: Arc<CommandDispatcher>,
@@ -81,6 +83,7 @@ pub struct ServerContext {
     equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
     sound_tx: Arc<broadcast::Sender<SoundEffect>>,
     shutdown_tx: Arc<broadcast::Sender<()>>,
+    particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     private_key: Arc<RsaPrivateKey>,
@@ -124,6 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         packet_registry: Arc::new(PacketRegistry::new()),
         server_icon: Arc::new(server_icon),
         item_registry: Arc::new(ItemRegistry::new()),
+        block_registry: Arc::new(BlockRegistry::new()),
         config: config.clone(),
         dispatcher,
         entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
@@ -149,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
         sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
         shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
+        particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry: Arc::new(PlayerRegistry::new()),

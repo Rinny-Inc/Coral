@@ -11,6 +11,7 @@ coral-config = { path = "../coral-config" }
 coral-protocol = { path = "../coral-protocol" }
 coral-server = { path = "../coral-server" }
 coral-world = { path = "../coral-world" }
+coral-types = { path = "../coral-types" }
 futures.workspace = true
 rsa.workspace = true
 tokio.workspace = true

@@ -44,6 +44,10 @@ impl Item for Tool {
             ToolMaterial::Any => 1.0,
         }
     }
+
+    fn tool_material(&self) -> Option<ToolMaterial> {
+        Some(self.material.clone())
+    }
 }
 
 pub fn all() -> Vec<Tool> {
