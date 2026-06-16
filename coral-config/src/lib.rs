@@ -36,6 +36,8 @@ pub struct WorldConfig {
     pub difficulty: u8,
     pub item_despawn_seconds: u64,
     pub disable_weather: bool,
+    pub allow_nether: bool,
+    pub allow_end: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -74,6 +76,8 @@ impl Default for WorldConfig {
             difficulty: 0,
             item_despawn_seconds: 300,
             disable_weather: false,
+            allow_nether: true,
+            allow_end: true,
         }
     }
 }
@@ -139,6 +143,8 @@ format = "<{username}> {message}"
 difficulty = 0
 item_despawn_seconds = 300
 disable_weather = false
+allow_nether = true
+allow_end = true
 
 [tracking]
 player = 512

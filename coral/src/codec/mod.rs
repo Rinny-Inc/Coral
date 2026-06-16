@@ -758,6 +758,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     continue;
                 }
 
+                let was_on_ground = player_registry.get(&uuid).await
+                    .map(|p| p.on_ground)
+                    .unwrap_or(true);
+
                 let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
                     entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
                 } else {
@@ -780,6 +784,56 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     entity_id: eid,
                     head_yaw: yaw_byte
                 }).await;
+
+                if on_ground && !was_on_ground {
+                    let land_block = world_blocks.get(
+                        x.floor() as i32,
+                        (y.floor() as i32 - 1).max(0) as u8,
+                        z.floor() as i32,
+                        &generator
+                    ).await;
+
+                    if !land_block.is_air() {
+                        particle_tx.send((
+                            37,
+                            x as f32,
+                            y as f32,
+                            z as f32,
+                            0.3, 0.0, 0.3,
+                            land_block.id as f32,
+                            6
+                        )).ok();
+                    }
+                }
+
+                let is_sprinting = player_registry.get(&uuid).await
+                    .map(|p| p.is_sprinting)
+                    .unwrap_or(false);
+
+                if is_sprinting && on_ground {
+                    let block_below = world_blocks.get(
+                        x.floor() as i32,
+                        (y.floor() as i32 - 1).max(0) as u8,
+                        z.floor() as i32,
+                        &generator
+                    ).await;
+
+                    if !block_below.is_air() {
+                        let yaw_rad = (yaw * std::f32::consts::PI / 180.0) as f64;
+                        let behind_x = x + yaw_rad.sin() * 0.2;
+                        let behind_z = z - yaw_rad.cos() * 0.2;
+
+                        particle_tx.send((
+                            37,
+                            behind_x as f32,
+                            y as f32,
+                            behind_z as f32,
+                            0.0, 0.0, 0.0,
+                            block_below.id as f32,
+                            3
+                        )).ok();
+                    }
+                }
             }
 
             Ok((eid, anim)) = anim_rx.recv() => {
