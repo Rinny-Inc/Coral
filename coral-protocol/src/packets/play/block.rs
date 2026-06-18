@@ -156,12 +156,10 @@ impl PacketOut for BlockBreakAnimation {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x25);
         writer.write_varint(self.entity_id);
-
         let position: i64 = ((self.x as i64 & 0x3FFFFFF) << 38)
             | ((self.y as i64 & 0xFFF) << 26)
             | (self.z as i64 & 0x3FFFFFF);
         writer.write_long(position);
-
         writer.write_byte(self.destroy_stage);
         Ok(())
     }

@@ -1,16 +1,13 @@
 use crate::{CONTINUE_BIT, SEGMENT_BITS};
 
-pub struct Reader {
-    pub data: Vec<u8>,
+pub struct Reader<'a> {
+    pub data: &'a [u8],
     pub position: usize,
 }
 
-impl Reader {
-    pub fn new(data: &[u8]) -> Self {
-        Self {
-            data: data.to_vec(),
-            position: 0,
-        }
+impl<'a> Reader<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, position: 0 }
     }
 
     pub fn has_remaining(&self) -> bool {

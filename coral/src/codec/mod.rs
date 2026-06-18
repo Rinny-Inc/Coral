@@ -237,6 +237,15 @@ impl Encoder<Box<dyn PacketOut>> for Codec {
 }
 
 async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
+    /*let mut writer = Writer::new();
+    let _ = packet.encode(&mut writer);
+    let hex: String = writer.data.iter().map(|b| format!("{:02X} ", b)).collect();
+    println!(
+        "SEND [{}] {} bytes: {}",
+        std::any::type_name::<P>(),
+        writer.data.len(),
+        hex
+    );*/
     let boxed_packet: Box<dyn PacketOut> = Box::new(packet);
 
     if let Err(e) = framed.send(boxed_packet).await
@@ -665,8 +674,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     }
                 }
             }
-            Ok((id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
+            Ok((sender_eid, id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
                 if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                if state.entity_id == sender_eid {
                     continue;
                 }
                 send_packet(&mut framed, WorldParticles {
@@ -795,6 +807,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                     if !land_block.is_air() {
                         particle_tx.send((
+                            state.entity_id,
                             37,
                             x as f32,
                             y as f32,
@@ -824,6 +837,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         let behind_z = z - yaw_rad.cos() * 0.2;
 
                         particle_tx.send((
+                            state.entity_id,
                             37,
                             behind_x as f32,
                             y as f32,
@@ -1269,7 +1283,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             0)
                                         ).ok();
                                         break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
-                                        particle_tx.send((37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
+                                        particle_tx.send((state.entity_id, 37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
                                         sound_tx.send((
                                             block_break_sound(block.id).to_string(),
                                             bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
@@ -1811,7 +1825,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         if is_critical {
                                             anim_tx.send((state.entity_id, 4)).ok();
-                                            particle_tx.send((1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
+                                            particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
                                         }
                                     }
                                 }

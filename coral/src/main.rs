@@ -49,7 +49,7 @@ type WeatherUpdate = WeatherState;
 type EntityStatusUpdate = (i32, u8);
 type EquipmentUpdate = (i32, i16, i16, u8, i16);
 type SoundEffect = (String, f64, f64, f64, f32, u8);
-type ParticleEffect = (i32, f32, f32, f32, f32, f32, f32, f32, i32);
+type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);
 
 #[derive(Clone)]
 pub struct ServerContext {
