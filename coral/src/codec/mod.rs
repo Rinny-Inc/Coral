@@ -237,15 +237,6 @@ impl Encoder<Box<dyn PacketOut>> for Codec {
 }
 
 async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
-    /*let mut writer = Writer::new();
-    let _ = packet.encode(&mut writer);
-    let hex: String = writer.data.iter().map(|b| format!("{:02X} ", b)).collect();
-    println!(
-        "SEND [{}] {} bytes: {}",
-        std::any::type_name::<P>(),
-        writer.data.len(),
-        hex
-    );*/
     let boxed_packet: Box<dyn PacketOut> = Box::new(packet);
 
     if let Err(e) = framed.send(boxed_packet).await
