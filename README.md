@@ -2,16 +2,16 @@
 
 > ⚠️ Early development — not production ready
 
-![Rust](<https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust>)
-
+<p align="center">
+<img alt="Rust" src="https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust">
 <!-- LOC_BADGE_START --><!-- LOC_BADGE_END -->
-
-![Minecraft](https://img.shields.io/badge/Minecraft-1.8.9-green)
-![Protocol](https://img.shields.io/badge/Protocol-47-blue)
-[![Build](https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg)](https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml)
-![Status](https://img.shields.io/badge/Status-In%20Development-yellow)
-[![Discord](https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord)](https://discord.com/invite/B2BgjwDX8m)
-![License](https://img.shields.io/badge/License-Custom%20Restrictive-red)
+<img alt="Minecraft" src="https://img.shields.io/badge/Minecraft-1.8.9-green">
+<img alt="Protocol" src="https://img.shields.io/badge/Protocol-47-blue">
+<a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
+<img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
+<a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord"></a>
+<img alt="License" src="https://img.shields.io/badge/License-Custom%20Restrictive-red">
+</p>
 
 > ## 💬 Discord Community
 >
