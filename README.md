@@ -4,7 +4,8 @@
 
 ![Rust](<https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust>)
 
-<!-- LOC_BADGE_START -->![Rust Lines of Code](https://img.shields.io/badge/Lines%20of%20code-8490-orange)<!-- LOC_BADGE_END -->
+<!-- LOC_BADGE_START -->
+<!-- LOC_BADGE_END -->
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.8.9-green)
 ![Protocol](https://img.shields.io/badge/Protocol-47-blue)
