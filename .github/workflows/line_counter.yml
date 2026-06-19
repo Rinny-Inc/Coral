@@ -1,0 +1,43 @@
+name: Update Lines of Code Badge
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  update-badge:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+
+      - name: Install cloc
+        run: sudo apt-get update && sudo apt-get install -y cloc
+
+      - name: Calculate and Generate Badge
+        run: |
+          cloc --csv --include-ext=rs --not-match-d='(^|/)target($|/)' . > loc_report.csv
+          TOTAL_LOC=$(tail -n 1 loc_report.csv | cut -d',' -f5)
+
+          BADGE_LABEL="Lines%20of%20code"
+          BADGE_COLOR="orange"
+
+          BADGE_MARKDOWN="![Rust Lines of Code](https://shields.io{BADGE_LABEL}-${TOTAL_LOC}-${BADGE_COLOR})"
+          echo "$BADGE_MARKDOWN" > badge.txt
+
+      - name: Inject Badge into README
+        run: |
+          sed -i '/<!-- LOC_BADGE_START -->/,/<!-- LOC_BADGE_END -->/{//!d}' README.md
+          sed -i '/<!-- LOC_BADGE_START -->/r badge.txt' README.md
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff-index --quiet HEAD || (git commit -m "docs: update lines of code badge [skip ci]" && git push)
