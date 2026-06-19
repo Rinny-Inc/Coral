@@ -33,11 +33,14 @@ pub struct ChatConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct WorldConfig {
+    pub world_name: String,
     pub difficulty: u8,
     pub item_despawn_seconds: u64,
     pub disable_weather: bool,
     pub allow_nether: bool,
     pub allow_end: bool,
+    pub enable_auto_save: bool,
+    pub auto_save_interval: i32,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -73,11 +76,14 @@ impl Default for ChatConfig {
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
+            world_name: "world".to_string(),
             difficulty: 0,
             item_despawn_seconds: 300,
             disable_weather: false,
             allow_nether: true,
             allow_end: true,
+            enable_auto_save: true,
+            auto_save_interval: 300,
         }
     }
 }
@@ -140,11 +146,15 @@ compression_threshold = 256
 format = "<{username}> {message}"
 
 [world]
+name = "world"
 difficulty = 0
 item_despawn_seconds = 300
 disable_weather = false
 allow_nether = true
 allow_end = true
+enable_auto_save = true
+# In Seconds
+auto_save_interval = 300
 
 [tracking]
 player = 512

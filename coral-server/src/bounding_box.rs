@@ -8,6 +8,7 @@ impl BoundingBox {
         Self { width, height }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn intersects(
         &self,
         self_x: f64,

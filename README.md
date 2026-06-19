@@ -68,8 +68,8 @@ On the first boot, Coral will generate a `config.toml` config file in the root d
 motd = "Coral Rust Minecraft Server\nTest Server"
 port = 25565
 max_players = 20
-online_mode = true # Toggle mojang auth
-player_sample_amount = 12
+online_mode = true
+player_sample_size = 12
 default_gamemode = 0
 whitelisted = false
 view_distance = 10
@@ -79,9 +79,15 @@ compression_threshold = 256
 format = "<{username}> {message}"
 
 [world]
+name = "world"
 difficulty = 0
 item_despawn_seconds = 300
 disable_weather = false
+allow_nether = true
+allow_end = true
+enable_auto_save = true
+# In Seconds
+auto_save_interval = 300
 
 [tracking]
 player = 512

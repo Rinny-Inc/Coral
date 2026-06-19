@@ -1,6 +1,10 @@
-use crate::generator::FlatWorldGenerator;
+use crate::{
+    anvil::{chunk_to_nbt, nbt_to_blocks},
+    generator::FlatWorldGenerator,
+    region::RegionFile,
+};
 use coral_types::{ToolKind, ToolMaterial};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 use tokio::sync::RwLock;
 
 pub mod definitions;
@@ -95,5 +99,67 @@ impl WorldBlocks {
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
         let mut blocks = self.blocks.write().await;
         blocks.insert((x, y, z), block);
+    }
+
+    pub async fn save(&self, world_dir: &Path, generator: &FlatWorldGenerator) {
+        let blocks = self.blocks.read().await;
+
+        // group blocks by chunk
+        let mut chunks: std::collections::HashMap<(i32, i32), ()> =
+            std::collections::HashMap::new();
+        for (x, _y, z) in blocks.keys() {
+            chunks.insert((x >> 4, z >> 4), ());
+        }
+
+        for (cx, cz) in chunks.keys() {
+            let region_x = cx >> 5;
+            let region_z = cz >> 5;
+            let region = RegionFile::new(world_dir, region_x, region_z);
+            let nbt = chunk_to_nbt(*cx, *cz, &blocks, generator);
+            region.write_chunk(*cx, *cz, &nbt);
+        }
+    }
+
+    pub async fn load(&self, world_dir: &Path) {
+        let region_dir = world_dir.join("region");
+        let Ok(entries) = std::fs::read_dir(&region_dir) else {
+            return;
+        };
+
+        let mut blocks = self.blocks.write().await;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".mca") {
+                continue;
+            }
+            // parse r.X.Z.mca
+            let parts: Vec<&str> = name.trim_end_matches(".mca").split('.').collect();
+            if parts.len() != 3 {
+                continue;
+            }
+            let Ok(rx) = parts[1].parse::<i32>() else {
+                continue;
+            };
+            let Ok(rz) = parts[2].parse::<i32>() else {
+                continue;
+            };
+
+            let region = RegionFile { path: path.clone() };
+
+            for lx in 0..32i32 {
+                for lz in 0..32i32 {
+                    let cx = rx * 32 + lx;
+                    let cz = rz * 32 + lz;
+                    if let Some(nbt_data) = region.read_chunk(cx, cz) {
+                        nbt_to_blocks(&nbt_data, &mut blocks);
+                    }
+                }
+            }
+        }
+        println!("[World] Loaded {} block overrides from disk", blocks.len());
     }
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::ErrorKind,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -26,6 +27,7 @@ use coral_server::{
 use coral_world::{
     blocks::{WorldBlocks, registry::BlockRegistry},
     generator::FlatWorldGenerator,
+    level::write_level_dat,
     weather::{Weather, WeatherState},
 };
 
@@ -164,8 +166,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         banlist: Arc::new(RwLock::new(BanList::load())),
     };
 
+    let world_dir = std::path::Path::new(&config.world.world_name);
+
+    ctx.world_blocks.load(world_dir).await;
+
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(world_dir, "world");
+    }
+
+    if config.world.enable_auto_save {
+        spawn_world_save_task(
+            ctx.world_blocks.clone(),
+            ctx.generator.clone(),
+            world_dir.to_path_buf(),
+        );
+    }
+
     spawn_console_task(ctx.dispatcher.clone(), ctx.chat_tx.clone());
-    spawn_shutdown_task(ctx.shutdown_tx.clone(), ctx.player_registry.clone());
+    spawn_shutdown_task(
+        ctx.shutdown_tx.clone(),
+        ctx.player_registry.clone(),
+        ctx.world_blocks.clone(),
+        world_dir.to_path_buf(),
+        ctx.generator.clone(),
+    );
     spawn_tick_task(ctx.tick_tx.clone(), ctx.player_registry.clone());
     spawn_world_time_task(ctx.time_tx.clone());
 
@@ -193,10 +217,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn spawn_shutdown_task(
     shutdown_signal: Arc<broadcast::Sender<()>>,
     player_registry: Arc<PlayerRegistry>,
+    world_blocks: Arc<WorldBlocks>,
+    world_dir: PathBuf,
+    generator: Arc<FlatWorldGenerator>,
 ) {
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        println!("Shutting down, kicking players..");
+        println!("Shutting down, saving world & kicking players..");
+        world_blocks.save(&world_dir, &generator).await;
         shutdown_signal.send(()).ok();
 
         for _ in 0..50 {
@@ -319,6 +347,20 @@ fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<broadcast
                 }
                 CommandResult::None => {}
             }
+        }
+    });
+}
+pub fn spawn_world_save_task(
+    world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
+    world_dir: PathBuf,
+) {
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            world_blocks.save(&world_dir, &generator).await;
+            println!("[World] Auto-Saved.");
         }
     });
 }
