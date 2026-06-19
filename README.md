@@ -5,6 +5,7 @@
 ![Rust](<https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust>)
 
 <!-- LOC_BADGE_START -->
+![Rust Lines of Code](https://shields.io{BADGE_LABEL}-8490-orange)
 <!-- LOC_BADGE_END -->
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.8.9-green)
