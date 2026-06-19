@@ -1,8 +1,10 @@
+use crate::anvil::nbt_to_blocks_raw;
 use crate::blocks::Block;
 use crate::blocks::WorldBlocks;
 use crate::generator::FlatWorldGenerator;
 use coral_protocol::packets::PacketOut;
 use coral_protocol::writer::Writer;
+use std::collections::HashMap;
 use std::io::Result;
 use std::io::Write;
 use std::sync::Arc;
@@ -13,6 +15,7 @@ pub struct ChunkData {
     pub chunk_z: i32,
     pub client_protocol: i32,
     pub data: Vec<u8>,
+    pub primary_bitmask: u16,
 }
 impl ChunkData {
     pub async fn build(
@@ -22,6 +25,35 @@ impl ChunkData {
         world_blocks: &Arc<WorldBlocks>,
         generator: &FlatWorldGenerator,
     ) -> Self {
+        if let Some(nbt) = world_blocks.get_chunk_nbt(chunk_x, chunk_z).await {
+            let mut chunk_blocks: HashMap<(i32, u8, i32), Block> = HashMap::new();
+            nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
+
+            let player_blocks = world_blocks.blocks.read().await;
+            for x in 0..16i32 {
+                for z in 0..16i32 {
+                    for y in 0u8..=255 {
+                        let wx = chunk_x * 16 + x;
+                        let wz = chunk_z * 16 + z;
+                        if let Some(b) = player_blocks.get(&(wx, y, wz)) {
+                            chunk_blocks.insert((wx, y, wz), b.clone());
+                        }
+                    }
+                }
+            }
+            let (data, primary_bitmask) =
+                build_chunk_data_18_from_map(chunk_x, chunk_z, &chunk_blocks);
+
+            //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
+
+            return Self {
+                chunk_x,
+                chunk_z,
+                client_protocol,
+                data,
+                primary_bitmask,
+            };
+        }
         let data = if client_protocol == 47 {
             build_chunk_data_18(chunk_x, chunk_z, world_blocks, generator).await
         } else {
@@ -35,6 +67,7 @@ impl ChunkData {
             chunk_z,
             client_protocol,
             data,
+            primary_bitmask: 0x0001,
         }
     }
 }
@@ -48,7 +81,7 @@ impl PacketOut for ChunkData {
 
         if self.client_protocol == 47 {
             // 1.8 - primary bit mask: bit 0 set = section 0 present
-            writer.write_u16(0x0001);
+            writer.write_u16(self.primary_bitmask);
             writer.write_varint(self.data.len() as i32);
             writer.data.extend_from_slice(&self.data);
         } else {
@@ -136,6 +169,96 @@ async fn build_chunk_data_17(
     let mut data = Vec::with_capacity(10496);
     data.extend_from_slice(&blocks);
     data.extend_from_slice(&vec![0u8; 2048]); // metadata
+    data.extend_from_slice(&vec![0xFFu8; 2048]); // block light
+    data.extend_from_slice(&vec![0xFFu8; 2048]); // sky light
+    data.extend_from_slice(&vec![1u8; 256]); // biomes
+    data
+}
+
+pub fn build_chunk_data_18_from_map(
+    chunk_x: i32,
+    chunk_z: i32,
+    chunk_blocks: &HashMap<(i32, u8, i32), Block>,
+) -> (Vec<u8>, u16) {
+    let mut section_data: Vec<Vec<u8>> = vec![];
+    let mut bitmask: u16 = 0;
+
+    for section_y in 0..16u8 {
+        let y_start = section_y as i32 * 16;
+        let mut has_blocks = false;
+        let mut block_section = Vec::with_capacity(4096 * 2);
+
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let wx = chunk_x * 16 + x as i32;
+                    let wz = chunk_z * 16 + z as i32;
+                    let wy = (y_start + y as i32) as u8;
+                    let block = chunk_blocks
+                        .get(&(wx, wy, wz))
+                        .cloned()
+                        .unwrap_or_else(Block::air);
+                    if block.id != 0 {
+                        has_blocks = true;
+                    }
+                    let state = ((block.id as u16) << 4) | (block.metadata as u16 & 0xF);
+                    block_section.extend_from_slice(&state.to_le_bytes());
+                }
+            }
+        }
+
+        if has_blocks || section_y == 0 {
+            bitmask |= 1 << section_y;
+            section_data.push(block_section);
+            section_data.push(vec![0xFFu8; 2048]); // block light
+            section_data.push(vec![0xFFu8; 2048]); // sky light
+        }
+    }
+
+    let mut data = Vec::new();
+    for s in section_data {
+        data.extend_from_slice(&s);
+    }
+    data.extend_from_slice(&vec![1u8; 256]); // biomes
+
+    (data, bitmask)
+}
+
+pub fn build_chunk_data_17_from_map(
+    chunk_x: i32,
+    chunk_z: i32,
+    chunk_blocks: &HashMap<(i32, u8, i32), Block>,
+) -> Vec<u8> {
+    let mut blocks = vec![0u8; 4096];
+    let mut metadata = vec![0u8; 2048];
+
+    for y in 0..16usize {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let wx = chunk_x * 16 + x as i32;
+                let wz = chunk_z * 16 + z as i32;
+                let wy = y as u8;
+                let block = chunk_blocks
+                    .get(&(wx, wy, wz))
+                    .cloned()
+                    .unwrap_or_else(Block::air);
+                let index = y * 256 + z * 16 + x;
+                blocks[index] = block.id;
+
+                // nibble metadata
+                let ni = index / 2;
+                if index & 1 == 0 {
+                    metadata[ni] = (metadata[ni] & 0xF0) | (block.metadata & 0x0F);
+                } else {
+                    metadata[ni] = (metadata[ni] & 0x0F) | ((block.metadata & 0x0F) << 4);
+                }
+            }
+        }
+    }
+
+    let mut data = Vec::with_capacity(10496);
+    data.extend_from_slice(&blocks);
+    data.extend_from_slice(&metadata);
     data.extend_from_slice(&vec![0xFFu8; 2048]); // block light
     data.extend_from_slice(&vec![0xFFu8; 2048]); // sky light
     data.extend_from_slice(&vec![1u8; 256]); // biomes

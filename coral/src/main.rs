@@ -168,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let world_dir = std::path::Path::new(&config.world.world_name);
 
-    ctx.world_blocks.load(world_dir).await;
+    ctx.world_blocks.load(world_dir, &ctx.generator).await;
 
     if !world_dir.join("level.dat").exists() {
         write_level_dat(world_dir, "world");
@@ -223,8 +223,7 @@ fn spawn_shutdown_task(
 ) {
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        println!("Shutting down, saving world & kicking players..");
-        world_blocks.save(&world_dir, &generator).await;
+        println!("Shutting down, kicking players..");
         shutdown_signal.send(()).ok();
 
         for _ in 0..50 {
@@ -233,8 +232,9 @@ fn spawn_shutdown_task(
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-
-        println!("Server closed.");
+        println!("Saving world..");
+        world_blocks.save(&world_dir, &generator).await;
+        println!("World saved. Server closed.");
         std::process::exit(0);
     });
 }

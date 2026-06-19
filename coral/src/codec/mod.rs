@@ -1225,7 +1225,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             match dig.status {
                                 0 if state.gamemode == 1 => {
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
-                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air(), &generator).await;
                                     block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                     sound_tx.send((
                                         block_break_sound(block.id).to_string(),
@@ -1265,7 +1265,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             block_tx.send((bx, by, bz, block.id as i32, block.metadata)).ok();
                                             continue;
                                         }
-                                        world_blocks.set(bx, by as u8, bz, Block::air()).await;
+                                        world_blocks.set(bx, by as u8, bz, Block::air(), &generator).await;
                                         block_tx.send((
                                             bx,
                                             by,
@@ -1473,7 +1473,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 }
                             }
 
-                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0)).await;
+                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0), &generator).await;
                             block_tx.send((tx, ty, tz, block_id, 0)).ok();
                             sound_tx.send((
                                 block_break_sound(block_id as u8).to_string(),
@@ -2321,7 +2321,7 @@ async fn make_player_join(
         framed,
         PlayerPositionAndLook {
             x: 0.5,
-            y: 4.5,
+            y: 101.5,
             z: 0.5,
             yaw: 0.0,
             pitch: 0.0,

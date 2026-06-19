@@ -146,7 +146,7 @@ compression_threshold = 256
 format = "<{username}> {message}"
 
 [world]
-name = "world"
+world_name = "world"
 difficulty = 0
 item_despawn_seconds = 300
 disable_weather = false

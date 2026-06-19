@@ -97,14 +97,6 @@ impl PacketIn for Ping {
     {
         let mut reader = Reader::new(buf);
         let time = reader.read_long(); // i64
-
-        if reader.has_remaining() {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "Unexpected extra bytes in Ping packet",
-            ));
-        }
-
         Ok(Ping { time })
     }
 
@@ -128,15 +120,7 @@ impl PacketOut for Pong {
 }
 
 impl PacketIn for Request {
-    fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
-        let reader = Reader::new(buf);
-        if reader.has_remaining() {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                "Unexpected extra bytes in StatusRequest",
-            ));
-        }
-
+    fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
         Ok(Request)
     }
 

@@ -34,13 +34,6 @@ impl PacketIn for PacketHandshake {
             _ => return Err(Error::new(ErrorKind::InvalidData, "Unknown protocol")),
         };
 
-        if buffer.has_remaining() {
-            return Err(Error::other(format!(
-                "Bytes remaining on stream: {}",
-                buffer.remaining()
-            )));
-        }
-
         Ok(PacketHandshake {
             protocol_version,
             host_name,

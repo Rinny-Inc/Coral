@@ -10,6 +10,12 @@
 [![Discord](https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord)](https://discord.com/invite/B2BgjwDX8m)
 ![License](https://img.shields.io/badge/License-Custom%20Restrictive-red)
 
+> ## 💬 Discord Community
+>
+> **Join the Coral Discord server for development updates, support, bug reports, and discussions.**
+>
+> ### https://discord.gg/invite/B2BgjwDX8m
+
 **Coral** is a high-performance, lightweight legacy Minecraft server implementation written entirely in Rust. Coral targets **Minecraft 1.8.9 (Protocol 47)** as its primary platform while laying the foundation for **Minecraft 1.7.10 compatibility** through native multi-version protocol support.
 
 Built for performance and modern concurrency, Coral aims to provide a familiar Minecraft server experience without the limitations of the traditional JVM server stack.
