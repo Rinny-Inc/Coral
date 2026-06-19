@@ -29,7 +29,7 @@ jobs:
           BADGE_MARKDOWN=$(cat badge.txt)
           awk -v badge="$BADGE_MARKDOWN" '
             /<!-- LOC_BADGE_START -->/ {
-              print "<!-- LOC_BADGE_START -->" badge "<!-- LOC_BADGE_END -->"
+              print badge "<!-- LOC_BADGE_START --><!-- LOC_BADGE_END -->"
               if ($0 ~ /<!-- LOC_BADGE_END -->/) { next }
               skip=1
               next
