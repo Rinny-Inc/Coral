@@ -8,7 +8,7 @@ on:
 
 jobs:
   update-badge:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
