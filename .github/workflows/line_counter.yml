@@ -21,7 +21,7 @@ jobs:
           TOTAL_LOC=$(tail -n 1 loc_report.csv | cut -d',' -f5)
           BADGE_LABEL="Lines%20of%20code"
           BADGE_COLOR="orange"
-          BADGE_MARKDOWN="![Rust Lines of Code](https://img.shields.io/badge/${BADGE_LABEL}-${TOTAL_LOC}-${BADGE_COLOR})"
+          BADGE_MARKDOWN="[![Rust Lines of Code](https://img.shields.io/badge/${BADGE_LABEL}-${TOTAL_LOC}-${BADGE_COLOR})](https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml)"
           echo "$BADGE_MARKDOWN" > badge.txt
       - name: Inject Badge into README
         run: |
