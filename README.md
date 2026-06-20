@@ -4,7 +4,7 @@
 
 <p align="center">
 <img alt="Rust" src="https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust">
-<!-- LOC_BADGE_START --><!-- LOC_BADGE_END -->
+<a href="https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml"><img alt="Rust Lines of Code" src="https://img.shields.io/badge/Lines%20of%20code-8490-orange"></a><!-- LOC_BADGE_START --><!-- LOC_BADGE_END -->
 <img alt="Minecraft" src="https://img.shields.io/badge/Minecraft-1.8.9-green">
 <img alt="Protocol" src="https://img.shields.io/badge/Protocol-47-blue">
 <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
