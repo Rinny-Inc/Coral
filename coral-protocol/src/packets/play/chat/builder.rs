@@ -1,4 +1,8 @@
-use crate::packets::play::chat::ChatMessageOut;
+use std::fmt::format;
+
+use serde_json::{Value, json};
+
+use crate::packets::play::chat::{ChatMessageOut, builder::HoverEvent::ShowText};
 
 #[derive(Debug, Clone)]
 pub enum ChatColor {
@@ -45,6 +49,87 @@ impl ChatColor {
 }
 
 #[derive(Debug, Clone)]
+pub enum ClickEvent {
+    OpenUrl(String),
+    RunCommand(String),
+    SuggestCommand(String),
+    ChangePage(i32),
+    OpenFile(String),
+}
+impl ClickEvent {
+    fn action(&self) -> &str {
+        match self {
+            ClickEvent::OpenUrl(_) => "open_url",
+            ClickEvent::RunCommand(_) => "run_command",
+            ClickEvent::SuggestCommand(_) => "suggest_command",
+            ClickEvent::ChangePage(_) => "change_page",
+            ClickEvent::OpenFile(_) => "open_file",
+        }
+    }
+    fn value(&self) -> String {
+        match self {
+            ClickEvent::OpenUrl(v)
+            | ClickEvent::RunCommand(v)
+            | ClickEvent::SuggestCommand(v)
+            | ClickEvent::OpenFile(v) => v.clone(),
+            ClickEvent::ChangePage(p) => p.to_string(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({ "action": self.action(), "value": &self.value() })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum HoverEvent {
+    ShowText(String),
+    ShowItem {
+        id: String,
+        count: i32,
+        /// raw SNBT tag content, e.g. `{display:{Name:"Foo"}}` — passed through as-is
+        tag: Option<String>,
+    },
+    ShowAchievement(String),
+    ShowEntity {
+        name: String,
+        entity_type: Option<String>,
+        id: String, // entity uuid
+    },
+}
+impl HoverEvent {
+    fn action(&self) -> &str {
+        match self {
+            HoverEvent::ShowText(_) => "show_text",
+            HoverEvent::ShowItem { .. } => "show_item",
+            HoverEvent::ShowAchievement(_) => "show_achievement",
+            HoverEvent::ShowEntity { .. } => "show_entity",
+        }
+    }
+    fn value(&self) -> String {
+        match self {
+            HoverEvent::ShowText(t) => t.clone(),
+            HoverEvent::ShowItem { id, count, tag } => match tag {
+                Some(t) => format!("{{id:\"{}\",Count:{},tag:{}}}", id, count, t),
+                None => format!("{{id:\"{}\",Count:{}}}", id, count),
+            },
+            HoverEvent::ShowAchievement(a) => a.clone(),
+            HoverEvent::ShowEntity {
+                name,
+                entity_type,
+                id,
+            } => match entity_type {
+                Some(t) => format!("{{name:\"{}\",type:\"{}\",id:\"{}\"}}", name, t, id),
+                None => format!("{{name:\"{}\",id:\"{}\"}}", name, id),
+            },
+        }
+    }
+    fn to_json(&self) -> Value {
+        json!({ "action": self.action(), "value": &self.value() })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct ChatBuilder {
     text: String,
     color: Option<ChatColor>,
@@ -52,6 +137,8 @@ pub struct ChatBuilder {
     italic: bool,
     underline: bool,
     strikethrough: bool,
+    click_event: Option<ClickEvent>,
+    hover_event: Option<HoverEvent>,
 }
 impl ChatBuilder {
     pub fn new(text: impl Into<String>) -> Self {
@@ -62,6 +149,8 @@ impl ChatBuilder {
             italic: false,
             underline: false,
             strikethrough: false,
+            click_event: None,
+            hover_event: None,
         }
     }
 
@@ -90,33 +179,63 @@ impl ChatBuilder {
         self
     }
 
-    pub fn build(self) -> String {
-        let escaped = self
-            .text
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r");
+    pub fn click_event(mut self, event: ClickEvent) -> Self {
+        self.click_event = Some(event);
+        self
+    }
+    pub fn hover_event(mut self, event: HoverEvent) -> Self {
+        self.hover_event = Some(event);
+        self
+    }
+    pub fn click_url(self, url: impl Into<String>) -> Self {
+        self.click_event(ClickEvent::OpenUrl(url.into()))
+    }
+    pub fn click_command(self, cmd: impl Into<String>) -> Self {
+        self.click_event(ClickEvent::RunCommand(cmd.into()))
+    }
+    pub fn click_suggest(self, cmd: impl Into<String>) -> Self {
+        self.click_event(ClickEvent::SuggestCommand(cmd.into()))
+    }
+    pub fn hover_text(self, text: impl Into<String>) -> Self {
+        self.hover_event(ShowText(text.into()))
+    }
+    pub fn hover_item(self, id: impl Into<String>, count: i32) -> Self {
+        self.hover_event(HoverEvent::ShowItem {
+            id: id.into(),
+            count,
+            tag: None,
+        })
+    }
 
-        let mut json = format!("{{\"text\":\"{}\"", escaped);
-        if let Some(color) = self.color {
-            json.push_str(&format!(",\"color\":\"{}\"", color.name()));
+    pub fn build_value(&self) -> Value {
+        let mut obj = json!({ "text": self.text });
+        let map = obj.as_object_mut().unwrap();
+        if let Some(color) = &self.color {
+            map.insert("color".into(), json!(color.name()));
         }
-
         if self.bold {
-            json.push_str(",\"bold\":true");
+            map.insert("bold".into(), json!(true));
         }
         if self.italic {
-            json.push_str(",\"italic\":true");
+            map.insert("italic".into(), json!(true));
         }
         if self.underline {
-            json.push_str(",\"underlined\":true");
+            map.insert("underlined".into(), json!(true));
         }
         if self.strikethrough {
-            json.push_str(",\"strikethrough\":true");
+            map.insert("strikethrough".into(), json!(true));
         }
-        json.push('}');
-        json
+        if let Some(click) = &self.click_event {
+            map.insert("clickEvent".into(), click.to_json());
+        }
+        if let Some(hover) = &self.hover_event {
+            map.insert("hoverEvent".into(), hover.to_json());
+        }
+        obj
+    }
+
+    pub fn build(self) -> String {
+        self.build_value().to_string()
     }
 
     pub fn into_packet(self) -> ChatMessageOut {
@@ -126,7 +245,6 @@ impl ChatBuilder {
     pub fn plain_json(text: &str) -> String {
         Self::new(text).build()
     }
-
     pub fn colored_json(text: &str, color: ChatColor) -> String {
         Self::new(text).color(color).build()
     }
@@ -136,5 +254,49 @@ impl ChatBuilder {
             .replace("{username}", username)
             .replace("{message}", message);
         Self::new(formatted).build()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatAppender {
+    segments: Vec<ChatBuilder>,
+}
+impl ChatAppender {
+    pub fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+        }
+    }
+
+    pub fn add(mut self, segment: ChatBuilder) -> Self {
+        self.segments.push(segment);
+        self
+    }
+
+    pub fn text(self, text: impl Into<String>) -> Self {
+        self.add(ChatBuilder::new(text))
+    }
+
+    pub fn build_value(self) -> Value {
+        if self.segments.is_empty() {
+            return json!({ "text": "" });
+        }
+        let mut iter = self.segments.iter();
+        let mut root = iter.next().unwrap().build_value();
+        let rest: Vec<Value> = iter.map(|s| s.build_value()).collect();
+        if !rest.is_empty() {
+            root.as_object_mut()
+                .unwrap()
+                .insert("extra".into(), Value::Array(rest));
+        }
+        root
+    }
+
+    pub fn build(self) -> String {
+        self.build_value().to_string()
+    }
+
+    pub fn into_packet(self) -> ChatMessageOut {
+        ChatMessageOut::from_json(&self.build())
     }
 }

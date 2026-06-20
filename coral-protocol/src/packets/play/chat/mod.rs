@@ -13,12 +13,21 @@ pub struct ChatMessage {
 #[derive(Debug)]
 pub struct ChatMessageOut {
     pub json: String,
+    pub position: u8,
 }
 
 impl ChatMessageOut {
     pub fn from_json(json: &str) -> Self {
         Self {
             json: json.to_string(),
+            position: 0,
+        }
+    }
+
+    pub fn from_json_at(json: &str, position: u8) -> Self {
+        Self {
+            json: json.to_string(),
+            position,
         }
     }
 }
@@ -49,7 +58,7 @@ impl PacketOut for ChatMessageOut {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x02);
         writer.write_string(&self.json);
-        writer.write_byte(0);
+        writer.write_byte(self.position);
         Ok(())
     }
 }
