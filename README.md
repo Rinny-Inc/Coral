@@ -30,7 +30,6 @@ Built for performance and modern concurrency, Coral aims to provide a familiar M
 ## ⚡ Features
 
 - **Memory Safe:** Powered by Rust's strict ownership model, eliminating data races and null pointer crashes.
-- **Planned to be Blazing Fast:** Async networking, lock-efficient systems, and modern Rust performance.
 - **1.8.9 First:** Primary target is Minecraft 1.8.9 (Protocol 47).
 - **Native Multi-Version Support (Planned):** Designed to support multiple Minecraft protocol versions within a single server implementation.
 - **1.7.10 Planned:** Future support for Minecraft 1.7.10 clients and protocol compatibility.
