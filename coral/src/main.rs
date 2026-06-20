@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::ErrorKind,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -94,6 +94,7 @@ pub struct ServerContext {
     whitelist: Arc<RwLock<WhitelistFile>>,
     banlist: Arc<RwLock<BanList>>,
     spawn_point: Arc<RwLock<(f64, f64, f64)>>,
+    world_dir: Arc<PathBuf>,
 }
 
 #[tokio::main]
@@ -169,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
         banlist: Arc::new(RwLock::new(BanList::load())),
         spawn_point: Arc::new(RwLock::new(spawn_point)),
+        world_dir: Arc::new(world_dir.to_path_buf()),
     };
 
     ctx.world_blocks.load(world_dir, &ctx.generator).await;

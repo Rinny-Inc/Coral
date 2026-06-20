@@ -115,6 +115,13 @@ impl NbtTag {
             None
         }
     }
+    pub fn as_i16_val(&self) -> Option<i16> {
+        if let NbtTag::Short(v) = self {
+            Some(*v)
+        } else {
+            None
+        }
+    }
 }
 
 pub struct NbtReader<'a> {

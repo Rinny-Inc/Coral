@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::vec;
@@ -10,6 +11,7 @@ use coral_server::items::drops::block_drop;
 use coral_server::mining::break_time_ticks;
 use coral_types::ToolMaterial;
 use coral_world::generator::FlatWorldGenerator;
+use coral_world::playerdata::{PlayerData, load_player_data, save_player_data};
 use futures::SinkExt;
 use rand::RngExt;
 use tokio::net::TcpStream;
@@ -360,6 +362,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         whitelist,
         banlist,
         spawn_point,
+        world_dir,
     } = ctx;
     let codec = Codec {
         registry: packet_registry,
@@ -1173,7 +1176,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         &generator,
                                         &entity_tracker,
                                         &config,
-                                        &spawn_point
+                                        &spawn_point,
+                                        &world_dir
                                     ).await;
                                     continue;
                                 }
@@ -1215,7 +1219,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         &generator,
                                         &entity_tracker,
                                         &config,
-                                        &spawn_point
+                                        &spawn_point,
+                                        &world_dir
                                     ).await;
                                     continue;
                                 }
@@ -1921,13 +1926,31 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         }
     }
     if let (Some(uuid), Some(name)) = (state.uuid, state.name) {
+        let mut inventory_data = vec![];
+        for i in 0..46i16 {
+            if let Some(idx) = Inventory::packet_to_internal(i)
+                && let Some(slot) = &state.inventory.slots[idx]
+            {
+                inventory_data.push((i, slot.item_id, slot.count, slot.metadata));
+            }
+        }
+        if let Some(p) = player_registry.get(&uuid).await {
+            let data = PlayerData {
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                yaw: p.yaw,
+                pitch: p.pitch,
+                health: state.health,
+                food: state.food,
+                food_saturation: state.food_saturation,
+                gamemode: state.gamemode,
+                inventory: inventory_data,
+            };
+            save_player_data(&world_dir, &uuid, &data).await;
+            join_tx.send((p, false)).ok();
+        }
         player_registry.remove(&uuid).await;
-        join_tx
-            .send((
-                Player::new(state.entity_id, uuid, String::new(), vec![]),
-                false,
-            ))
-            .ok();
         entity_tracker.write().await.untrack(state.entity_id);
         if !player_registry.players.read().await.is_empty() {
             chat_tx
@@ -2227,6 +2250,7 @@ async fn make_player_join(
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
+    world_dir: &Path,
 ) {
     if config.server.compression_threshold >= 0 {
         send_packet(
@@ -2317,15 +2341,41 @@ async fn make_player_join(
     )
     .await;*/
 
-    let (sx, sy, sz) = *spawn_point.read().await;
+    let saved = load_player_data(world_dir, &uuid).await;
+    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = saved {
+        (
+            d.x,
+            d.y,
+            d.z,
+            d.yaw,
+            d.pitch,
+            d.health,
+            d.food,
+            d.food_saturation,
+            d.gamemode,
+        )
+    } else {
+        let (sx, sy, sz) = *spawn_point.read().await;
+        (
+            sx,
+            sy,
+            sz,
+            90.0,
+            0.0,
+            20.0,
+            20,
+            5.0,
+            config.server.default_gamemode,
+        )
+    };
 
     if client_protocol == 47 {
         send_packet(
             framed,
             SpawnPosition {
-                x: sx as i32,
-                y: sy as i32,
-                z: sz as i32,
+                x: px as i32,
+                y: py as i32,
+                z: pz as i32,
             },
         )
         .await;
@@ -2333,9 +2383,9 @@ async fn make_player_join(
         send_packet(
             framed,
             SpawnPosition17 {
-                x: sx as i32,
-                y: sy as i32,
-                z: sz as i32,
+                x: px as i32,
+                y: py as i32,
+                z: pz as i32,
             },
         )
         .await;
@@ -2372,11 +2422,11 @@ async fn make_player_join(
     send_packet(
         framed,
         PlayerPositionAndLook {
-            x: sx,
-            y: sy,
-            z: sz,
-            yaw: 90.0,
-            pitch: 0.0,
+            x: px,
+            y: py,
+            z: pz,
+            yaw: pyaw,
+            pitch: ppitch,
             on_ground: false,
         },
     )
@@ -2387,6 +2437,15 @@ async fn make_player_join(
         uuid,
         profile.username.clone(),
         profile.properties.clone(),
+        px,
+        py,
+        pz,
+        pyaw,
+        ppitch,
+        pgm,
+        phealth,
+        pfood,
+        psat,
     );
     player_registry.add(player.clone()).await;
 
@@ -2404,9 +2463,9 @@ async fn make_player_join(
             .map(|a| a.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
         entity_id,
-        player.x,
-        player.y,
-        player.z
+        px,
+        py,
+        pz
     );
 
     let existing_players = player_registry.get_all().await;
@@ -2421,11 +2480,11 @@ async fn make_player_join(
                 uuid: p.uuid,
                 //username: p.username.clone(),
                 properties: p.properties.clone(),
-                x: p.x,
-                y: p.y,
-                z: p.z,
-                yaw: 90.0,
-                pitch: 0.0,
+                x: px,
+                y: py,
+                z: pz,
+                yaw: pyaw,
+                pitch: ppitch,
                 current_item: 0,
             },
         )
@@ -2468,9 +2527,9 @@ async fn make_player_join(
     send_packet(
         framed,
         UpdateHealth {
-            health: 20.0,
-            food: 20,
-            food_saturation: 5.0,
+            health: phealth,
+            food: pfood,
+            food_saturation: psat,
         },
     )
     .await;
@@ -2490,13 +2549,20 @@ async fn make_player_join(
     state.uuid = Some(uuid);
     state.entity_id = entity_id;
     state.name = Some(profile.username);
-    state.gamemode = config.server.default_gamemode;
+    state.gamemode = pgm;
+    state.health = phealth;
+    state.food = pfood;
+    state.food_saturation = psat;
+
+    state.chunk_x = (px as i32) >> 4;
+    state.chunk_z = (pz as i32) >> 4;
+
     entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,
         uuid,
-        sx,
-        sy,
-        sz,
+        px,
+        py,
+        pz,
         config.tracking.player,
     ));
     let mut slots = Vec::with_capacity(46);
