@@ -40,7 +40,7 @@ pub struct WorldConfig {
     pub allow_nether: bool,
     pub allow_end: bool,
     pub enable_auto_save: bool,
-    pub auto_save_interval: i32,
+    pub auto_save_interval: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

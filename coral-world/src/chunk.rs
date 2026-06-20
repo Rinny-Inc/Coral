@@ -29,6 +29,13 @@ impl ChunkData {
             let mut chunk_blocks: HashMap<(i32, u8, i32), Block> = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
 
+            let mut found_sections: Vec<i32> = chunk_blocks
+                .keys()
+                .map(|(_, y, _)| (*y as i32) / 16)
+                .collect();
+            found_sections.sort();
+            found_sections.dedup();
+
             let player_blocks = world_blocks.blocks.read().await;
             for x in 0..16i32 {
                 for z in 0..16i32 {
@@ -180,46 +187,78 @@ pub fn build_chunk_data_18_from_map(
     chunk_z: i32,
     chunk_blocks: &HashMap<(i32, u8, i32), Block>,
 ) -> (Vec<u8>, u16) {
-    let mut section_data: Vec<Vec<u8>> = vec![];
     let mut bitmask: u16 = 0;
 
+    let mut section_has_blocks = [false; 16];
     for section_y in 0..16u8 {
         let y_start = section_y as i32 * 16;
         let mut has_blocks = false;
-        let mut block_section = Vec::with_capacity(4096 * 2);
+        'check: for y in 0..16i32 {
+            for z in 0..16i32 {
+                for x in 0..16i32 {
+                    let wx = chunk_x * 16 + x;
+                    let wz = chunk_z * 16 + z;
+                    let wy = (y_start + y) as u8;
+                    if chunk_blocks
+                        .get(&(wx, wy, wz))
+                        .map(|b| b.id != 0)
+                        .unwrap_or(false)
+                    {
+                        has_blocks = true;
+                        break 'check;
+                    }
+                }
+            }
+        }
+        section_has_blocks[section_y as usize] = has_blocks || section_y == 0;
+        if section_has_blocks[section_y as usize] {
+            bitmask |= 1 << section_y;
+        }
+    }
 
-        for y in 0..16usize {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let wx = chunk_x * 16 + x as i32;
-                    let wz = chunk_z * 16 + z as i32;
-                    let wy = (y_start + y as i32) as u8;
+    let mut block_arrays = Vec::new();
+    for section_y in 0..16u8 {
+        if !section_has_blocks[section_y as usize] {
+            continue;
+        }
+        let y_start = section_y as i32 * 16;
+        let mut block_section = Vec::with_capacity(4096 * 2);
+        for y in 0..16i32 {
+            for z in 0..16i32 {
+                for x in 0..16i32 {
+                    let wx = chunk_x * 16 + x;
+                    let wz = chunk_z * 16 + z;
+                    let wy = (y_start + y) as u8;
                     let block = chunk_blocks
                         .get(&(wx, wy, wz))
                         .cloned()
                         .unwrap_or_else(Block::air);
-                    if block.id != 0 {
-                        has_blocks = true;
-                    }
                     let state = ((block.id as u16) << 4) | (block.metadata as u16 & 0xF);
                     block_section.extend_from_slice(&state.to_le_bytes());
                 }
             }
         }
+        block_arrays.push(block_section);
+    }
 
-        if has_blocks || section_y == 0 {
-            bitmask |= 1 << section_y;
-            section_data.push(block_section);
-            section_data.push(vec![0xFFu8; 2048]); // block light
-            section_data.push(vec![0xFFu8; 2048]); // sky light
+    let mut block_light_count = 0;
+    for section_y in 0..16u8 {
+        if section_has_blocks[section_y as usize] {
+            block_light_count += 1;
         }
     }
 
     let mut data = Vec::new();
-    for s in section_data {
-        data.extend_from_slice(&s);
+    for arr in &block_arrays {
+        data.extend_from_slice(arr);
     }
-    data.extend_from_slice(&vec![1u8; 256]); // biomes
+    for _ in 0..block_light_count {
+        data.extend_from_slice(&[0xFFu8; 2048]); // block light
+    }
+    for _ in 0..block_light_count {
+        data.extend_from_slice(&[0xFFu8; 2048]); // sky light
+    }
+    data.extend_from_slice(&[1u8; 256]); // biomes
 
     (data, bitmask)
 }

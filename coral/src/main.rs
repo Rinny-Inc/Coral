@@ -27,7 +27,7 @@ use coral_server::{
 use coral_world::{
     blocks::{WorldBlocks, registry::BlockRegistry},
     generator::FlatWorldGenerator,
-    level::write_level_dat,
+    level::{read_spawn_point, write_level_dat},
     weather::{Weather, WeatherState},
 };
 
@@ -93,6 +93,7 @@ pub struct ServerContext {
     ops: Arc<RwLock<OpsFile>>,
     whitelist: Arc<RwLock<WhitelistFile>>,
     banlist: Arc<RwLock<BanList>>,
+    spawn_point: Arc<RwLock<(f64, f64, f64)>>,
 }
 
 #[tokio::main]
@@ -124,6 +125,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dispatcher.register(version_command()).await;
 
     let (private_key, public_key_der) = generate_rsa_key();
+
+    let world_dir = std::path::Path::new(&config.world.world_name);
+    let spawn_point = read_spawn_point(world_dir).await.unwrap_or((0.5, 5.0, 0.5));
 
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
@@ -164,9 +168,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ops: Arc::new(RwLock::new(OpsFile::load())),
         whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
         banlist: Arc::new(RwLock::new(BanList::load())),
+        spawn_point: Arc::new(RwLock::new(spawn_point)),
     };
-
-    let world_dir = std::path::Path::new(&config.world.world_name);
 
     ctx.world_blocks.load(world_dir, &ctx.generator).await;
 
@@ -179,6 +182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ctx.world_blocks.clone(),
             ctx.generator.clone(),
             world_dir.to_path_buf(),
+            config.world.auto_save_interval,
         );
     }
 
@@ -354,9 +358,10 @@ pub fn spawn_world_save_task(
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     world_dir: PathBuf,
+    auto_save_interval: u64,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(300));
+        let mut interval = interval(Duration::from_secs(auto_save_interval));
         loop {
             interval.tick().await;
             world_blocks.save(&world_dir, &generator).await;

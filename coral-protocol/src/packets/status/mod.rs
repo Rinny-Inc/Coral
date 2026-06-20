@@ -1,12 +1,10 @@
-use std::io::{Error, ErrorKind, Result};
-
-use serde_json::json;
-
 use crate::{
     packets::{PacketIn, PacketOut},
     reader::Reader,
     writer::Writer,
 };
+use serde_json::json;
+use std::io::Result;
 
 #[derive(Debug)]
 pub struct Request;

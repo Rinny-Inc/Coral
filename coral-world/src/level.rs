@@ -1,8 +1,11 @@
-use std::{io::Write, path::Path};
+use std::{
+    io::{Read, Write},
+    path::Path,
+};
 
-use flate2::{Compression, write::GzEncoder};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 
-use crate::nbt::NbtTag;
+use crate::nbt::{NbtReader, NbtTag};
 
 pub fn write_level_dat(world_dir: &Path, world_name: &str) {
     let data = NbtTag::Compound(vec![(
@@ -38,4 +41,21 @@ pub fn write_level_dat(world_dir: &Path, world_name: &str) {
 
     std::fs::create_dir_all(world_dir).ok();
     std::fs::write(world_dir.join("level.dat"), compressed).ok();
+}
+
+pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64)> {
+    let compressed = tokio::fs::read(world_dir.join("level.dat")).await.ok()?;
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut nbt_bytes = Vec::new();
+    decoder.read_to_end(&mut nbt_bytes).ok()?;
+
+    let mut reader = NbtReader::new(&nbt_bytes);
+    let (_, root) = reader.read_named_root();
+    let data = root.get("Data")?;
+
+    let x = data.get("SpawnX").and_then(|t| t.as_i32())? as f64 + 0.5;
+    let y = data.get("SpawnY").and_then(|t| t.as_i32())? as f64 + 5.0; // FIXME: +5 is temp remove when command /setworldspawn is created
+    let z = data.get("SpawnZ").and_then(|t| t.as_i32())? as f64 + 0.5;
+
+    Some((x, y, z))
 }

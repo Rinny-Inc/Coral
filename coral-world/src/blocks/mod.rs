@@ -1,13 +1,11 @@
 use crate::{
-    anvil::{chunk_to_nbt, nbt_to_blocks, nbt_to_blocks_raw},
-    generator::{self, FlatWorldGenerator},
+    anvil::{chunk_to_nbt, nbt_to_blocks_raw},
+    generator::FlatWorldGenerator,
     region::RegionFile,
 };
 use coral_types::{ToolKind, ToolMaterial};
-use flate2::read::ZlibDecoder;
 use std::{
     collections::{HashMap, HashSet},
-    io::Read,
     path::Path,
 };
 use tokio::sync::RwLock;
@@ -111,9 +109,7 @@ impl WorldBlocks {
         let rx = cx >> 5;
         let rz = cz >> 5;
         let world_dir = self.world_dir.read().await;
-        let Some(dir) = world_dir.as_ref() else {
-            return None;
-        };
+        let dir = world_dir.as_ref()?;
         let region = RegionFile::new(dir, rx, rz);
         let nbt = region.read_chunk(cx, cz)?;
 
@@ -142,10 +138,12 @@ impl WorldBlocks {
     }
 
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block, generator: &FlatWorldGenerator) {
-        let gen_block = generator.get(y);
         let cx = x >> 4;
         let cz = z >> 4;
 
+        self.get_chunk_nbt(cx, cz).await;
+
+        let gen_block = generator.get(y);
         // TODO: remove this shit
         {
             let mut blocks = self.blocks.write().await;
@@ -185,6 +183,7 @@ impl WorldBlocks {
         );
     }
 
+    #[allow(clippy::mut_range_bound)]
     pub async fn save(&self, world_dir: &Path, generator: &FlatWorldGenerator) {
         let dirty = {
             let d = self.dirty_chunks.read().await;

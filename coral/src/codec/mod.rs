@@ -359,6 +359,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         ops,
         whitelist,
         banlist,
+        spawn_point,
     } = ctx;
     let codec = Codec {
         registry: packet_registry,
@@ -1158,7 +1159,22 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                     framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_players as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &generator, &entity_tracker,&config).await;
+                                    make_player_join(&mut framed,
+                                        &mut state,
+                                        uuid,
+                                        profile,
+                                        client_protocol,
+                                        config.server.max_players as u8,
+                                        &peer_ip,
+                                        &player_registry,
+                                        &join_tx,
+                                        &chat_tx,
+                                        &world_blocks,
+                                        &generator,
+                                        &entity_tracker,
+                                        &config,
+                                        &spawn_point
+                                    ).await;
                                     continue;
                                 }
                             } else {
@@ -1185,7 +1201,22 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         properties: vec![]
                                     };
 
-                                    make_player_join(&mut framed, &mut state, uuid, profile, client_protocol, config.server.max_players as u8, &peer_ip, &player_registry, &join_tx, &chat_tx, &world_blocks, &generator, &entity_tracker, &config).await;
+                                    make_player_join(&mut framed,
+                                        &mut state,
+                                        uuid,
+                                        profile,
+                                        client_protocol,
+                                        config.server.max_players as u8,
+                                        &peer_ip,
+                                        &player_registry,
+                                        &join_tx,
+                                        &chat_tx,
+                                        &world_blocks,
+                                        &generator,
+                                        &entity_tracker,
+                                        &config,
+                                        &spawn_point
+                                    ).await;
                                     continue;
                                 }
                             }
@@ -1704,10 +1735,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     &mut state.loaded_chunks
                                 ).await;
 
+                                let (sx, sy, sz) = *spawn_point.read().await;
+
                                 send_packet(&mut framed, PlayerPositionAndLook {
-                                    x: 0.5,
-                                    y: generator.spawn_y(),
-                                    z: 0.5,
+                                    x: sx,
+                                    y: sy,
+                                    z: sz,
                                     yaw: 90.0,
                                     pitch: 0.0,
                                     on_ground: false
@@ -2193,6 +2226,7 @@ async fn make_player_join(
     generator: &Arc<FlatWorldGenerator>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
+    spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
 ) {
     if config.server.compression_threshold >= 0 {
         send_packet(
@@ -2283,10 +2317,28 @@ async fn make_player_join(
     )
     .await;*/
 
+    let (sx, sy, sz) = *spawn_point.read().await;
+
     if client_protocol == 47 {
-        send_packet(framed, SpawnPosition { x: 0, y: 64, z: 0 }).await;
+        send_packet(
+            framed,
+            SpawnPosition {
+                x: sx as i32,
+                y: sy as i32,
+                z: sz as i32,
+            },
+        )
+        .await;
     } else {
-        send_packet(framed, SpawnPosition17 { x: 0, y: 64, z: 0 }).await;
+        send_packet(
+            framed,
+            SpawnPosition17 {
+                x: sx as i32,
+                y: sy as i32,
+                z: sz as i32,
+            },
+        )
+        .await;
     }
 
     let (ability_flags, fly_speed, walk_speed) = match config.server.default_gamemode {
@@ -2320,10 +2372,10 @@ async fn make_player_join(
     send_packet(
         framed,
         PlayerPositionAndLook {
-            x: 0.5,
-            y: 101.5,
-            z: 0.5,
-            yaw: 0.0,
+            x: sx,
+            y: sy,
+            z: sz,
+            yaw: 90.0,
             pitch: 0.0,
             on_ground: false,
         },
@@ -2442,9 +2494,9 @@ async fn make_player_join(
     entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,
         uuid,
-        0.5,
-        4.5,
-        0.5,
+        sx,
+        sy,
+        sz,
         config.tracking.player,
     ));
     let mut slots = Vec::with_capacity(46);
