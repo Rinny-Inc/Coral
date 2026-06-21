@@ -34,7 +34,7 @@ pub struct PacketRegistry {
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(24); // TODO: add 1 for every new packets
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(25); // TODO: add 1 for every new packets
 
         handlers.insert(
             PacketKey {
