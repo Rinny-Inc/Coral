@@ -930,6 +930,21 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         entity_ids: vec![player.entity_id]
                     }).await;
                 } else {
+                    if client_protocol == 47 {
+                        send_packet(&mut framed, PlayerListItem {
+                            uuid: player.uuid,
+                            username: player.username.clone(),
+                            properties: player.properties.clone(),
+                            gamemode: player.gamemode as i32,
+                            ping: player.latency_ms as i32
+                        }).await;
+                    } else {
+                        send_packet(&mut framed, PlayerListItem17 {
+                            username: player.username.clone(),
+                            online: true,
+                            ping: player.latency_ms as i16
+                        }).await;
+                    }
                     if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
                         let dx = player.x - me.x;
                         let dz = player.z - me.z;
@@ -2417,15 +2432,23 @@ async fn make_player_join(
         )
         .await;
 
-        let entries: Vec<(Uuid, i32)> = player_registry
-            .get_all()
-            .await
-            .iter()
-            .map(|p| (p.uuid, p.latency_ms as i32))
-            .collect();
+        let already_online = player_registry.get_all().await;
 
-        if !entries.is_empty() {
-            send_packet(framed, BulkUpdateLatency { entries }).await;
+        for p in &already_online {
+            if p.uuid == uuid {
+                continue;
+            }
+            send_packet(
+                framed,
+                PlayerListItem {
+                    uuid: p.uuid,
+                    username: p.username.clone(),
+                    properties: p.properties.clone(),
+                    gamemode: p.gamemode as i32,
+                    ping: p.latency_ms as i32,
+                },
+            )
+            .await;
         }
     } else {
         send_packet(
@@ -2587,11 +2610,11 @@ async fn make_player_join(
                 uuid: p.uuid,
                 //username: p.username.clone(),
                 properties: p.properties.clone(),
-                x: px,
-                y: py,
-                z: pz,
-                yaw: pyaw,
-                pitch: ppitch,
+                x: p.x,
+                y: p.y,
+                z: p.z,
+                yaw: p.yaw,
+                pitch: p.pitch,
                 current_item: 0,
             },
         )
