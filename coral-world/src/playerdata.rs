@@ -3,7 +3,6 @@ use std::{
     path::Path,
 };
 
-use coral_protocol::packets::play::inventory;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use uuid::Uuid;
 

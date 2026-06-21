@@ -7,6 +7,7 @@ use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use coral_server::items::ItemRegistry;
+use coral_server::items::armor::{apply_armor_reduction, total_defense};
 use coral_server::items::drops::block_drop;
 use coral_server::mining::break_time_ticks;
 use coral_types::ToolMaterial;
@@ -21,7 +22,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
-use crate::{EquipmentUpdate, JoinLeave, ServerContext};
+use crate::{EquipmentUpdate, JoinLeave, ServerContext, SoundEffect};
 use coral_command::{CommandContext, CommandResult};
 use coral_config::Config;
 use coral_protocol::auth::{AuthProfile, authenticate, compute_server_hash};
@@ -264,6 +265,8 @@ struct PlayerState {
     is_dead: bool,
     is_sneaking: bool,
     is_sprinting: bool,
+    is_flying: bool,
+    was_on_ground: bool,
     latency_ms: u32,
     name: Option<String>,
     pending_username: Option<String>,
@@ -299,6 +302,8 @@ impl PlayerState {
             is_dead: false,
             is_sneaking: false,
             is_sprinting: false,
+            is_flying: false,
+            was_on_ground: true,
             latency_ms: 0,
             name: None,
             pending_username: None,
@@ -318,6 +323,26 @@ impl PlayerState {
             fall_distance: 0.0,
             eating: None,
         }
+    }
+
+    pub fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
+        let helmet = self.inventory.slots[5]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(-1);
+        let chest = self.inventory.slots[6]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(-1);
+        let legs = self.inventory.slots[7]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(-1);
+        let boots = self.inventory.slots[8]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(-1);
+        (helmet, chest, legs, boots)
     }
 }
 
@@ -1596,31 +1621,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         state.fall_distance = 0.0;
                                     }
                                 }
-                                if pos.on_ground && !p.on_ground {
-                                    if state.fall_distance > 3.0 && state.gamemode == 0 {
-                                        let damage = (state.fall_distance - 3.0).round();
-                                        let died = damage_player(
-                                            &mut framed,
-                                            &mut state.health,
-                                            &mut state.food,
-                                            &mut state.food_saturation,
-                                            &mut state.is_dead,
-                                            damage,
-                                            &player_registry,
-                                            uuid
-                                        ).await;
-                                        let sound = if state.fall_distance > 7.0 {
-                                            "game.player.hurt.fall.big"
-                                        } else {
-                                            "game.player.hurt.fall.small"
-                                        };
-                                        sound_tx.send((sound.to_string(), pos.x, pos.y, pos.z, 1.0, 63)).ok();
-                                        if died && let Some(ref name) = state.name {
-                                            chat_tx.send(ChatBuilder::plain_json(&format!("{} hit the ground too hard", name))).ok();
-                                        }
-                                    }
-                                    state.fall_distance = 0.0;
-                                }
+
+                                handle_landing(&mut framed, &mut state, &player_registry, &chat_tx, &sound_tx, uuid, pos.x, pos.y, pos.z, pos.on_ground).await;
+
                                 let moved = (pos.x - p.x).abs() > 0.01
                                     || (pos.y - p.y).abs() > 0.01
                                     || (pos.z - p.z).abs() > 0.01;
@@ -1656,6 +1659,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
+                                handle_landing(&mut framed, &mut state, &player_registry, &chat_tx, &sound_tx, uuid, p.x, p.y, p.z, look.on_ground).await;
                                 player_registry.update_position(&uuid, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground).await;
                                 pos_tx.send((uuid, state.entity_id, p.x, p.y, p.z, look.yaw, look.pitch, look.on_ground)).ok();
                             }
@@ -1698,6 +1702,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
                                     send_held_equip(&equip_tx, &state);
                                 }
+
+                                if (5..=8).contains(&idx) {
+                                    sync_armor(&state, &player_registry, &equip_tx).await;
+                                }
                             }
                             continue;
                         }
@@ -1708,6 +1716,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 action_number: click.action_number,
                                 accepted: true
                             }).await;
+
+                            if let Some(idx) = Inventory::packet_to_internal(click.slot)
+                                && (5..=8).contains(&idx)
+                            {
+                                sync_armor(&state, &player_registry, &equip_tx).await;
+                            }
                             continue;
                         }
 
@@ -1826,7 +1840,16 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }
                                         let base_damage = item_registry.attack_damage(state.held_item);
                                         let is_critical = !me.on_ground && state.fall_distance > 0.0;
-                                        let damage = if is_critical { base_damage * 1.5 } else { base_damage };
+                                        let raw_damage = if is_critical { base_damage * 1.5 } else { base_damage };
+
+                                        let target_inventory_armor = player_registry.get_armor(&target.uuid).await;
+                                        let total_armor = total_defense(
+                                            target_inventory_armor.0,
+                                            target_inventory_armor.1,
+                                            target_inventory_armor.2,
+                                            target_inventory_armor.3,
+                                        );
+                                        let damage = apply_armor_reduction(raw_damage, total_armor);
                                         let new_health = (target.health - damage).max(0.0);
 
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
@@ -1864,6 +1887,16 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                         if let Some(pos_look) = packet.as_any().downcast_ref::<PlayerPositionAndLook>() {
                             if let Some(uuid) = state.uuid {
+                                if let Some(p) = player_registry.get(&uuid).await {
+                                    if !pos_look.on_ground {
+                                        if pos_look.y < p.y {
+                                            state.fall_distance += (p.y - pos_look.y) as f32;
+                                        } else {
+                                            state.fall_distance = 0.0;
+                                        }
+                                    }
+                                    handle_landing(&mut framed, &mut state, &player_registry, &chat_tx, &sound_tx, uuid, pos_look.x, pos_look.y, pos_look.z, pos_look.on_ground).await;
+                                }
                                 let new_chunk_x = (pos_look.x as i32) >> 4;
                                 let new_chunk_z = (pos_look.z as i32) >> 4;
 
@@ -1882,6 +1915,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid
                                 && let Some(p) = player_registry.get(&uuid).await
                             {
+                                handle_landing(&mut framed, &mut state, &player_registry, &chat_tx, &sound_tx, uuid, p.x, p.y, p.z, og.on_ground).await;
                                 player_registry.update_position(
                                     &uuid,
                                     p.x, p.y, p.z,
@@ -1889,6 +1923,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     og.on_ground,
                                 ).await;
                             }
+                            continue;
+                        }
+
+                        if let Some(abilities) = packet.as_any().downcast_ref::<PlayerAbilities>() {
+                            let is_flying = (abilities.flags & 0x02) != 0;
+                            state.is_flying = is_flying;
                             continue;
                         }
 
@@ -2151,6 +2191,25 @@ async fn sync_held_slot(
     }
 }
 
+async fn sync_armor(
+    state: &PlayerState,
+    player_registry: &Arc<PlayerRegistry>,
+    equip_tx: &Arc<broadcast::Sender<EquipmentUpdate>>,
+) {
+    let (helmet, chest, legs, boots) = state.get_equipped_armor();
+
+    if let Some(uuid) = state.uuid {
+        player_registry
+            .update_armor(uuid, helmet, chest, legs, boots)
+            .await;
+    }
+
+    equip_tx.send((state.entity_id, 1, boots, 1, 0)).ok();
+    equip_tx.send((state.entity_id, 2, legs, 1, 0)).ok();
+    equip_tx.send((state.entity_id, 3, chest, 1, 0)).ok();
+    equip_tx.send((state.entity_id, 4, helmet, 1, 0)).ok();
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
@@ -2172,6 +2231,54 @@ async fn send_chunks(
             loaded_chunks.insert((cx, cz));
         }
     }
+}
+
+async fn handle_landing(
+    framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
+    player_registry: &Arc<PlayerRegistry>,
+    chat_tx: &Arc<broadcast::Sender<String>>,
+    sound_tx: &Arc<broadcast::Sender<SoundEffect>>,
+    uuid: Uuid,
+    x: f64,
+    y: f64,
+    z: f64,
+    on_ground: bool,
+) {
+    if on_ground && !state.was_on_ground {
+        let damage_eligible = state.gamemode == 0 && !state.is_flying;
+
+        if damage_eligible && state.fall_distance > 3.0 {
+            let damage = (state.fall_distance - 3.0).round();
+            let died = damage_player(
+                framed,
+                &mut state.health,
+                &mut state.food,
+                &mut state.food_saturation,
+                &mut state.is_dead,
+                damage,
+                player_registry,
+                uuid,
+            )
+            .await;
+            let sound = if state.fall_distance > 7.0 {
+                "game.player.hurt.fall.big"
+            } else {
+                "game.player.hurt.fall.small"
+            };
+            sound_tx.send((sound.to_string(), x, y, z, 1.0, 63)).ok();
+            if died && let Some(ref name) = state.name {
+                chat_tx
+                    .send(ChatBuilder::plain_json(&format!(
+                        "{} hit the ground too hard",
+                        name
+                    )))
+                    .ok();
+            }
+        }
+        state.fall_distance = 0.0;
+    }
+    state.was_on_ground = on_ground;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2506,6 +2613,59 @@ async fn make_player_join(
                     entity_id: p.entity_id,
                     slot: 0,
                     item_id: p.held_item_id,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+        }
+
+        if p.helmet != -1 {
+            send_packet(
+                framed,
+                EntityEquipment {
+                    entity_id: p.entity_id,
+                    slot: 4,
+                    item_id: p.helmet,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+        }
+        if p.chestplate != -1 {
+            send_packet(
+                framed,
+                EntityEquipment {
+                    entity_id: p.entity_id,
+                    slot: 3,
+                    item_id: p.chestplate,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+        }
+        if p.leggings != -1 {
+            send_packet(
+                framed,
+                EntityEquipment {
+                    entity_id: p.entity_id,
+                    slot: 2,
+                    item_id: p.leggings,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+        }
+        if p.boots != -1 {
+            send_packet(
+                framed,
+                EntityEquipment {
+                    entity_id: p.entity_id,
+                    slot: 1,
+                    item_id: p.boots,
                     count: 1,
                     metadata: 0,
                 },

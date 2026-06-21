@@ -66,6 +66,26 @@ impl PacketOut for PlayerAbilities {
         Ok(())
     }
 }
+impl PacketIn for PlayerAbilities {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let flags = reader.read_byte();
+        let fly_speed = reader.read_float();
+        let walk_speed = reader.read_float();
+        Ok(PlayerAbilities {
+            flags,
+            fly_speed,
+            walk_speed,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 #[derive(Debug)]
 pub struct PluginMessage {

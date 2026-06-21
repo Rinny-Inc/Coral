@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -210,6 +210,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.item_positions.clone(),
     );
 
+    spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
+
     loop {
         let (socket, _) = listener.accept().await?;
         let ctx = ctx.clone();
@@ -368,6 +370,17 @@ pub fn spawn_world_save_task(
             interval.tick().await;
             world_blocks.save(&world_dir, &generator).await;
             println!("[World] Auto-Saved.");
+        }
+    });
+}
+fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            world_blocks
+                .evict_stale_chunks(Duration::from_secs(120))
+                .await;
         }
     });
 }

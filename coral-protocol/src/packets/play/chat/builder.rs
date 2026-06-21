@@ -1,8 +1,5 @@
-use std::fmt::format;
-
-use serde_json::{Value, json};
-
 use crate::packets::play::chat::{ChatMessageOut, builder::HoverEvent::ShowText};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub enum ChatColor {

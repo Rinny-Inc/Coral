@@ -26,6 +26,10 @@ pub struct Player {
     pub is_sprinting: bool,
     pub skin_parts: u8,
     pub no_damage_ticks: i32,
+    pub helmet: i16,
+    pub chestplate: i16,
+    pub leggings: i16,
+    pub boots: i16,
 }
 
 impl Player {
@@ -67,6 +71,10 @@ impl Player {
             is_sprinting: false,
             skin_parts: 0x7F,
             no_damage_ticks: 0,
+            helmet: -1,
+            chestplate: -1,
+            leggings: -1,
+            boots: -1,
         }
     }
 

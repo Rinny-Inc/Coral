@@ -1,3 +1,4 @@
+pub mod armor;
 pub mod drops;
 pub mod food;
 pub mod registry;

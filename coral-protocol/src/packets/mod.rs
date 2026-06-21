@@ -167,6 +167,13 @@ impl PacketRegistry {
         handlers.insert(
             PacketKey {
                 state: EnumProtocol::Play,
+                id: 0x13,
+            },
+            |buf| play::PlayerAbilities::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
+        );
+        handlers.insert(
+            PacketKey {
+                state: EnumProtocol::Play,
                 id: 0x14,
             },
             |buf| play::chat::TabComplete::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),

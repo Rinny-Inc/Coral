@@ -80,6 +80,24 @@ impl PlayerRegistry {
         }
     }
 
+    pub async fn update_armor(&self, uuid: Uuid, helmet: i16, chest: i16, legs: i16, boots: i16) {
+        if let Some(p) = self.players.write().await.get_mut(&uuid) {
+            p.helmet = helmet;
+            p.chestplate = chest;
+            p.leggings = legs;
+            p.boots = boots
+        }
+    }
+
+    pub async fn get_armor(&self, uuid: &Uuid) -> (i16, i16, i16, i16) {
+        self.players
+            .read()
+            .await
+            .get(uuid)
+            .map(|p| (p.helmet, p.chestplate, p.leggings, p.boots))
+            .unwrap_or((-1, -1, -1, -1))
+    }
+
     pub async fn update_latency(&self, uuid: Uuid, latency_ms: u32) {
         if let Some(player) = self.players.write().await.get_mut(&uuid) {
             player.latency_ms = latency_ms;

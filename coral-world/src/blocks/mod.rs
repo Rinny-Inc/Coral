@@ -7,6 +7,8 @@ use coral_types::{ToolKind, ToolMaterial};
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::sync::RwLock;
 
@@ -84,12 +86,14 @@ pub struct WorldBlocks {
     // only player modified blocks
     pub blocks: RwLock<HashMap<(i32, u8, i32), Block>>,
     // chunks loaded from disk into mem
-    pub chunk_cache: RwLock<HashMap<(i32, i32), Vec<u8>>>,
+    pub chunk_cache: RwLock<HashMap<(i32, i32), (Arc<Vec<u8>>, Instant)>>,
     // chunks that need to be saved
     pub dirty_chunks: RwLock<HashSet<(i32, i32)>>,
     pub world_dir: RwLock<Option<std::path::PathBuf>>,
     pub generator: RwLock<Option<FlatWorldGenerator>>,
 }
+
+const MAX_CACHED_CHUNKS: usize = 2048;
 impl WorldBlocks {
     pub fn new() -> Self {
         Self {
@@ -101,19 +105,24 @@ impl WorldBlocks {
         }
     }
 
-    pub async fn get_chunk_nbt(&self, cx: i32, cz: i32) -> Option<Vec<u8>> {
-        if let Some(nbt) = self.chunk_cache.read().await.get(&(cx, cz)) {
+    pub async fn get_chunk_nbt(&self, cx: i32, cz: i32) -> Option<Arc<Vec<u8>>> {
+        if let Some((nbt, _)) = self.chunk_cache.read().await.get(&(cx, cz)) {
             return Some(nbt.clone());
         }
 
         let rx = cx >> 5;
         let rz = cz >> 5;
-        let world_dir = self.world_dir.read().await;
-        let dir = world_dir.as_ref()?;
-        let region = RegionFile::new(dir, rx, rz);
-        let nbt = region.read_chunk(cx, cz)?;
+        let nbt = {
+            let world_dir = self.world_dir.read().await;
+            let dir = world_dir.as_ref()?;
+            let region = RegionFile::new(dir, rx, rz);
+            Arc::new(region.read_chunk(cx, cz)?)
+        };
 
-        self.chunk_cache.write().await.insert((cx, cz), nbt.clone());
+        self.chunk_cache
+            .write()
+            .await
+            .insert((cx, cz), (nbt.clone(), Instant::now()));
         Some(nbt)
     }
 
@@ -154,6 +163,31 @@ impl WorldBlocks {
             }
         }
         self.dirty_chunks.write().await.insert((cx, cz));
+    }
+
+    pub async fn evict_stale_chunks(&self, max_age: Duration) {
+        let dirty = self.dirty_chunks.read().await;
+        let mut cache = self.chunk_cache.write().await;
+
+        if cache.len() <= MAX_CACHED_CHUNKS {
+            return;
+        }
+
+        let now = Instant::now();
+        let before = cache.len();
+
+        cache.retain(|key, (_, last_accessed)| {
+            dirty.contains(key) || now.duration_since(*last_accessed) < max_age
+        });
+
+        let evicted = before - cache.len();
+        if evicted > 0 {
+            println!(
+                "[World] Evicted {} stale chunks from cache ({} remaining).",
+                evicted,
+                cache.len()
+            );
+        }
     }
 
     pub async fn load(&self, world_dir: &Path, generator: &FlatWorldGenerator) {
