@@ -33,6 +33,7 @@ pub struct Player {
 }
 
 impl Player {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         entity_id: i32,
         uuid: Uuid,

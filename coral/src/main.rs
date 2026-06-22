@@ -21,8 +21,14 @@ use coral_command::{CommandContext, CommandDispatcher, CommandResult, version_co
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
-    banlist::BanList, entity_tracker::EntityTracker, items::ItemRegistry, ops::OpsFile,
-    player::Player, registry::PlayerRegistry, whitelist::WhitelistFile,
+    banlist::BanList,
+    entity_tracker::EntityTracker,
+    items::ItemRegistry,
+    ops::OpsFile,
+    player::Player,
+    projectile::{Projectile, ProjectileKind},
+    registry::PlayerRegistry,
+    whitelist::WhitelistFile,
 };
 use coral_world::{
     blocks::{WorldBlocks, registry::BlockRegistry},
@@ -52,6 +58,8 @@ type EntityStatusUpdate = (i32, u8);
 type EquipmentUpdate = (i32, i16, i16, u8, i16);
 type SoundEffect = (String, f64, f64, f64, f32, u8);
 type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);
+type ProjectileSpawn = (i32, i32, ProjectileKind, f64, f64, f64, f64, f64, f64);
+type ProjectileMove = (i32, f64, f64, f64);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -65,6 +73,7 @@ pub struct ServerContext {
     entity_tracker: Arc<RwLock<EntityTracker>>,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    projectiles: Arc<RwLock<Vec<Projectile>>>,
     chat_tx: Arc<broadcast::Sender<String>>,
     join_tx: Arc<broadcast::Sender<JoinLeave>>,
     pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
@@ -86,6 +95,8 @@ pub struct ServerContext {
     sound_tx: Arc<broadcast::Sender<SoundEffect>>,
     shutdown_tx: Arc<broadcast::Sender<()>>,
     particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
+    projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
+    projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     private_key: Arc<RsaPrivateKey>,
@@ -140,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
         item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
         item_positions: Arc::new(RwLock::new(HashMap::new())),
+        projectiles: Arc::new(RwLock::new(Vec::new())),
         chat_tx: Arc::new(broadcast::channel::<String>(50).0),
         join_tx: Arc::new(broadcast::channel::<JoinLeave>(16).0),
         pos_tx: Arc::new(broadcast::channel::<PositionUpdate>(100).0),
@@ -161,6 +173,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
         shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
         particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
+        projectile_spawn_tx: Arc::new(broadcast::channel::<ProjectileSpawn>(100).0),
+        projectile_move_tx: Arc::new(broadcast::channel::<ProjectileMove>(200).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
@@ -208,6 +222,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.world.item_despawn_seconds,
         ctx.item_spawn_times.clone(),
         ctx.item_positions.clone(),
+    );
+
+    spawn_projectile_task(
+        ctx.projectiles.clone(),
+        ctx.projectile_move_tx.clone(),
+        ctx.despawn_tx.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.player_registry.clone(),
+        ctx.dmg_tx.clone(),
     );
 
     spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
@@ -381,6 +405,128 @@ fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
             world_blocks
                 .evict_stale_chunks(Duration::from_secs(120))
                 .await;
+        }
+    });
+}
+fn spawn_projectile_task(
+    projectiles: Arc<RwLock<Vec<Projectile>>>,
+    projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
+    despawn_tx: Arc<broadcast::Sender<i32>>,
+    world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
+    player_registry: Arc<PlayerRegistry>,
+    dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_millis(50));
+        loop {
+            interval.tick().await;
+
+            let (to_remove, moves) = {
+                let mut list = projectiles.write().await;
+                let mut to_remove = vec![];
+                let mut moves = vec![];
+
+                for proj in list.iter_mut() {
+                    // ^^^^^ TODO: future me -> get players inside the chunks where the projectile is
+                    proj.ticks_alive += 1;
+
+                    let gravity = match proj.kind {
+                        ProjectileKind::Arrow => 0.05,
+                        ProjectileKind::FishingHook => 0.03,
+                    };
+                    let drag = 0.99;
+
+                    proj.vy -= gravity;
+                    proj.vx *= drag;
+                    proj.vy *= drag;
+                    proj.vz *= drag;
+                    proj.x += proj.vx;
+                    proj.y += proj.vy;
+                    proj.z += proj.vz;
+
+                    let bx = proj.x.floor() as i32;
+                    let by = proj.y.floor() as i32;
+                    let bz = proj.z.floor() as i32;
+
+                    let block = world_blocks
+                        .get(bx, by.clamp(0, 255) as u8, bz, &generator)
+                        .await;
+                    let hit_block = !block.is_air() && (0..255).contains(&by);
+
+                    if hit_block {
+                        match proj.kind {
+                            ProjectileKind::Arrow => {
+                                to_remove.push(proj.entity_id);
+                            }
+                            ProjectileKind::FishingHook => {
+                                proj.vx = 0.0;
+                                proj.vy = 0.0;
+                                proj.vz = 0.0;
+                            }
+                        }
+                        continue;
+                    }
+
+                    if proj.kind == ProjectileKind::Arrow {
+                        let players = player_registry.get_all().await;
+                        for target in &players {
+                            if target.is_dead {
+                                continue;
+                            }
+                            let dx = target.x - proj.x;
+                            let dy = target.y - proj.y;
+                            let dz = target.z - proj.z;
+                            let dist_sq = dx * dx + dy * dy + dz * dz;
+
+                            if dist_sq < 0.64 {
+                                let speed =
+                                    (proj.vx.powi(2) + proj.vy.powi(2) + proj.vz.powi(2)).sqrt();
+                                let damage = (speed * 3.0).clamp(2.0, 10.0) as f32;
+                                let new_health = (target.health - damage).max(0.0);
+
+                                player_registry
+                                    .update_health(
+                                        target.uuid,
+                                        target.health,
+                                        target.food,
+                                        target.food_saturation,
+                                    )
+                                    .await;
+                                dmg_tx
+                                    .send((
+                                        target.uuid,
+                                        new_health,
+                                        target.food,
+                                        target.food_saturation,
+                                        proj.owner_entity_id,
+                                    ))
+                                    .ok();
+
+                                to_remove.push(proj.entity_id); // TODO: future me -> there's EntityLiving#arrowStuck available on paper
+                                break;
+                            }
+                        }
+                    }
+
+                    if proj.ticks_alive > 600 {
+                        to_remove.push(proj.entity_id);
+                        continue;
+                    }
+
+                    moves.push((proj.entity_id, proj.x, proj.y, proj.z));
+                }
+
+                list.retain(|p| !to_remove.contains(&p.entity_id));
+                (to_remove, moves)
+            };
+
+            for mv in moves {
+                projectile_move_tx.send(mv).ok();
+            }
+            for eid in to_remove {
+                despawn_tx.send(eid).ok();
+            }
         }
     });
 }

@@ -10,6 +10,7 @@ use coral_server::items::ItemRegistry;
 use coral_server::items::armor::{apply_armor_reduction, total_defense};
 use coral_server::items::drops::block_drop;
 use coral_server::mining::break_time_ticks;
+use coral_server::projectile::{Projectile, ProjectileKind};
 use coral_types::ToolMaterial;
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::{PlayerData, load_player_data, save_player_data};
@@ -54,9 +55,7 @@ use coral_protocol::packets::play::inventory::{
 use coral_protocol::packets::play::movement::{
     PlayerLook, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
 };
-use coral_protocol::packets::play::player_list::{
-    BulkUpdateLatency, PlayerListItem, PlayerListItem17, UpdateLatency,
-};
+use coral_protocol::packets::play::player_list::{PlayerListItem, PlayerListItem17, UpdateLatency};
 use coral_protocol::packets::play::{
     ClientSettings, NamedSoundEffect, PluginMessage, WorldParticles,
 };
@@ -285,6 +284,8 @@ struct PlayerState {
     loaded_chunks: HashSet<(i32, i32)>,
     fall_distance: f32,
     eating: Option<Instant>,
+    bow_charging: Option<Instant>,
+    fishing_hook_eid: Option<i32>,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -322,10 +323,12 @@ impl PlayerState {
             loaded_chunks: HashSet::new(),
             fall_distance: 0.0,
             eating: None,
+            bow_charging: None,
+            fishing_hook_eid: None,
         }
     }
 
-    pub fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
+    fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
         let helmet = self.inventory.slots[5]
             .as_ref()
             .map(|s| s.item_id)
@@ -344,6 +347,21 @@ impl PlayerState {
             .unwrap_or(-1);
         (helmet, chest, legs, boots)
     }
+
+    // TODO: when more projectile: match per kind & rename at consume_projectile_from_inventory
+    fn consume_arrow_from_inventory(&mut self) {
+        for slot in self.inventory.slots.iter_mut() {
+            if let Some(s) = slot
+                && s.item_id == 262
+            {
+                s.count -= 1;
+                if s.count == 0 {
+                    *slot = None;
+                }
+                return;
+            }
+        }
+    }
 }
 
 pub async fn process(socket: TcpStream, ctx: ServerContext) {
@@ -358,6 +376,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         entity_tracker,
         item_spawn_times,
         item_positions,
+        projectiles,
         chat_tx,
         join_tx,
         pos_tx,
@@ -379,6 +398,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         sound_tx,
         shutdown_tx,
         particle_tx,
+        projectile_spawn_tx,
+        projectile_move_tx,
         world_blocks,
         generator,
         private_key,
@@ -418,6 +439,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut sound_rx = sound_tx.subscribe();
     let mut shutdown_rx = shutdown_tx.subscribe();
     let mut particle_rx = particle_tx.subscribe();
+    let mut projectile_spawn_rx = projectile_spawn_tx.subscribe();
+    let mut projectile_move_rx = projectile_move_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -710,6 +733,36 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     offset_z: oz,
                     particle_data: data,
                     count
+                }).await;
+            }
+            Ok((eid, owner_eid, kind, x, y, z, vx, vy, vz)) = projectile_spawn_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                let object_type = match kind {
+                    ProjectileKind::Arrow => 60,
+                    ProjectileKind::FishingHook => 90,
+                };
+                send_packet(&mut framed, SpawnObject {
+                    entity_id: eid,
+                    object_type,
+                    x, y, z,
+                    yaw: 0, pitch: 0,
+                    data: owner_eid + 1,
+                    vx: (vx * 8000.0) as i16,
+                    vy: (vy * 8000.0) as i16,
+                    vz: (vz * 8000.0) as i16,
+                }).await;
+            }
+            Ok((eid, x, y, z)) = projectile_move_rx.recv() => {
+                if framed.codec().state != EnumProtocol::Play {
+                    continue;
+                }
+                send_packet(&mut framed, EntityTeleport {
+                    entity_id: eid,
+                    x, y, z,
+                    yaw: 0, pitch: 0,
+                    on_ground: false
                 }).await;
             }
             Ok(weather) = weather_rx.recv() => {
@@ -1294,6 +1347,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             }
                             send_held_equip(&equip_tx, &state);
                             state.eating = None;
+                            state.bow_charging = None;
+                            if let Some(hook_eid) = state.fishing_hook_eid.take() {
+                                projectiles.write().await.retain(|p| p.entity_id != hook_eid);
+                                despawn_tx.send(hook_eid).ok();
+                            }
                             continue;
                         }
 
@@ -1474,6 +1532,56 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }).await;
                                     }
                                 }
+                                5 => {
+                                    if let Some(charge_start) = state.bow_charging.take()
+                                        && state.held_item == 261 // TODO: In the future identify magic numbers!
+                                    {
+                                        let charge_secs = charge_start.elapsed().as_secs_f32().min(1.0);
+
+                                        if charge_secs < 0.1 {
+                                            continue;
+                                        }
+
+                                        let power = ((charge_secs * charge_secs + charge_secs * 2.0) / 3.0).clamp(0.0, 1.0);
+
+                                        if let Some(uuid) = state.uuid
+                                            && let Some(p) = player_registry.get(&uuid).await
+                                        {
+                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
+                                            let pitch_rad = p.pitch * std::f32::consts::PI / 180.0;
+
+                                            let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
+                                            let dy = (-pitch_rad.sin()) as f64;
+                                            let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
+
+                                            let speed = power as f64 * 3.0;
+                                            let arrow_eid = next_entity_id();
+
+                                            let proj = Projectile {
+                                                entity_id: arrow_eid,
+                                                owner_entity_id: state.entity_id,
+                                                kind: ProjectileKind::Arrow,
+                                                x: p.x, y: p.y, z: p.z,
+                                                vx: dx * speed,
+                                                vy: dy * speed,
+                                                vz: dz * speed,
+                                                ticks_alive: 0
+                                            };
+
+                                            projectiles.write().await.push(proj.clone());
+                                            projectile_spawn_tx.send((
+                                                arrow_eid, state.entity_id, ProjectileKind::Arrow,
+                                                proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
+                                            )).ok();
+
+                                            sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();
+
+                                            if state.gamemode == 0 {
+                                                state.consume_arrow_from_inventory();
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                             continue;
@@ -1487,6 +1595,52 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 {
                                     state.eating = Some(Instant::now());
                                     anim_tx.send((state.entity_id, 3)).ok();
+                                }
+
+                                match state.held_item {
+                                    261 => {
+                                        state.bow_charging = Some(Instant::now());
+                                        continue;
+                                    }
+                                    346 => {
+                                        if let Some(hook_eid) = state.fishing_hook_eid.take() {
+                                            projectiles.write().await.retain(|p| p.entity_id != hook_eid);
+                                            despawn_tx.send(hook_eid).ok();
+                                        } else if let Some(uuid) = state.uuid
+                                            && let Some(p) = player_registry.get(&uuid).await
+                                        {
+                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
+                                            let pitch_rad = p.pitch * std::f32::consts::PI / 180.0;
+
+                                            let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
+                                            let dy = (-pitch_rad.sin()) as f64;
+                                            let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
+
+                                            let speed = 1.5;
+                                            let hook_eid = next_entity_id();
+
+                                            let proj = Projectile {
+                                                entity_id: hook_eid,
+                                                owner_entity_id: state.entity_id,
+                                                kind: ProjectileKind::FishingHook,
+                                                x: p.x, y: p.y + 1.2, z: p.z, // TODO: change 1.2 to head_location
+                                                vx: dx * speed,
+                                                vy: dy * speed + 0.2,
+                                                vz: dz * speed,
+                                                ticks_alive: 0,
+                                            };
+                                            projectiles.write().await.push(proj.clone());
+                                            projectile_spawn_tx.send((
+                                                hook_eid, state.entity_id, ProjectileKind::FishingHook,
+                                                proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
+                                            )).ok();
+
+                                            state.fishing_hook_eid = Some(hook_eid);
+                                        }
+                                        anim_tx.send((state.entity_id, 0)).ok();
+                                        continue;
+                                    }
+                                    _ => {}
                                 }
                                 continue;
                             }
@@ -2248,6 +2402,7 @@ async fn send_chunks(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_landing(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
