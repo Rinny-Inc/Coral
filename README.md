@@ -9,7 +9,7 @@
 <img alt="Protocol" src="https://img.shields.io/badge/Protocol-47-blue">
 <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
 <img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
-<a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1407520428947603527?label=Discord&logo=discord"></a>
+<a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1352833901860487299?label=Discord&logo=discord"></a>
 <img alt="License" src="https://img.shields.io/badge/License-Custom%20Restrictive-red">
 </p>
 
@@ -17,7 +17,7 @@
 >
 > **Join the Coral Discord server for development updates, support, bug reports, and discussions.**
 >
-> ### https://discord.gg/invite/B2BgjwDX8m
+> ### [Click to join](https://discord.com/invite/B2BgjwDX8m)
 
 **Coral** is a high-performance, lightweight legacy Minecraft server implementation written entirely in Rust. Coral targets **Minecraft 1.8.9 (Protocol 47)** as its primary platform while laying the foundation for **Minecraft 1.7.10 compatibility** through native multi-version protocol support.
 
