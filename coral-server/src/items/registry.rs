@@ -1,3 +1,5 @@
+use crate::items::armor::ArmorSlot;
+
 use super::{Item, UseAction};
 use std::{collections::HashMap, sync::Arc};
 
@@ -17,6 +19,9 @@ impl ItemRegistry {
         }
         for f in super::food::all() {
             items.insert(f.id(), Arc::new(f));
+        }
+        for a in super::armor::all() {
+            items.insert(a.id(), Arc::new(a));
         }
         Self { items }
     }
@@ -45,5 +50,12 @@ impl ItemRegistry {
 
     pub fn on_use(&self, item_id: i16) -> Option<UseAction> {
         self.get(item_id).and_then(|i| i.on_use())
+    }
+
+    pub fn armor_defense(&self, item_id: i16) -> Option<i32> {
+        self.get(item_id).and_then(|i| i.armor_defense())
+    }
+    pub fn armor_slot(&self, item_id: i16) -> Option<ArmorSlot> {
+        self.get(item_id).and_then(|i| i.armor_slot())
     }
 }

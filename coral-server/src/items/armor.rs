@@ -1,5 +1,7 @@
 use coral_types::ToolMaterial;
 
+use crate::items::{Item, ItemRegistry};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArmorSlot {
     Helmet,
@@ -9,11 +11,11 @@ pub enum ArmorSlot {
 }
 
 pub struct Armor {
-    pub id: i16,
-    pub slot: ArmorSlot,
+    id: i16,
+    slot: ArmorSlot,
     pub material: ToolMaterial,
-    pub defense: i32,
-    pub durability: i16,
+    defense: i32,
+    durability: i16,
 }
 
 impl Armor {
@@ -24,6 +26,23 @@ impl Armor {
             ArmorSlot::Chestplate => 3,
             ArmorSlot::Helmet => 4,
         }
+    }
+}
+impl Item for Armor {
+    fn id(&self) -> i16 {
+        self.id
+    }
+    fn max_stack_size(&self) -> u8 {
+        1
+    }
+    fn max_durability(&self) -> Option<i16> {
+        Some(self.durability)
+    }
+    fn armor_defense(&self) -> Option<i32> {
+        Some(self.defense)
+    }
+    fn armor_slot(&self) -> Option<ArmorSlot> {
+        Some(self.slot.clone())
     }
 }
 
@@ -181,15 +200,16 @@ pub fn all() -> Vec<Armor> {
     ]
 }
 
-pub fn get_armor(item_id: i16) -> Option<Armor> {
-    all().into_iter().find(|a| a.id == item_id)
-}
-
-pub fn total_defense(helmet: i16, chest: i16, legs: i16, boots: i16) -> i32 {
+pub fn total_defense(
+    item_registry: &ItemRegistry,
+    helmet: i16,
+    chest: i16,
+    legs: i16,
+    boots: i16,
+) -> i32 {
     [helmet, chest, legs, boots]
         .iter()
-        .filter_map(|&id| get_armor(id))
-        .map(|a| a.defense)
+        .filter_map(|&id| item_registry.armor_defense(id))
         .sum()
 }
 

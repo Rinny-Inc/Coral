@@ -2013,6 +2013,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         let target_inventory_armor = player_registry.get_armor(&target.uuid).await;
                                         let total_armor = total_defense(
+                                            &item_registry,
                                             target_inventory_armor.0,
                                             target_inventory_armor.1,
                                             target_inventory_armor.2,

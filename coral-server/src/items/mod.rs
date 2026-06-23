@@ -8,6 +8,8 @@ pub mod tools;
 use coral_types::ToolMaterial;
 pub use registry::ItemRegistry;
 
+use crate::items::armor::ArmorSlot;
+
 pub trait Item: Send + Sync {
     fn id(&self) -> i16;
 
@@ -48,6 +50,13 @@ pub trait Item: Send + Sync {
     }
 
     fn tool_material(&self) -> Option<ToolMaterial> {
+        None
+    }
+
+    fn armor_defense(&self) -> Option<i32> {
+        None
+    }
+    fn armor_slot(&self) -> Option<ArmorSlot> {
         None
     }
 }

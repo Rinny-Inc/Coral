@@ -137,10 +137,10 @@ impl WorldBlocks {
         if let Some(nbt) = self.get_chunk_nbt(cx, cz).await {
             let mut chunk_blocks = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
-            if let Some(b) = chunk_blocks.get(&(x, y, z)) {
-                return b.clone();
-            }
-            return Block::air();
+            return chunk_blocks
+                .get(&(x, y, z))
+                .cloned()
+                .unwrap_or_else(Block::air);
         }
 
         generator.get(y)
@@ -228,13 +228,11 @@ impl WorldBlocks {
             d.clone()
         };
 
-        let saved = self.chunk_cache.read().await.clone();
-        let blocks = self.blocks.read().await.clone();
+        let player_blocks = self.blocks.read().await.clone();
         let generator = generator.clone();
         let world_dir = world_dir.to_path_buf();
         let region_dir = world_dir.join("region");
 
-        // group dirty chunks by region
         let mut region_map: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
         for (cx, cz) in &dirty {
             region_map
@@ -243,8 +241,35 @@ impl WorldBlocks {
                 .push((*cx, *cz));
         }
 
-        // read existing region files async
         tokio::fs::create_dir_all(&region_dir).await.ok();
+
+        // build merged block maps per chunk BEFORE spawn_blocking
+        let mut chunk_block_maps: HashMap<(i32, i32), HashMap<(i32, u8, i32), Block>> =
+            HashMap::new();
+        let mut chunk_is_new: HashMap<(i32, i32), bool> = HashMap::new();
+        {
+            let cache = self.chunk_cache.read().await;
+            for (cx, cz) in &dirty {
+                let (base, is_new) = if let Some((nbt, _)) = cache.get(&(*cx, *cz)) {
+                    let mut m = HashMap::new();
+                    nbt_to_blocks_raw(nbt, &mut m);
+                    (m, false)
+                } else {
+                    (HashMap::new(), true)
+                };
+
+                // overlay player diffs on top of base
+                let mut final_blocks = base;
+                for ((x, y, z), block) in &player_blocks {
+                    if (x >> 4) == *cx && (z >> 4) == *cz {
+                        final_blocks.insert((*x, *y, *z), block.clone());
+                    }
+                }
+
+                chunk_block_maps.insert((*cx, *cz), final_blocks);
+                chunk_is_new.insert((*cx, *cz), is_new);
+            }
+        }
 
         let mut region_data: Vec<(i32, i32, Vec<(i32, i32)>, Vec<u8>)> = vec![];
         for ((rx, rz), chunks) in region_map {
@@ -267,8 +292,11 @@ impl WorldBlocks {
                 }
 
                 for (cx, cz) in &chunks {
-                    let is_new = !saved.contains_key(&(*cx, *cz));
-                    let nbt = chunk_to_nbt(*cx, *cz, &blocks, &generator, is_new);
+                    let Some(final_blocks) = chunk_block_maps.get(&(*cx, *cz)) else {
+                        continue;
+                    };
+                    let is_new = *chunk_is_new.get(&(*cx, *cz)).unwrap_or(&true);
+                    let nbt = chunk_to_nbt(*cx, *cz, final_blocks, &generator, is_new);
 
                     let compressed = {
                         use flate2::Compression;
@@ -279,8 +307,8 @@ impl WorldBlocks {
                         enc.finish().unwrap()
                     };
 
-                    let payload_len = compressed.len() + 1; // +1 compression byte
-                    let total_len = payload_len + 4; // +4 length field
+                    let payload_len = compressed.len() + 1;
+                    let total_len = payload_len + 4;
                     let sectors_needed = total_len.div_ceil(4096);
 
                     let local_x = cx.rem_euclid(32) as usize;
@@ -288,13 +316,11 @@ impl WorldBlocks {
                     let header_offset = (local_x + local_z * 32) * 4;
                     let this_idx = local_x + local_z * 32;
 
-                    // free old sectors
                     let old_offset = (file_data[header_offset] as usize) << 16
                         | (file_data[header_offset + 1] as usize) << 8
                         | file_data[header_offset + 2] as usize;
                     let old_sectors = file_data[header_offset + 3] as usize;
 
-                    // build used set
                     let mut used: HashSet<usize> = HashSet::new();
                     for i in 0..1024usize {
                         if i == this_idx {
@@ -315,7 +341,6 @@ impl WorldBlocks {
                         }
                     }
 
-                    // find free run
                     let mut sector_offset = 2usize;
                     'find: loop {
                         for s in sector_offset..sector_offset + sectors_needed {
@@ -327,7 +352,6 @@ impl WorldBlocks {
                         break;
                     }
 
-                    // zero old sectors
                     if old_offset >= 2 && old_sectors > 0 {
                         let s = old_offset * 4096;
                         let e = (old_offset + old_sectors) * 4096;
@@ -336,7 +360,6 @@ impl WorldBlocks {
                         }
                     }
 
-                    // extend and write
                     let required = (sector_offset + sectors_needed) * 4096;
                     if file_data.len() < required {
                         file_data.resize(required, 0);
@@ -345,18 +368,16 @@ impl WorldBlocks {
                     let bo = sector_offset * 4096;
                     let mut chunk_bytes = Vec::with_capacity(sectors_needed * 4096);
                     chunk_bytes.extend_from_slice(&(payload_len as u32).to_be_bytes());
-                    chunk_bytes.push(2); // zlib
+                    chunk_bytes.push(2);
                     chunk_bytes.extend_from_slice(&compressed);
                     chunk_bytes.resize(sectors_needed * 4096, 0);
                     file_data[bo..bo + sectors_needed * 4096].copy_from_slice(&chunk_bytes);
 
-                    // update header
                     file_data[header_offset] = ((sector_offset >> 16) & 0xFF) as u8;
                     file_data[header_offset + 1] = ((sector_offset >> 8) & 0xFF) as u8;
                     file_data[header_offset + 2] = (sector_offset & 0xFF) as u8;
                     file_data[header_offset + 3] = sectors_needed as u8;
 
-                    // timestamp
                     let ts = header_offset + 4096;
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -365,7 +386,6 @@ impl WorldBlocks {
                     file_data[ts..ts + 4].copy_from_slice(&now.to_be_bytes());
                 }
 
-                // trim trailing empty sectors
                 let mut end = file_data.len();
                 while end > 8192 {
                     let start = end - 4096;
@@ -393,7 +413,6 @@ impl WorldBlocks {
             tokio::fs::write(&path, &data).await.ok();
         }
 
-        // clear dirty after successful save
         self.dirty_chunks.write().await.clear();
 
         println!(
