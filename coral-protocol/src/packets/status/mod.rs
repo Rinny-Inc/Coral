@@ -44,7 +44,7 @@ impl Response {
             .collect();
         let mut json = json!({
             "version": {
-                "name": "Coral 1.8.9",
+                "name": "Coral 1.8.x",
                 "protocol": protocol
             },
             "players": {

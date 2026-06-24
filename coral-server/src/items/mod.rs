@@ -1,6 +1,7 @@
 pub mod armor;
 pub mod drops;
 pub mod food;
+pub mod potions;
 pub mod registry;
 pub mod swords;
 pub mod tools;

@@ -126,3 +126,37 @@ impl PacketOut for EntityStatus {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct EntityEffect {
+    pub entity_id: i32,
+    pub effect_id: u8,
+    pub amplifier: u8,
+    pub duration: i32, // ticks
+    pub hide_particles: bool,
+}
+impl PacketOut for EntityEffect {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1D);
+        writer.write_i32(self.entity_id);
+        writer.write_byte(self.effect_id);
+        writer.write_byte(self.amplifier);
+        writer.write_varint(self.duration);
+        writer.write_bool(self.hide_particles);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct RemoveEntityEffect {
+    pub entity_id: i32,
+    pub effect_id: u8,
+}
+impl PacketOut for RemoveEntityEffect {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x1E);
+        writer.write_i32(self.entity_id);
+        writer.write_byte(self.effect_id);
+        Ok(())
+    }
+}

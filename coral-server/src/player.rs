@@ -2,6 +2,8 @@ use uuid::Uuid;
 
 use coral_protocol::auth::ProfileProperty;
 
+use crate::effects::ActiveEffect;
+
 #[derive(Debug, Clone)]
 pub struct Player {
     pub entity_id: i32,
@@ -30,6 +32,7 @@ pub struct Player {
     pub chestplate: i16,
     pub leggings: i16,
     pub boots: i16,
+    pub active_effects: Vec<ActiveEffect>,
 }
 
 impl Player {
@@ -76,6 +79,7 @@ impl Player {
             chestplate: -1,
             leggings: -1,
             boots: -1,
+            active_effects: vec![],
         }
     }
 

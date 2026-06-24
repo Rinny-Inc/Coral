@@ -60,6 +60,7 @@ type SoundEffect = (String, f64, f64, f64, f32, u8);
 type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);
 type ProjectileSpawn = (i32, i32, ProjectileKind, f64, f64, f64, f64, f64, f64);
 type ProjectileMove = (i32, f64, f64, f64);
+type SplashEffect = (Uuid, u8, u8, i32);
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -97,6 +98,7 @@ pub struct ServerContext {
     particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
     projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
     projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
+    splash_effect_tx: Arc<broadcast::Sender<SplashEffect>>,
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     private_key: Arc<RsaPrivateKey>,
@@ -114,7 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = match TcpListener::bind(&addr).await {
         Ok(l) => {
-            println!("Minecraft Server 1.8.9 started at {}", addr);
+            println!("Minecraft Server 1.8.x started at {}", addr);
             l
         }
         Err(e) => {
@@ -175,6 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
         projectile_spawn_tx: Arc::new(broadcast::channel::<ProjectileSpawn>(100).0),
         projectile_move_tx: Arc::new(broadcast::channel::<ProjectileMove>(200).0),
+        splash_effect_tx: Arc::new(broadcast::channel::<SplashEffect>(100).0),
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
@@ -228,6 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.projectiles.clone(),
         ctx.projectile_move_tx.clone(),
         ctx.despawn_tx.clone(),
+        ctx.splash_effect_tx.clone(),
         ctx.world_blocks.clone(),
         ctx.generator.clone(),
         ctx.player_registry.clone(),
@@ -408,10 +412,12 @@ fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
         }
     });
 }
+#[allow(clippy::too_many_arguments)]
 fn spawn_projectile_task(
     projectiles: Arc<RwLock<Vec<Projectile>>>,
     projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
     despawn_tx: Arc<broadcast::Sender<i32>>,
+    splash_effect_tx: Arc<broadcast::Sender<SplashEffect>>,
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     player_registry: Arc<PlayerRegistry>,
@@ -422,10 +428,11 @@ fn spawn_projectile_task(
         loop {
             interval.tick().await;
 
-            let (to_remove, moves) = {
+            let (to_remove, moves, splash_effects) = {
                 let mut list = projectiles.write().await;
                 let mut to_remove = vec![];
                 let mut moves = vec![];
+                let mut splash_effects: Vec<(Uuid, u8, u8, i32)> = vec![];
 
                 for proj in list.iter_mut() {
                     // ^^^^^ TODO: future me -> get players inside the chunks where the projectile is
@@ -434,6 +441,7 @@ fn spawn_projectile_task(
                     let gravity = match proj.kind {
                         ProjectileKind::Arrow => 0.05,
                         ProjectileKind::FishingHook => 0.03,
+                        ProjectileKind::SplashPotion(_) => 0.05,
                     };
                     let drag = 0.99;
 
@@ -463,6 +471,34 @@ fn spawn_projectile_task(
                                 proj.vx = 0.0;
                                 proj.vy = 0.0;
                                 proj.vz = 0.0;
+                            }
+                            ProjectileKind::SplashPotion(meta) => {
+                                let effects = coral_server::items::potions::potion_effects(meta);
+                                let players = player_registry.get_all().await;
+                                for target in &players {
+                                    let dx = target.x - proj.x;
+                                    let dy = target.y - proj.y;
+                                    let dz = target.z - proj.z;
+                                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                                    if dist <= 4.0 {
+                                        let potency = 1.0 - (dist / 4.0);
+                                        for pe in &effects {
+                                            let scaled_duration =
+                                                (pe.duration_ticks as f64 * potency) as i32;
+                                            if scaled_duration < 1 {
+                                                continue;
+                                            }
+                                            splash_effects.push((
+                                                target.uuid,
+                                                pe.kind.clone() as u8,
+                                                pe.amplifier,
+                                                scaled_duration,
+                                            ));
+                                        }
+                                    }
+                                }
+                                to_remove.push(proj.entity_id);
                             }
                         }
                         continue;
@@ -518,7 +554,7 @@ fn spawn_projectile_task(
                 }
 
                 list.retain(|p| !to_remove.contains(&p.entity_id));
-                (to_remove, moves)
+                (to_remove, moves, splash_effects)
             };
 
             for mv in moves {
@@ -526,6 +562,11 @@ fn spawn_projectile_task(
             }
             for eid in to_remove {
                 despawn_tx.send(eid).ok();
+            }
+            for (uuid, effect_id, amplifier, duration) in splash_effects {
+                splash_effect_tx
+                    .send((uuid, effect_id, amplifier, duration))
+                    .ok();
             }
         }
     });

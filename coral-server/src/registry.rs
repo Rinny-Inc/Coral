@@ -6,7 +6,7 @@ use std::{
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::player::Player;
+use crate::{effects::ActiveEffect, player::Player};
 
 static ENTITY_ID_COUNTER: AtomicI32 = AtomicI32::new(1);
 
@@ -125,6 +125,21 @@ impl PlayerRegistry {
         if let Some(player) = self.players.write().await.get_mut(&uuid) {
             player.no_damage_ticks = no_damage_ticks;
         }
+    }
+
+    pub async fn update_effects(&self, uuid: Uuid, effects: Vec<ActiveEffect>) {
+        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+            player.active_effects = effects;
+        }
+    }
+
+    pub async fn get_effects(&self, uuid: &Uuid) -> Vec<ActiveEffect> {
+        self.players
+            .read()
+            .await
+            .get(uuid)
+            .map(|p| p.active_effects.clone())
+            .unwrap_or_default()
     }
 
     #[allow(clippy::too_many_arguments)]

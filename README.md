@@ -5,8 +5,7 @@
 <p align="center">
 <img alt="Rust" src="https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust">
 <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml"><img alt="Rust Lines of Code" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rinny-Inc/Coral/badges/line_badge.json"></a>
-<img alt="Minecraft" src="https://img.shields.io/badge/Minecraft-1.8.9-green">
-<img alt="Protocol" src="https://img.shields.io/badge/Protocol-47-blue">
+<img alt="Protocol" src="https://img.shields.io/badge/Protocol-47%20(1.8.x)-blue">
 <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
 <img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
 <a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1352833901860487299?label=Discord&logo=discord"></a>
@@ -19,7 +18,7 @@
 >
 > ### [Click to join](https://discord.com/invite/B2BgjwDX8m)
 
-**Coral** is a high-performance, lightweight legacy Minecraft server implementation written entirely in Rust. Coral targets **Minecraft 1.8.9 (Protocol 47)** as its primary platform while laying the foundation for **Minecraft 1.7.10 compatibility** through native multi-version protocol support.
+**Coral** is a high-performance, lightweight legacy Minecraft server implementation written entirely in Rust. Coral targets **Minecraft 1.8 (Protocol 47)** as its primary platform while laying the foundation for **Minecraft 1.7.10 compatibility** through native multi-version protocol support.
 
 Built for performance and modern concurrency, Coral aims to provide a familiar Minecraft server experience without the limitations of the traditional JVM server stack.
 
@@ -30,7 +29,7 @@ Built for performance and modern concurrency, Coral aims to provide a familiar M
 ## ⚡ Features
 
 - **Memory Safe:** Powered by Rust's strict ownership model, eliminating data races and null pointer crashes.
-- **1.8.9 First:** Primary target is Minecraft 1.8.9 (Protocol 47).
+- **1.8 First:** Primary target is Minecraft 1.8 (Protocol 47).
 - **Native Multi-Version Support (Planned):** Designed to support multiple Minecraft protocol versions within a single server implementation.
 - **1.7.10 Planned:** Future support for Minecraft 1.7.10 clients and protocol compatibility.
 - **Bukkit-Friendly Plugins (Planned):** Planned Java plugin loader with a Bukkit-inspired API for seamless plugin development.

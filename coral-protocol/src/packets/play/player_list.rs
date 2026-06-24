@@ -3,7 +3,7 @@ use uuid::Uuid;
 use crate::{auth::ProfileProperty, packets::PacketOut};
 
 #[derive(Debug)]
-pub struct PlayerListItem {
+pub struct PlayerListItemAdd {
     pub uuid: Uuid,
     pub username: String,
     pub properties: Vec<ProfileProperty>,
@@ -11,7 +11,7 @@ pub struct PlayerListItem {
     pub ping: i32,
 }
 
-impl PacketOut for PlayerListItem {
+impl PacketOut for PlayerListItemAdd {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x38);
         writer.write_varint(0);
@@ -35,6 +35,20 @@ impl PacketOut for PlayerListItem {
         writer.write_varint(self.gamemode);
         writer.write_varint(self.ping);
         writer.write_bool(false);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerListItemRemove {
+    pub uuid: Uuid,
+}
+impl PacketOut for PlayerListItemRemove {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x38);
+        writer.write_varint(4);
+        writer.write_varint(1);
+        writer.write_uuid(&self.uuid);
         Ok(())
     }
 }

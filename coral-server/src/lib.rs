@@ -1,5 +1,6 @@
 pub mod banlist;
 pub mod bounding_box;
+pub mod effects;
 pub mod entity_tracker;
 pub mod items;
 pub mod mining;

@@ -45,6 +45,7 @@ impl PacketOut for PlayerPositionAndLook {
         Ok(())
     }
 }
+
 impl PacketIn for PlayerPositionAndLook {
     fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
     where
@@ -123,5 +124,48 @@ impl PacketIn for PlayerOnGround {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[derive(Debug)]
+pub struct PlayerMovements {
+    pub position: Option<(f64, f64, f64)>,
+    pub rotation: Option<(f32, f32)>,
+    pub on_ground: bool,
+}
+impl From<&PlayerPosition> for PlayerMovements {
+    fn from(p: &PlayerPosition) -> Self {
+        Self {
+            position: Some((p.x, p.y, p.z)),
+            rotation: None,
+            on_ground: p.on_ground,
+        }
+    }
+}
+impl From<&PlayerLook> for PlayerMovements {
+    fn from(p: &PlayerLook) -> Self {
+        Self {
+            position: None,
+            rotation: Some((p.yaw, p.pitch)),
+            on_ground: p.on_ground,
+        }
+    }
+}
+impl From<&PlayerPositionAndLook> for PlayerMovements {
+    fn from(p: &PlayerPositionAndLook) -> Self {
+        Self {
+            position: Some((p.x, p.y, p.z)),
+            rotation: Some((p.pitch, p.yaw)),
+            on_ground: p.on_ground,
+        }
+    }
+}
+impl From<&PlayerOnGround> for PlayerMovements {
+    fn from(p: &PlayerOnGround) -> Self {
+        Self {
+            position: None,
+            rotation: None,
+            on_ground: p.on_ground,
+        }
     }
 }

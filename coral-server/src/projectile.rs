@@ -16,4 +16,5 @@ pub struct Projectile {
 pub enum ProjectileKind {
     Arrow,
     FishingHook,
+    SplashPotion(i16),
 }

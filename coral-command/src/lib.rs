@@ -84,9 +84,10 @@ pub fn version_command() -> Command {
         name: "version".to_string(),
         description: "Show Coral version".to_string(),
         usage: "/verison".to_string(),
-        handler: make_handler(|_ctx| async move {
+        handler: make_handler(|_| async move {
             CommandResult::Success(
-                "§fThis server is running §d§lCoral§r for Minecraft 1.8.9".to_string(),
+                "§fThis server is running §d§lCoral§r for Minecraft Protocol 47 (1.8.x)"
+                    .to_string(),
             )
         }),
     }
