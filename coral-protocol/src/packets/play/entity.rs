@@ -96,9 +96,9 @@ impl PacketOut for SpawnPlayer {
         }
         */
 
-        writer.write_i32((self.x * 32.0) as i32);
-        writer.write_i32((self.y * 32.0) as i32);
-        writer.write_i32((self.z * 32.0) as i32);
+        writer.write_varint((self.x * 32.0) as i32);
+        writer.write_varint((self.y * 32.0) as i32);
+        writer.write_varint((self.z * 32.0) as i32);
         writer.write_byte(degrees_to_byte(self.yaw));
         writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_i16(self.current_item);

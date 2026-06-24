@@ -44,11 +44,11 @@ impl BoundingBox {
 
 pub struct EntityBounds;
 impl EntityBounds {
-    pub fn player() -> BoundingBox {
+    pub fn player(sneaking: bool) -> BoundingBox {
+        if sneaking {
+            return BoundingBox::new(0.6, 1.65);
+        }
         BoundingBox::new(0.6, 1.8)
-    }
-    pub fn player_sneaking() -> BoundingBox {
-        BoundingBox::new(0.6, 1.65)
     }
 
     pub fn item() -> BoundingBox {
