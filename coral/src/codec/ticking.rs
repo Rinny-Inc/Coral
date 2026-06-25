@@ -22,6 +22,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_tick(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
@@ -39,27 +40,27 @@ pub async fn handle_tick(
     tick_eating(
         framed,
         state,
-        &player_registry,
-        &item_registry,
-        &equip_tx,
-        &sound_tx,
+        player_registry,
+        item_registry,
+        equip_tx,
+        sound_tx,
     )
     .await;
     tick_item_pickup(
         framed,
         state,
-        &player_registry,
-        &item_positions,
-        &item_spawn_times,
-        &pickup_tx,
-        &equip_tx,
-        &sound_tx,
+        player_registry,
+        item_positions,
+        item_spawn_times,
+        pickup_tx,
+        equip_tx,
+        sound_tx,
     )
     .await;
-    tick_block_breaking_progress(state, &break_tx).await;
-    tick_food_and_regen(framed, state, &config, &player_registry, &chat_tx).await;
-    tick_effects(framed, state, &player_registry, &chat_tx).await;
-    tick_void_damage(framed, state, &player_registry, &chat_tx).await;
+    tick_block_breaking_progress(state, break_tx).await;
+    tick_food_and_regen(framed, state, config, player_registry, chat_tx).await;
+    tick_effects(framed, state, player_registry, chat_tx).await;
+    tick_void_damage(framed, state, player_registry, chat_tx).await;
 }
 
 async fn tick_block_breaking_progress(
@@ -94,7 +95,7 @@ async fn tick_void_damage(
             &mut state.food_saturation,
             &mut state.is_dead,
             4.0,
-            &player_registry,
+            player_registry,
             uuid,
         )
         .await;
@@ -108,6 +109,7 @@ async fn tick_void_damage(
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn tick_item_pickup(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
@@ -170,7 +172,7 @@ async fn tick_item_pickup(
                         if let Some(uuid) = state.uuid {
                             player_registry.update_held_item(uuid, *item_id).await;
                         }
-                        send_held_equip(&equip_tx, &state);
+                        send_held_equip(equip_tx, state);
                     }
                 }
             }
@@ -206,7 +208,7 @@ async fn tick_eating(
                 .unwrap_or(0);
             let effects = coral_server::items::potions::potion_effects(meta);
             for pe in effects {
-                apply_potion_effect(framed, state, &player_registry, pe).await;
+                apply_potion_effect(framed, state, player_registry, pe).await;
             }
             let hotbar_slot = state.held_slot as usize;
             state.inventory.slots[hotbar_slot] = None;
@@ -226,7 +228,7 @@ async fn tick_eating(
             if let Some(uuid) = state.uuid {
                 player_registry.update_held_item(uuid, -1).await;
             }
-            send_held_equip(&equip_tx, &state);
+            send_held_equip(equip_tx, state);
         } else if let Some((hunger, saturation)) = item_registry.food_value(state.held_item) {
             state.food = (state.food + hunger).min(20);
             state.food_saturation = (state.food_saturation + saturation).min(state.food as f32);
@@ -260,7 +262,7 @@ async fn tick_eating(
                         .update_held_item(uuid, state.held_item)
                         .await;
                 }
-                send_held_equip(&equip_tx, &state);
+                send_held_equip(equip_tx, state);
             }
             if let Some(uuid) = state.uuid {
                 player_registry

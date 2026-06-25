@@ -465,36 +465,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
-    let mut chat_rx = chat_tx.subscribe();
-    let mut join_rx = join_tx.subscribe();
-    let mut pos_rx = pos_tx.subscribe();
-    let mut gm_rx = gm_tx.subscribe();
-    let mut ping_rx = ping_tx.subscribe();
-    let mut block_rx = block_tx.subscribe();
-    let mut break_rx = break_tx.subscribe();
-    let mut anim_rx = anim_tx.subscribe();
-    let mut meta_rx = meta_tx.subscribe();
-    let mut dmg_rx = dmg_tx.subscribe();
-    let mut item_rx = item_tx.subscribe();
-    let mut despawn_rx = despawn_tx.subscribe();
-    let mut pickup_rx = pickup_tx.subscribe();
-    let mut time_rx = time_tx.subscribe();
-    let mut weather_rx = weather_tx.subscribe();
-    let mut tick_rx = tick_tx.subscribe();
-    let mut status_rx = status_tx.subscribe();
-    let mut equip_rx = equip_tx.subscribe();
-    let mut sound_rx = sound_tx.subscribe();
     let mut shutdown_rx = shutdown_tx.subscribe();
-    let mut particle_rx = particle_tx.subscribe();
-    let mut projectile_spawn_rx = projectile_spawn_tx.subscribe();
-    let mut projectile_move_rx = projectile_move_tx.subscribe();
-    let mut splash_effect_rx = splash_effect_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
     let mut framed = Framed::new(socket, codec);
-    let mut client_protocol = 1;
-    let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
+    let mut client_protocol = -1;
 
     let verify_token = generate_verify_token();
 
@@ -504,15 +480,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     if framed.codec().state == EnumProtocol::Login {
                         kick(&mut framed, "Server closed.").await;
                     }
-                    break;
+                    return;
                 }
                 result = framed.next() => {
                     let Some(result) = result else {
-                        break
+                        return
                     };
                     match result {
                         Ok(packet) => {
-                            //println!("INFO: Received packet: {:?}", packet);
+                            //println!("INFO: Received PRE-PLAY packet: {:?}", packet);
 
                             if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
                                 client_protocol = handshake.protocol_version;
@@ -521,8 +497,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             }
                             if packet.as_any().downcast_ref::<Request>().is_some() {
                                 let players = player_registry.get_all().await;
-                                let sample: Vec<(&str, String)> = players.iter().take(config.server.player_sample_size as usize).map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string())).collect();
-                                let sample_refs: Vec<(&str, &str)> = sample.iter().map(|(name, uuid)| (*name, uuid.as_str())).collect();
+                                let sample: Vec<(&str, String)> = players.iter()
+                                    .take(config.server.player_sample_size as usize)
+                                    .map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string()))
+                                    .collect();
+                                let sample_refs: Vec<(&str, &str)> = sample.iter()
+                                    .map(|(name, uuid)| (*name, uuid.as_str()))
+                                    .collect();
 
                                 let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
                                     client_protocol
@@ -554,17 +535,17 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 // TODO: connection throttled
                                 if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
                                     kick(&mut framed, "Unsupported version. Use 1.8.x").await;
-                                    break;
+                                    return;
                                 }
                                 if player_registry.get_online_count().await > config.server.max_players {
                                     kick(&mut framed, "Server is full!").await;
-                                    break;
+                                    return;
                                 }
                                 if let Some(ip) = peer_ip
                                     && let Some(ban) = banlist.read().await.is_ip_banned(&ip.ip())
                                 {
                                     kick(&mut framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
-                                    break;
+                                    return;
                                 }
                                 if config.server.online_mode {
                                     if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
@@ -584,11 +565,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         if decrypted_token != verify_token {
                                             kick(&mut framed, "Encryption Error!").await;
-                                            break;
+                                            return;
                                         }
                                         let username = match state.pending_username.take() {
                                             Some(u) => u,
-                                            None => break
+                                            None => return
                                         };
 
                                         let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
@@ -597,19 +578,19 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             Some(p) => p,
                                             None => {
                                                 kick(&mut framed, "Failed to verify username!").await;
-                                                break
+                                                return
                                             }
                                         };
                                         let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
                                         if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
                                             kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                            break;
+                                            return;
                                         }
                                         else if config.server.whitelisted
                                             && !whitelist.read().await.is_whitelisted(uuid)
                                         {
                                             kick(&mut framed, "You're not whitelisted on this server!").await;
-                                            break;
+                                            return;
                                         }
 
                                         framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
@@ -642,13 +623,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                         if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
                                             kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                            break;
+                                            return;
                                         }
                                         else if config.server.whitelisted
                                             && !whitelist.read().await.is_whitelisted(uuid)
                                         {
                                             kick(&mut framed, "You're not whitelisted on this server!").await;
-                                            break;
+                                            return;
                                         }
 
                                         let profile = AuthProfile {
@@ -684,7 +665,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if !is_normal_disconnect(&e) {
                                 eprintln!("Error processing packet: {:?}", e);
                             }
-                            break;
+                            return;
                         }
                 }
             }
@@ -693,6 +674,31 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             break;
         }
     }
+    let mut chat_rx = chat_tx.subscribe();
+    let mut join_rx = join_tx.subscribe();
+    let mut pos_rx = pos_tx.subscribe();
+    let mut gm_rx = gm_tx.subscribe();
+    let mut ping_rx = ping_tx.subscribe();
+    let mut block_rx = block_tx.subscribe();
+    let mut break_rx = break_tx.subscribe();
+    let mut anim_rx = anim_tx.subscribe();
+    let mut meta_rx = meta_tx.subscribe();
+    let mut dmg_rx = dmg_tx.subscribe();
+    let mut item_rx = item_tx.subscribe();
+    let mut despawn_rx = despawn_tx.subscribe();
+    let mut pickup_rx = pickup_tx.subscribe();
+    let mut time_rx = time_tx.subscribe();
+    let mut weather_rx = weather_tx.subscribe();
+    let mut tick_rx = tick_tx.subscribe();
+    let mut status_rx = status_tx.subscribe();
+    let mut equip_rx = equip_tx.subscribe();
+    let mut sound_rx = sound_tx.subscribe();
+    let mut particle_rx = particle_tx.subscribe();
+    let mut projectile_spawn_rx = projectile_spawn_tx.subscribe();
+    let mut projectile_move_rx = projectile_move_tx.subscribe();
+    let mut splash_effect_rx = splash_effect_tx.subscribe();
+
+    let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
     loop {
         tokio::select! {
