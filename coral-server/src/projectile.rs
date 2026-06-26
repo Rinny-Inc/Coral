@@ -18,3 +18,19 @@ pub enum ProjectileKind {
     FishingHook,
     SplashPotion(i16),
 }
+impl ProjectileKind {
+    pub fn entity_id(&self) -> u8 {
+        match self {
+            Self::Arrow => 60,
+            Self::FishingHook => 90,
+            Self::SplashPotion(_) => 73,
+        }
+    }
+
+    pub fn gravity(&self) -> f64 {
+        match self {
+            Self::Arrow | Self::SplashPotion(_) => 0.05,
+            Self::FishingHook => 0.03,
+        }
+    }
+}

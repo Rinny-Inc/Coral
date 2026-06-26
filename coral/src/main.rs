@@ -39,6 +39,31 @@ use coral_world::{
 
 mod codec;
 
+#[derive(Clone)]
+pub struct ServerContext {
+    packet_registry: Arc<PacketRegistry>,
+    player_registry: Arc<PlayerRegistry>,
+    item_registry: Arc<ItemRegistry>,
+    block_registry: Arc<BlockRegistry>,
+    server_icon: Arc<Option<String>>,
+    config: Arc<Config>,
+    dispatcher: Arc<CommandDispatcher>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
+    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    projectiles: Arc<RwLock<Vec<Projectile>>>,
+    channels: Channels,
+    world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
+    private_key: Arc<RsaPrivateKey>,
+    public_key_der: Arc<Vec<u8>>,
+    ops: Arc<RwLock<OpsFile>>,
+    whitelist: Arc<RwLock<WhitelistFile>>,
+    banlist: Arc<RwLock<BanList>>,
+    spawn_point: Arc<RwLock<(f64, f64, f64)>>,
+    world_dir: Arc<PathBuf>,
+}
+
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
 type JoinLeave = (Player, bool);
 type GamemodeUpdate = (Uuid, u8);
@@ -63,18 +88,7 @@ type ProjectileMove = (i32, f64, f64, f64);
 type SplashEffect = (Uuid, u8, u8, i32);
 
 #[derive(Clone)]
-pub struct ServerContext {
-    packet_registry: Arc<PacketRegistry>,
-    player_registry: Arc<PlayerRegistry>,
-    item_registry: Arc<ItemRegistry>,
-    block_registry: Arc<BlockRegistry>,
-    server_icon: Arc<Option<String>>,
-    config: Arc<Config>,
-    dispatcher: Arc<CommandDispatcher>,
-    entity_tracker: Arc<RwLock<EntityTracker>>,
-    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
-    item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
-    projectiles: Arc<RwLock<Vec<Projectile>>>,
+pub struct Channels {
     chat_tx: Arc<broadcast::Sender<String>>,
     join_tx: Arc<broadcast::Sender<JoinLeave>>,
     pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
@@ -99,15 +113,36 @@ pub struct ServerContext {
     projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
     projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
     splash_effect_tx: Arc<broadcast::Sender<SplashEffect>>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
-    private_key: Arc<RsaPrivateKey>,
-    public_key_der: Arc<Vec<u8>>,
-    ops: Arc<RwLock<OpsFile>>,
-    whitelist: Arc<RwLock<WhitelistFile>>,
-    banlist: Arc<RwLock<BanList>>,
-    spawn_point: Arc<RwLock<(f64, f64, f64)>>,
-    world_dir: Arc<PathBuf>,
+}
+impl Channels {
+    pub fn new() -> Self {
+        Self {
+            chat_tx: Arc::new(broadcast::channel::<String>(50).0),
+            join_tx: Arc::new(broadcast::channel::<JoinLeave>(16).0),
+            pos_tx: Arc::new(broadcast::channel::<PositionUpdate>(100).0),
+            gm_tx: Arc::new(broadcast::channel::<GamemodeUpdate>(16).0),
+            ping_tx: Arc::new(broadcast::channel::<PingUpdate>(16).0),
+            block_tx: Arc::new(broadcast::channel::<BlockUpdate>(100).0),
+            break_tx: Arc::new(broadcast::channel::<BreakAnimation>(100).0),
+            anim_tx: Arc::new(broadcast::channel::<AnimationUpdate>(100).0),
+            meta_tx: Arc::new(broadcast::channel::<MetadataUpdate>(100).0),
+            dmg_tx: Arc::new(broadcast::channel::<DamageEvent>(100).0),
+            item_tx: Arc::new(broadcast::channel::<ItemDrop>(1000).0),
+            despawn_tx: Arc::new(broadcast::channel::<DespawnEntity>(100).0),
+            pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
+            time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
+            weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
+            tick_tx: Arc::new(broadcast::channel(4).0),
+            status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
+            equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
+            sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
+            shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
+            particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
+            projectile_spawn_tx: Arc::new(broadcast::channel::<ProjectileSpawn>(100).0),
+            projectile_move_tx: Arc::new(broadcast::channel::<ProjectileMove>(200).0),
+            splash_effect_tx: Arc::new(broadcast::channel::<SplashEffect>(100).0),
+        }
+    }
 }
 
 #[tokio::main]
@@ -129,11 +164,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let server_icon = load_server_icon_file();
-    match &server_icon {
-        Some(_) => println!("Server icon loaded successfully"),
-        None => println!("No server icon found or invalid size"),
-    }
+    let server_icon = load_server_icon_file()
+        .inspect(|_| println!("Server icon loaded successfully"))
+        .or_else(|| {
+            println!("No server icon found or invalid size");
+            None
+        });
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
@@ -154,30 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
         item_positions: Arc::new(RwLock::new(HashMap::new())),
         projectiles: Arc::new(RwLock::new(Vec::new())),
-        chat_tx: Arc::new(broadcast::channel::<String>(50).0),
-        join_tx: Arc::new(broadcast::channel::<JoinLeave>(16).0),
-        pos_tx: Arc::new(broadcast::channel::<PositionUpdate>(100).0),
-        gm_tx: Arc::new(broadcast::channel::<GamemodeUpdate>(16).0),
-        ping_tx: Arc::new(broadcast::channel::<PingUpdate>(16).0),
-        block_tx: Arc::new(broadcast::channel::<BlockUpdate>(100).0),
-        break_tx: Arc::new(broadcast::channel::<BreakAnimation>(100).0),
-        anim_tx: Arc::new(broadcast::channel::<AnimationUpdate>(100).0),
-        meta_tx: Arc::new(broadcast::channel::<MetadataUpdate>(100).0),
-        dmg_tx: Arc::new(broadcast::channel::<DamageEvent>(100).0),
-        item_tx: Arc::new(broadcast::channel::<ItemDrop>(1000).0),
-        despawn_tx: Arc::new(broadcast::channel::<DespawnEntity>(100).0),
-        pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
-        time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
-        weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
-        tick_tx: Arc::new(broadcast::channel(4).0),
-        status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
-        equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
-        sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
-        shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
-        particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
-        projectile_spawn_tx: Arc::new(broadcast::channel::<ProjectileSpawn>(100).0),
-        projectile_move_tx: Arc::new(broadcast::channel::<ProjectileMove>(200).0),
-        splash_effect_tx: Arc::new(broadcast::channel::<SplashEffect>(100).0),
+        channels: Channels::new(),
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry: Arc::new(PlayerRegistry::new()),
@@ -205,23 +218,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    spawn_console_task(ctx.dispatcher.clone(), ctx.chat_tx.clone());
+    spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
     spawn_shutdown_task(
-        ctx.shutdown_tx.clone(),
+        ctx.channels.shutdown_tx.clone(),
         ctx.player_registry.clone(),
         ctx.world_blocks.clone(),
         world_dir.to_path_buf(),
         ctx.generator.clone(),
     );
-    spawn_tick_task(ctx.tick_tx.clone(), ctx.player_registry.clone());
-    spawn_world_time_task(ctx.time_tx.clone());
+    spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
+    spawn_world_time_task(ctx.channels.time_tx.clone());
 
     if !config.world.disable_weather {
-        spawn_weather_task(ctx.weather_tx.clone());
+        spawn_weather_task(ctx.channels.weather_tx.clone());
     }
 
     spawn_item_despawn_task(
-        ctx.despawn_tx.clone(),
+        ctx.channels.despawn_tx.clone(),
         config.world.item_despawn_seconds,
         ctx.item_spawn_times.clone(),
         ctx.item_positions.clone(),
@@ -229,13 +242,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_projectile_task(
         ctx.projectiles.clone(),
-        ctx.projectile_move_tx.clone(),
-        ctx.despawn_tx.clone(),
-        ctx.splash_effect_tx.clone(),
         ctx.world_blocks.clone(),
         ctx.generator.clone(),
         ctx.player_registry.clone(),
-        ctx.dmg_tx.clone(),
+        ctx.channels.clone(),
     );
 
     spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
@@ -415,13 +425,10 @@ fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
 #[allow(clippy::too_many_arguments)]
 fn spawn_projectile_task(
     projectiles: Arc<RwLock<Vec<Projectile>>>,
-    projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
-    despawn_tx: Arc<broadcast::Sender<i32>>,
-    splash_effect_tx: Arc<broadcast::Sender<SplashEffect>>,
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     player_registry: Arc<PlayerRegistry>,
-    dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
+    channels: Channels,
 ) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50));
@@ -438,11 +445,7 @@ fn spawn_projectile_task(
                     // ^^^^^ TODO: future me -> get players inside the chunks where the projectile is
                     proj.ticks_alive += 1;
 
-                    let gravity = match proj.kind {
-                        ProjectileKind::Arrow => 0.05,
-                        ProjectileKind::FishingHook => 0.03,
-                        ProjectileKind::SplashPotion(_) => 0.05,
-                    };
+                    let gravity = proj.kind.gravity();
                     let drag = 0.99;
 
                     proj.vy -= gravity;
@@ -529,7 +532,8 @@ fn spawn_projectile_task(
                                         target.food_saturation,
                                     )
                                     .await;
-                                dmg_tx
+                                channels
+                                    .dmg_tx
                                     .send((
                                         target.uuid,
                                         new_health,
@@ -558,13 +562,14 @@ fn spawn_projectile_task(
             };
 
             for mv in moves {
-                projectile_move_tx.send(mv).ok();
+                channels.projectile_move_tx.send(mv).ok();
             }
             for eid in to_remove {
-                despawn_tx.send(eid).ok();
+                channels.despawn_tx.send(eid).ok();
             }
             for (uuid, effect_id, amplifier, duration) in splash_effects {
-                splash_effect_tx
+                channels
+                    .splash_effect_tx
                     .send((uuid, effect_id, amplifier, duration))
                     .ok();
             }
@@ -572,6 +577,7 @@ fn spawn_projectile_task(
     });
 }
 
+// TODO: map error
 fn load_server_icon_file() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let icon_path = cwd.join("server-icon.png");

@@ -15,7 +15,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use crate::{
-    BreakAnimation, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect,
+    BreakAnimation, Channels, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect,
     codec::{
         Codec, PlayerState, apply_potion_effect, damage_player, remove_effect, send_held_equip,
         send_packet,
@@ -31,19 +31,15 @@ pub async fn handle_tick(
     config: &Config,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
-    chat_tx: &Arc<Sender<String>>,
-    equip_tx: &Arc<Sender<EquipmentUpdate>>,
-    break_tx: &Arc<Sender<BreakAnimation>>,
-    sound_tx: &Arc<Sender<SoundEffect>>,
-    pickup_tx: &Arc<Sender<ItemPickup>>,
+    channels: &Channels,
 ) {
     tick_eating(
         framed,
         state,
         player_registry,
         item_registry,
-        equip_tx,
-        sound_tx,
+        &channels.equip_tx,
+        &channels.sound_tx,
     )
     .await;
     tick_item_pickup(
@@ -52,15 +48,15 @@ pub async fn handle_tick(
         player_registry,
         item_positions,
         item_spawn_times,
-        pickup_tx,
-        equip_tx,
-        sound_tx,
+        &channels.pickup_tx,
+        &channels.equip_tx,
+        &channels.sound_tx,
     )
     .await;
-    tick_block_breaking_progress(state, break_tx).await;
-    tick_food_and_regen(framed, state, config, player_registry, chat_tx).await;
-    tick_effects(framed, state, player_registry, chat_tx).await;
-    tick_void_damage(framed, state, player_registry, chat_tx).await;
+    tick_block_breaking_progress(state, &channels.break_tx).await;
+    tick_food_and_regen(framed, state, config, player_registry, &channels.chat_tx).await;
+    tick_effects(framed, state, player_registry, &channels.chat_tx).await;
+    tick_void_damage(framed, state, player_registry, &channels.chat_tx).await;
 }
 
 async fn tick_block_breaking_progress(

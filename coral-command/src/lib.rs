@@ -1,5 +1,6 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
 use tokio::sync::RwLock;
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
@@ -85,10 +86,18 @@ pub fn version_command() -> Command {
         description: "Show Coral version".to_string(),
         usage: "/verison".to_string(),
         handler: make_handler(|_| async move {
-            CommandResult::Success(
-                "§fThis server is running §d§lCoral§r for Minecraft Protocol 47 (1.8.x)"
-                    .to_string(),
-            )
+            let msg = ChatAppender::new()
+                .add(ChatBuilder::new("This server is running ").color(ChatColor::White))
+                .add(
+                    ChatBuilder::new("Coral")
+                        .color(ChatColor::LightPurple)
+                        .bold()
+                        .click_url("https://github.com/Rinny-Inc/Coral")
+                        .hover_text("Open Coral Github Page"),
+                )
+                .add(ChatBuilder::new(" for Minecraft Protocol 47 (1.8.x)").color(ChatColor::White))
+                .build();
+            CommandResult::Success(msg)
         }),
     }
 }

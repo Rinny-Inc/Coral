@@ -408,6 +408,22 @@ impl PlayerState {
         equip_tx.send((self.entity_id, 3, chest, 1, 0)).ok();
         equip_tx.send((self.entity_id, 4, helmet, 1, 0)).ok();
     }
+
+    async fn try_retract_fishing_hook(
+        &mut self,
+        projectiles: &RwLock<Vec<Projectile>>,
+        despawn_tx: &broadcast::Sender<i32>,
+    ) -> bool {
+        let Some(hook_eid) = self.fishing_hook_eid.take() else {
+            return false;
+        };
+        projectiles
+            .write()
+            .await
+            .retain(|p| p.entity_id != hook_eid);
+        despawn_tx.send(hook_eid).ok();
+        true
+    }
 }
 
 pub async fn process(socket: TcpStream, ctx: ServerContext) {
@@ -423,30 +439,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         item_spawn_times,
         item_positions,
         projectiles,
-        chat_tx,
-        join_tx,
-        pos_tx,
-        gm_tx,
-        ping_tx,
-        block_tx,
-        break_tx,
-        anim_tx,
-        meta_tx,
-        dmg_tx,
-        item_tx,
-        despawn_tx,
-        pickup_tx,
-        time_tx,
-        weather_tx,
-        tick_tx,
-        status_tx,
-        equip_tx,
-        sound_tx,
-        shutdown_tx,
-        particle_tx,
-        projectile_spawn_tx,
-        projectile_move_tx,
-        splash_effect_tx,
+        channels,
         world_blocks,
         generator,
         private_key,
@@ -465,7 +458,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
-    let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut shutdown_rx = channels.shutdown_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
@@ -488,178 +481,180 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     };
                     match result {
                         Ok(packet) => {
-                            //println!("INFO: Received PRE-PLAY packet: {:?}", packet);
-
-                            if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
-                                client_protocol = handshake.protocol_version;
-                                framed.codec_mut().state = handshake.requested_protocol.clone();
-                                continue;
-                            }
-                            if packet.as_any().downcast_ref::<Request>().is_some() {
-                                let players = player_registry.get_all().await;
-                                let sample: Vec<(&str, String)> = players.iter()
-                                    .take(config.server.player_sample_size as usize)
-                                    .map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string()))
-                                    .collect();
-                                let sample_refs: Vec<(&str, &str)> = sample.iter()
-                                    .map(|(name, uuid)| (*name, uuid.as_str()))
-                                    .collect();
-
-                                let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                                    client_protocol
-                                } else {
-                                    -1
-                                };
-
-                                send_packet(
-                                    &mut framed,
-                                    Response::new(
-                                        &config.server.motd,
-                                        player_registry.get_online_count().await,
-                                        config.server.max_players,
-                                        server_protocol,
-                                        server_icon.as_deref(),
-                                        &sample_refs
-                                    ),
-                                )
-                                .await;
-                                continue;
-                            }
-
-                            if let Some(ping) = packet.as_any().downcast_ref::<Ping>() {
-                                send_packet(&mut framed, Pong { time: ping.time }).await;
-                                continue;
-                            }
-
-                            if framed.codec().state == EnumProtocol::Login {
-                                // TODO: connection throttled
-                                if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                                    kick(&mut framed, "Unsupported version. Use 1.8.x").await;
-                                    return;
-                                }
-                                if player_registry.get_online_count().await > config.server.max_players {
-                                    kick(&mut framed, "Server is full!").await;
-                                    return;
-                                }
-                                if let Some(ip) = peer_ip
-                                    && let Some(ban) = banlist.read().await.is_ip_banned(&ip.ip())
-                                {
-                                    kick(&mut framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
-                                    return;
-                                }
-                                if config.server.online_mode {
-                                    if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                        state.pending_username = Some(login_start.username.clone());
-
-                                        send_packet(&mut framed, EncryptionRequest {
-                                            server_id: "".to_string(),
-                                            public_key: public_key_der.to_vec(),
-                                            verify_token: verify_token.clone(),
-                                        }).await;
-                                        continue;
+                            match framed.codec().state {
+                                EnumProtocol::Handshaking => {
+                                    if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
+                                        client_protocol = handshake.protocol_version;
+                                        framed.codec_mut().state = handshake.requested_protocol.clone();
                                     }
+                                }
+                                EnumProtocol::Status => {
+                                    if packet.as_any().downcast_ref::<Request>().is_some() {
+                                        let players = player_registry.get_all().await;
+                                        let sample: Vec<(&str, String)> = players.iter()
+                                            .take(config.server.player_sample_size as usize)
+                                            .map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string()))
+                                            .collect();
+                                        let sample_refs: Vec<(&str, &str)> = sample.iter()
+                                            .map(|(name, uuid)| (*name, uuid.as_str()))
+                                            .collect();
 
-                                    if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
-                                        let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
-                                        let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
-
-                                        if decrypted_token != verify_token {
-                                            kick(&mut framed, "Encryption Error!").await;
-                                            return;
-                                        }
-                                        let username = match state.pending_username.take() {
-                                            Some(u) => u,
-                                            None => return
+                                        let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
+                                            client_protocol
+                                        } else {
+                                            -1
                                         };
 
-                                        let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
+                                        send_packet(
+                                            &mut framed,
+                                            Response::new(
+                                                &config.server.motd,
+                                                player_registry.get_online_count().await,
+                                                config.server.max_players,
+                                                server_protocol,
+                                                server_icon.as_deref(),
+                                                &sample_refs
+                                            ),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    if let Some(ping) = packet.as_any().downcast_ref::<Ping>() {
+                                        send_packet(&mut framed, Pong { time: ping.time }).await;
+                                        continue;
+                                    }
+                                }
+                                EnumProtocol::Login => {
+                                    // TODO: connection throttled
+                                    if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
+                                        kick(&mut framed, "Unsupported version. Use 1.8.x").await;
+                                        return;
+                                    }
+                                    if player_registry.get_online_count().await > config.server.max_players {
+                                        kick(&mut framed, "Server is full!").await;
+                                        return;
+                                    }
+                                    if let Some(ip) = peer_ip
+                                        && let Some(ban) = banlist.read().await.is_ip_banned(&ip.ip())
+                                    {
+                                        kick(&mut framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
+                                        return;
+                                    }
+                                    if config.server.online_mode {
+                                        if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                            state.pending_username = Some(login_start.username.clone());
 
-                                        let profile = match authenticate(&username, &server_hash).await {
-                                            Some(p) => p,
-                                            None => {
-                                                kick(&mut framed, "Failed to verify username!").await;
-                                                return
+                                            send_packet(&mut framed, EncryptionRequest {
+                                                server_id: "".to_string(),
+                                                public_key: public_key_der.to_vec(),
+                                                verify_token: verify_token.clone(),
+                                            }).await;
+                                            continue;
+                                        }
+
+                                        if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
+                                            let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
+                                            let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
+
+                                            if decrypted_token != verify_token {
+                                                kick(&mut framed, "Encryption Error!").await;
+                                                return;
                                             }
-                                        };
-                                        let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
-                                        if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
-                                            kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                            return;
-                                        }
-                                        else if config.server.whitelisted
-                                            && !whitelist.read().await.is_whitelisted(uuid)
-                                        {
-                                            kick(&mut framed, "You're not whitelisted on this server!").await;
-                                            return;
-                                        }
+                                            let username = match state.pending_username.take() {
+                                                Some(u) => u,
+                                                None => return
+                                            };
 
-                                        framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
+                                            let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
 
-                                        make_player_join(&mut framed,
-                                            &mut state,
-                                            uuid,
-                                            profile,
-                                            client_protocol,
-                                            config.server.max_players as u8,
-                                            &peer_ip,
-                                            &player_registry,
-                                            &join_tx,
-                                            &chat_tx,
-                                            &world_blocks,
-                                            &generator,
-                                            &entity_tracker,
-                                            &config,
-                                            &spawn_point,
-                                            &world_dir
-                                        ).await;
-                                        continue;
+                                            let profile = match authenticate(&username, &server_hash).await {
+                                                Some(p) => p,
+                                                None => {
+                                                    kick(&mut framed, "Failed to verify username!").await;
+                                                    return
+                                                }
+                                            };
+                                            let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
+                                            if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
+                                                kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
+                                                return;
+                                            }
+                                            else if config.server.whitelisted
+                                                && !whitelist.read().await.is_whitelisted(uuid)
+                                            {
+                                                kick(&mut framed, "You're not whitelisted on this server!").await;
+                                                return;
+                                            }
+
+                                            framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
+
+                                            make_player_join(&mut framed,
+                                                &mut state,
+                                                uuid,
+                                                profile,
+                                                client_protocol,
+                                                config.server.max_players as u8,
+                                                &peer_ip,
+                                                &player_registry,
+                                                &channels.join_tx,
+                                                &channels.chat_tx,
+                                                &world_blocks,
+                                                &generator,
+                                                &entity_tracker,
+                                                &config,
+                                                &spawn_point,
+                                                &world_dir
+                                            ).await;
+                                            continue;
+                                        }
+                                    } else {
+                                        if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                            let uuid = Uuid::new_v3(
+                                                &Uuid::NAMESPACE_DNS,
+                                                format!("OfflinePlayer:{}", login_start.username).as_bytes(),
+                                            );
+
+                                            if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
+                                                kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
+                                                return;
+                                            }
+                                            else if config.server.whitelisted
+                                                && !whitelist.read().await.is_whitelisted(uuid)
+                                            {
+                                                kick(&mut framed, "You're not whitelisted on this server!").await;
+                                                return;
+                                            }
+
+                                            let profile = AuthProfile {
+                                                uuid: uuid.to_string(),
+                                                username: login_start.username.clone(),
+                                                properties: vec![]
+                                            };
+
+                                            make_player_join(&mut framed,
+                                                &mut state,
+                                                uuid,
+                                                profile,
+                                                client_protocol,
+                                                config.server.max_players as u8,
+                                                &peer_ip,
+                                                &player_registry,
+                                                &channels.join_tx,
+                                                &channels.chat_tx,
+                                                &world_blocks,
+                                                &generator,
+                                                &entity_tracker,
+                                                &config,
+                                                &spawn_point,
+                                                &world_dir
+                                            ).await;
+                                            continue;
+                                        }
                                     }
-                                } else {
-                                    if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                        let uuid = Uuid::new_v3(
-                                            &Uuid::NAMESPACE_DNS,
-                                            format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                        );
-
-                                        if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
-                                            kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                            return;
-                                        }
-                                        else if config.server.whitelisted
-                                            && !whitelist.read().await.is_whitelisted(uuid)
-                                        {
-                                            kick(&mut framed, "You're not whitelisted on this server!").await;
-                                            return;
-                                        }
-
-                                        let profile = AuthProfile {
-                                            uuid: uuid.to_string(),
-                                            username: login_start.username.clone(),
-                                            properties: vec![]
-                                        };
-
-                                        make_player_join(&mut framed,
-                                            &mut state,
-                                            uuid,
-                                            profile,
-                                            client_protocol,
-                                            config.server.max_players as u8,
-                                            &peer_ip,
-                                            &player_registry,
-                                            &join_tx,
-                                            &chat_tx,
-                                            &world_blocks,
-                                            &generator,
-                                            &entity_tracker,
-                                            &config,
-                                            &spawn_point,
-                                            &world_dir
-                                        ).await;
-                                        continue;
-                                    }
+                                    // TODO: check login from another location
                                 }
-                                // TODO: check login from another location
-                            };
+                                _ => {}
+                            }
                         }
                         Err(e) => {
                             if !is_normal_disconnect(&e) {
@@ -674,29 +669,29 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             break;
         }
     }
-    let mut chat_rx = chat_tx.subscribe();
-    let mut join_rx = join_tx.subscribe();
-    let mut pos_rx = pos_tx.subscribe();
-    let mut gm_rx = gm_tx.subscribe();
-    let mut ping_rx = ping_tx.subscribe();
-    let mut block_rx = block_tx.subscribe();
-    let mut break_rx = break_tx.subscribe();
-    let mut anim_rx = anim_tx.subscribe();
-    let mut meta_rx = meta_tx.subscribe();
-    let mut dmg_rx = dmg_tx.subscribe();
-    let mut item_rx = item_tx.subscribe();
-    let mut despawn_rx = despawn_tx.subscribe();
-    let mut pickup_rx = pickup_tx.subscribe();
-    let mut time_rx = time_tx.subscribe();
-    let mut weather_rx = weather_tx.subscribe();
-    let mut tick_rx = tick_tx.subscribe();
-    let mut status_rx = status_tx.subscribe();
-    let mut equip_rx = equip_tx.subscribe();
-    let mut sound_rx = sound_tx.subscribe();
-    let mut particle_rx = particle_tx.subscribe();
-    let mut projectile_spawn_rx = projectile_spawn_tx.subscribe();
-    let mut projectile_move_rx = projectile_move_tx.subscribe();
-    let mut splash_effect_rx = splash_effect_tx.subscribe();
+    let mut chat_rx = channels.chat_tx.subscribe();
+    let mut join_rx = channels.join_tx.subscribe();
+    let mut pos_rx = channels.pos_tx.subscribe();
+    let mut gm_rx = channels.gm_tx.subscribe();
+    let mut ping_rx = channels.ping_tx.subscribe();
+    let mut block_rx = channels.block_tx.subscribe();
+    let mut break_rx = channels.break_tx.subscribe();
+    let mut anim_rx = channels.anim_tx.subscribe();
+    let mut meta_rx = channels.meta_tx.subscribe();
+    let mut dmg_rx = channels.dmg_tx.subscribe();
+    let mut item_rx = channels.item_tx.subscribe();
+    let mut despawn_rx = channels.despawn_tx.subscribe();
+    let mut pickup_rx = channels.pickup_tx.subscribe();
+    let mut time_rx = channels.time_tx.subscribe();
+    let mut weather_rx = channels.weather_tx.subscribe();
+    let mut tick_rx = channels.tick_tx.subscribe();
+    let mut status_rx = channels.status_tx.subscribe();
+    let mut equip_rx = channels.equip_tx.subscribe();
+    let mut sound_rx = channels.sound_tx.subscribe();
+    let mut particle_rx = channels.particle_tx.subscribe();
+    let mut projectile_spawn_rx = channels.projectile_spawn_tx.subscribe();
+    let mut projectile_move_rx = channels.projectile_move_tx.subscribe();
+    let mut splash_effect_rx = channels.splash_effect_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -724,11 +719,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     &config,
                     &item_spawn_times,
                     &item_positions,
-                    &chat_tx,
-                    &equip_tx,
-                    &break_tx,
-                    &sound_tx,
-                    &pickup_tx,
+                    &channels,
                 ).await;
             }
             Ok((sender_eid, id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
@@ -774,11 +765,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 apply_potion_effect(&mut framed, &mut state, &player_registry, pe).await;
             }
             Ok((eid, owner_eid, kind, x, y, z, vx, vy, vz)) = projectile_spawn_rx.recv() => {
-                let object_type = match kind {
-                    ProjectileKind::Arrow => 60,
-                    ProjectileKind::FishingHook => 90,
-                    ProjectileKind::SplashPotion(_) => 73,
-                };
+                let object_type = kind.entity_id();
+
                 send_packet(&mut framed, SpawnObject {
                     entity_id: eid,
                     object_type,
@@ -887,7 +875,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                     ).await;
 
                     if !land_block.is_air() {
-                        particle_tx.send((
+                        channels.particle_tx.send((
                             state.entity_id,
                             37,
                             x as f32,
@@ -917,7 +905,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         let behind_x = x + yaw_rad.sin() * 0.2;
                         let behind_z = z - yaw_rad.cos() * 0.2;
 
-                        particle_tx.send((
+                        channels.particle_tx.send((
                             state.entity_id,
                             37,
                             behind_x as f32,
@@ -1002,34 +990,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             continue;
                         }
                     }
-                    send_packet(&mut framed, SpawnPlayer {
-                        entity_id: player.entity_id,
-                        uuid: player.uuid,
-                        //username: player.username.clone(),
-                        properties: player.properties.clone(),
-                        x: player.x,
-                        y: player.y,
-                        z: player.z,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                        current_item: 0
-                    }).await;
-
-                    send_packet(&mut framed, EntityMetadata {
-                        entity_id: player.entity_id,
-                        entity_flags: player.entity_flags(),
-                        skin_parts: player.skin_parts
-                    }).await;
-
-                    if player.held_item_id != -1 {
-                        send_packet(&mut framed, EntityEquipment {
-                            entity_id: player.entity_id,
-                            slot: 0,
-                            item_id: player.held_item_id,
-                            count: 1,
-                            metadata: 0
-                        }).await;
-                    }
+                    send_spawn_player(&mut framed, &player).await;
                 }
             }
             Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
@@ -1063,9 +1024,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         let magnitude = (dx * dx + dz * dz).sqrt().max(0.0001);
 
                         let horizontal = 0.4f64;
-                        let mut vx = -(dx / magnitude) * horizontal;
+                        let mut vx = (dx / magnitude) * horizontal;
                         let mut vy = 0.2f64;
-                        let mut vz = -(dz / magnitude) * horizontal;
+                        let mut vz = (dz / magnitude) * horizontal;
 
                         if attacker.is_sprinting {
                             let yaw_rad = attacker.yaw * std::f32::consts::PI / 180.0;
@@ -1145,7 +1106,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 state.latency_ms = sent_time.elapsed().as_millis() as u32;
                                 if let Some(uuid) = state.uuid {
                                     player_registry.update_latency(uuid, state.latency_ms).await;
-                                    ping_tx.send((uuid, state.latency_ms)).ok();
+                                    channels.ping_tx.send((uuid, state.latency_ms)).ok();
                                 }
                             }
                             continue;
@@ -1162,13 +1123,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 player_registry.update_held_slot(uuid, slot).await;
                                 player_registry.update_held_item(uuid, state.held_item).await;
                             }
-                            send_held_equip(&equip_tx, &state);
+                            send_held_equip(&channels.equip_tx, &state);
                             state.eating = None;
                             state.bow_charging = None;
-                            if let Some(hook_eid) = state.fishing_hook_eid.take() {
-                                projectiles.write().await.retain(|p| p.entity_id != hook_eid);
-                                despawn_tx.send(hook_eid).ok();
-                            }
+                            state.try_retract_fishing_hook(&projectiles, &channels.despawn_tx).await;
                             continue;
                         }
 
@@ -1177,8 +1135,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 0 if state.gamemode == 1 => {
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
                                     world_blocks.set(dig.x, dig.y, dig.z, Block::air(), &generator).await;
-                                    block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
-                                    sound_tx.send((
+                                    channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                    channels.sound_tx.send((
                                         block_break_sound(block.id).to_string(),
                                         dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
                                         1.0, 63
@@ -1191,11 +1149,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
                                     state.breaking_started_tick = state.tick_count;
                                     state.breaking_required_ticks = required;
-                                    break_tx.send((state.entity_id, dig.x, dig.y as i32, dig.z, 0)).ok();
+                                    channels.break_tx.send((state.entity_id, dig.x, dig.y as i32, dig.z, 0)).ok();
                                 }
                                 1 => {
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
-                                        break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
+                                        channels.break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
                                     }
                                 }
                                 2 if state.gamemode == 0 => {
@@ -1213,20 +1171,20 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         let elapsed = (state.tick_count - state.breaking_started_tick).max(0) as u32;
 
                                         if elapsed < required_ticks {
-                                            block_tx.send((bx, by, bz, block.id as i32, block.metadata)).ok();
+                                            channels.block_tx.send((bx, by, bz, block.id as i32, block.metadata)).ok();
                                             continue;
                                         }
                                         world_blocks.set(bx, by as u8, bz, Block::air(), &generator).await;
-                                        block_tx.send((
+                                        channels.block_tx.send((
                                             bx,
                                             by,
                                             bz,
                                             0,
                                             0
                                         )).ok();
-                                        break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
-                                        particle_tx.send((state.entity_id, 37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
-                                        sound_tx.send((
+                                        channels.break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
+                                        channels.particle_tx.send((state.entity_id, 37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
+                                        channels.sound_tx.send((
                                             block_break_sound(block.id).to_string(),
                                             bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
                                             1.0, 63
@@ -1249,7 +1207,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                                 let x = bx as f64 + 0.5;
                                                 let y = by as f64 + 0.5;
                                                 let z = bz as f64 + 0.5;
-                                                item_tx.send((
+                                                channels.item_tx.send((
                                                     drop_eid,
                                                     x, y, z,
                                                     drop_id,
@@ -1272,7 +1230,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }
                                     }
                                     let broke = state.damage_item(1, &item_registry);
-                                    sync_held_slot(&mut framed, &mut state, &player_registry, &equip_tx, broke).await;
+                                    sync_held_slot(&mut framed, &mut state, &player_registry, &channels.equip_tx, broke).await;
                                 }
                                 3 | 4 => {
                                     let hotbar_slot = state.held_slot as usize;
@@ -1320,7 +1278,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         if let Some(uuid) = state.uuid {
                                             player_registry.update_held_item(uuid, state.held_item).await;
                                         }
-                                        send_held_equip(&equip_tx, &state);
+                                        send_held_equip(&channels.equip_tx, &state);
 
                                         if let Some(p) = player_registry.get(&state.uuid.unwrap_or_default()).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
@@ -1329,7 +1287,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
 
                                             let drop_eid = next_entity_id();
-                                            item_tx.send((
+                                            channels.item_tx.send((
                                                 drop_eid,
                                                 drop_x, drop_y, drop_z,
                                                 dropped.item_id,
@@ -1386,12 +1344,12 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             };
 
                                             projectiles.write().await.push(proj.clone());
-                                            projectile_spawn_tx.send((
+                                            channels.projectile_spawn_tx.send((
                                                 arrow_eid, state.entity_id, ProjectileKind::Arrow,
                                                 proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
                                             )).ok();
 
-                                            sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();
+                                            channels.sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();
 
                                             if state.gamemode == 0 {
                                                 state.consume_arrow_from_inventory();
@@ -1428,7 +1386,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             };
 
                                             projectiles.write().await.push(proj.clone());
-                                            projectile_spawn_tx.send((
+                                            channels.projectile_spawn_tx.send((
                                                 proj_eid, state.entity_id,
                                                 ProjectileKind::SplashPotion(meta),
                                                 proj.x, proj.y, proj.z,
@@ -1445,7 +1403,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                             if let Some(uuid) = state.uuid {
                                                 player_registry.update_held_item(uuid, -1).await;
                                             }
-                                            send_held_equip(&equip_tx, &state);
+                                            send_held_equip(&channels.equip_tx, &state);
                                         }
                                     }
                                 }
@@ -1461,7 +1419,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     && state.eating.is_none()
                                 {
                                     state.eating = Some(Instant::now());
-                                    anim_tx.send((state.entity_id, 3)).ok();
+                                    channels.anim_tx.send((state.entity_id, 3)).ok();
                                 }
 
                                 match state.held_item {
@@ -1470,10 +1428,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         continue;
                                     }
                                     346 => {
-                                        if let Some(hook_eid) = state.fishing_hook_eid.take() {
-                                            projectiles.write().await.retain(|p| p.entity_id != hook_eid);
-                                            despawn_tx.send(hook_eid).ok();
-                                        } else if let Some(uuid) = state.uuid
+                                        if !state.try_retract_fishing_hook(&projectiles, &channels.despawn_tx).await
+                                            && let Some(uuid) = state.uuid
                                             && let Some(p) = player_registry.get(&uuid).await
                                         {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
@@ -1497,14 +1453,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                                 ticks_alive: 0,
                                             };
                                             projectiles.write().await.push(proj.clone());
-                                            projectile_spawn_tx.send((
+                                            channels.projectile_spawn_tx.send((
                                                 hook_eid, state.entity_id, ProjectileKind::FishingHook,
                                                 proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
                                             )).ok();
 
                                             state.fishing_hook_eid = Some(hook_eid);
                                         }
-                                        anim_tx.send((state.entity_id, 0)).ok();
+                                        channels.anim_tx.send((state.entity_id, 0)).ok();
                                         continue;
                                     }
                                     373 => {
@@ -1514,7 +1470,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         if !is_splash {
                                             if state.eating.is_none() {
                                                 state.eating = Some(Instant::now());
-                                                anim_tx.send((state.entity_id, 3)).ok();
+                                                channels.anim_tx.send((state.entity_id, 3)).ok();
                                             }
                                             continue;
                                         }
@@ -1576,15 +1532,15 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     if let Some(uuid) = state.uuid {
                                         player_registry.update_held_item(uuid, state.held_item).await;
                                     }
-                                    send_held_equip(&equip_tx, &state);
+                                    send_held_equip(&channels.equip_tx, &state);
                                 } else {
                                     continue;
                                 }
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0), &generator).await;
-                            block_tx.send((tx, ty, tz, block_id, 0)).ok();
-                            sound_tx.send((
+                            channels.block_tx.send((tx, ty, tz, block_id, 0)).ok();
+                            channels.sound_tx.send((
                                 block_break_sound(block_id as u8).to_string(),
                                 tx as f64 + 0.5, ty as f64 + 0.5, tz as f64 + 0.5,
                                 1.0, 63
@@ -1593,7 +1549,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }
 
                         if packet.as_any().downcast_ref::<ArmAnimation>().is_some() {
-                            anim_tx.send((state.entity_id, 0)).ok();
+                            channels.anim_tx.send((state.entity_id, 0)).ok();
                             continue;
                         }
 
@@ -1615,13 +1571,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                 match dispatcher.dispatch(ctx).await {
                                     CommandResult::Success(msg) => {
-                                        send_packet(&mut framed, ChatBuilder::new(&msg).into_packet()).await;
+                                        send_packet(&mut framed, ChatMessageOut::from_json(&msg)).await;
                                     }
                                     CommandResult::Error(msg) => {
                                         send_packet(&mut framed, ChatBuilder::new(&msg).color(ChatColor::Red).into_packet()).await;
                                     }
                                     CommandResult::Broadcast(msg) => {
-                                        chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
+                                        channels.chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
                                     }
                                     CommandResult::None => {}
                                 }
@@ -1637,7 +1593,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 }
                                 let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
                                 //println!("[CHAT] {}", json);
-                                chat_tx.send(json).ok();
+                                channels.chat_tx.send(json).ok();
                             }
                             continue;
                         }
@@ -1705,9 +1661,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
                                 }
                             }
-                            handle_landing(&mut framed, &mut state, &player_registry, &chat_tx, &sound_tx, uuid, x, y, z, mv.on_ground).await;
+                            handle_landing(&mut framed, &mut state, &player_registry, &channels.chat_tx, &channels.sound_tx, uuid, x, y, z, mv.on_ground).await;
                             player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
-                            pos_tx.send((uuid, state.entity_id, x, y, z, yaw, pitch, mv.on_ground)).ok();
+                            channels.pos_tx.send((uuid, state.entity_id, x, y, z, yaw, pitch, mv.on_ground)).ok();
                             continue;
                         }
 
@@ -1745,11 +1701,11 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     if let Some(uuid) = state.uuid {
                                         player_registry.update_held_item(uuid, state.held_item).await;
                                     }
-                                    send_held_equip(&equip_tx, &state);
+                                    send_held_equip(&channels.equip_tx, &state);
                                 }
 
                                 if (5..=8).contains(&idx) {
-                                    state.sync_armor(&player_registry, &equip_tx).await;
+                                    state.sync_armor(&player_registry, &channels.equip_tx).await;
                                 }
                             }
                             continue;
@@ -1765,7 +1721,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(idx) = Inventory::packet_to_internal(click.slot)
                                 && (5..=8).contains(&idx)
                             {
-                                state.sync_armor(&player_registry, &equip_tx).await;
+                                state.sync_armor(&player_registry, &channels.equip_tx).await;
                             }
                             continue;
                         }
@@ -1852,7 +1808,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
 
                                     if let Some(player) = player_registry.get(&uuid).await {
-                                        meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
+                                        channels.meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
                                     }
                                 }
                             }
@@ -1873,7 +1829,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         let reach = if state.gamemode == 1 {
                                             5.0
                                         } else {
-                                            3.0
+                                            4.0
                                         };
                                         let dx = me.x - target.x;
                                         let dy = me.y - target.y;
@@ -1916,29 +1872,29 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
 
                                         if new_health <= 0.0 {
-                                            chat_tx.send(ChatBuilder::plain_json(&format!(
+                                            channels.chat_tx.send(ChatBuilder::plain_json(&format!(
                                                 "{} was slain by {}",
                                                 target.username,
                                                 state.name.clone().unwrap_or_default()
                                             ))).ok();
                                         }
 
-                                        dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                        channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
 
                                         let broke = state.damage_item(2, &item_registry);
-                                        sync_held_slot(&mut framed, &mut state, &player_registry, &equip_tx, broke).await;
+                                        sync_held_slot(&mut framed, &mut state, &player_registry, &channels.equip_tx, broke).await;
 
-                                        sound_tx.send((
+                                        channels.sound_tx.send((
                                             "game.player.hurt".to_string(),
                                             target.x, target.y, target.z,
                                             1.0, 63
                                         )).ok();
-                                        status_tx.send((use_entity.target_entity_id, 2)).ok();
-                                        anim_tx.send((use_entity.target_entity_id, 1)).ok();
+                                        channels.status_tx.send((use_entity.target_entity_id, 2)).ok();
+                                        channels.anim_tx.send((use_entity.target_entity_id, 1)).ok();
 
                                         if is_critical {
-                                            anim_tx.send((state.entity_id, 4)).ok();
-                                            particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
+                                            channels.anim_tx.send((state.entity_id, 4)).ok();
+                                            channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
                                         }
                                     }
                                 }
@@ -1957,7 +1913,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if let Some(uuid) = state.uuid {
                                 player_registry.update_skin_parts(uuid, settings.skin_parts).await;
                             }
-                            meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
+                            channels.meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
                             continue;
                         }
 
@@ -2008,12 +1964,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 inventory: inventory_data,
             };
             save_player_data(&world_dir, &uuid, &data).await;
-            join_tx.send((p, false)).ok();
+            channels.join_tx.send((p, false)).ok();
         }
         player_registry.remove(&uuid).await;
         entity_tracker.write().await.untrack(state.entity_id);
         if !player_registry.players.read().await.is_empty() {
-            chat_tx
+            channels
+                .chat_tx
                 .send(ChatBuilder::colored_json(
                     &format!("{} left the game", name),
                     ChatColor::Yellow,
@@ -2474,6 +2431,45 @@ async fn send_player_equipment(
     }
 }
 
+async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &Player) {
+    send_packet(
+        framed,
+        SpawnPlayer {
+            entity_id: player.entity_id,
+            uuid: player.uuid,
+            //username: p.username.clone(),
+            properties: player.properties.clone(),
+            x: player.x,
+            y: player.y,
+            z: player.z,
+            yaw: player.yaw,
+            pitch: player.pitch,
+            current_item: 0,
+        },
+    )
+    .await;
+    send_packet(
+        framed,
+        EntityMetadata {
+            entity_id: player.entity_id,
+            entity_flags: player.entity_flags(),
+            skin_parts: player.skin_parts,
+        },
+    )
+    .await;
+
+    send_player_equipment(
+        framed,
+        player.entity_id,
+        player.held_item_id,
+        player.helmet,
+        player.chestplate,
+        player.leggings,
+        player.boots,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
@@ -2704,7 +2700,6 @@ async fn make_player_join(
             ChatColor::Yellow,
         ))
         .ok();
-
     println!(
         "[INFO] {}[/{}] logged in with entity id {}, at ([DEV] {}, {}, {})",
         profile.username,
@@ -2722,42 +2717,7 @@ async fn make_player_join(
         if p.uuid == uuid {
             continue;
         }
-        send_packet(
-            framed,
-            SpawnPlayer {
-                entity_id: p.entity_id,
-                uuid: p.uuid,
-                //username: p.username.clone(),
-                properties: p.properties.clone(),
-                x: p.x,
-                y: p.y,
-                z: p.z,
-                yaw: p.yaw,
-                pitch: p.pitch,
-                current_item: 0,
-            },
-        )
-        .await;
-        send_packet(
-            framed,
-            EntityMetadata {
-                entity_id: p.entity_id,
-                entity_flags: p.entity_flags(),
-                skin_parts: p.skin_parts,
-            },
-        )
-        .await;
-
-        send_player_equipment(
-            framed,
-            p.entity_id,
-            p.held_item_id,
-            p.helmet,
-            p.chestplate,
-            p.leggings,
-            p.boots,
-        )
-        .await;
+        send_spawn_player(framed, &p).await;
     }
 
     send_packet(
