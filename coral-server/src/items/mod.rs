@@ -65,7 +65,6 @@ pub trait Item: Send + Sync {
 #[derive(Debug, Clone, PartialEq)]
 pub enum UseAction {
     Eat,
-    Drink,
     Bow,
     Block,
 }

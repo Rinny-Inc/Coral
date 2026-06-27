@@ -3,6 +3,7 @@ use std::{
     sync::atomic::{AtomicI32, Ordering::Relaxed},
 };
 
+use coral_types::GameMode;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -52,8 +53,17 @@ impl PlayerRegistry {
     pub async fn get(&self, uuid: &Uuid) -> Option<Player> {
         self.players.read().await.get(uuid).cloned()
     }
+    // TODO: can be 0(1) using a HashMap<i32, Uuid>
+    pub async fn get_by_entity_id(&self, entity_id: i32) -> Option<Player> {
+        self.players
+            .read()
+            .await
+            .values()
+            .find(|p| p.entity_id == entity_id)
+            .cloned()
+    }
 
-    pub async fn update_gamemode(&self, uuid: Uuid, gamemode: u8) {
+    pub async fn update_gamemode(&self, uuid: Uuid, gamemode: GameMode) {
         if let Some(player) = self.players.write().await.get_mut(&uuid) {
             player.gamemode = gamemode;
         }

@@ -6,14 +6,17 @@ use std::time::{Duration, Instant};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral_server::banlist::BanList;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::items::ItemRegistry;
 use coral_server::items::armor::{apply_armor_reduction, total_defense};
 use coral_server::items::drops::block_drop;
 use coral_server::items::potions::PotionEffect;
 use coral_server::mining::break_time_ticks;
+use coral_server::ops::OpsFile;
 use coral_server::projectile::{Projectile, ProjectileKind};
-use coral_types::ToolMaterial;
+use coral_server::whitelist::WhitelistFile;
+use coral_types::{GameMode, ToolMaterial};
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::{PlayerData, load_player_data, save_player_data};
 use futures::SinkExt;
@@ -209,7 +212,7 @@ impl Encoder<Box<dyn PacketOut>> for Codec {
         item.encode(&mut writer)?;
         let data = writer.data;
 
-        let body: Vec<u8> = if self.compression_threshold >= 0 {
+        let body = if self.compression_threshold >= 0 {
             if data.len() >= self.compression_threshold as usize {
                 let compressed = zlib_compress(&data);
                 let mut w = Writer::new();
@@ -257,7 +260,7 @@ const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
 struct PlayerState {
     uuid: Option<Uuid>,
     entity_id: i32,
-    gamemode: u8,
+    gamemode: GameMode,
     held_item: i16,
     held_slot: u8,
     health: f32,
@@ -292,13 +295,14 @@ struct PlayerState {
     eating: Option<Instant>,
     bow_charging: Option<Instant>,
     fishing_hook_eid: Option<i32>,
+    is_op: bool,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
         Self {
             uuid: None,
             entity_id: 0,
-            gamemode: default_gamemode,
+            gamemode: GameMode::try_from(default_gamemode).unwrap_or(GameMode::Survival),
             held_item: -1,
             held_slot: 0,
             health: 20.0,
@@ -333,30 +337,15 @@ impl PlayerState {
             eating: None,
             bow_charging: None,
             fishing_hook_eid: None,
+            is_op: false,
         }
     }
 
     fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
-        let helmet = self.inventory.slots[5]
-            .as_ref()
-            .map(|s| s.item_id)
-            .unwrap_or(-1);
-        let chest = self.inventory.slots[6]
-            .as_ref()
-            .map(|s| s.item_id)
-            .unwrap_or(-1);
-        let legs = self.inventory.slots[7]
-            .as_ref()
-            .map(|s| s.item_id)
-            .unwrap_or(-1);
-        let boots = self.inventory.slots[8]
-            .as_ref()
-            .map(|s| s.item_id)
-            .unwrap_or(-1);
-        (helmet, chest, legs, boots)
+        let slot = |i: usize| -> i16 { self.inventory.slots[i].as_ref().map_or(-1, |s| s.item_id) };
+        (slot(5), slot(6), slot(7), slot(8))
     }
 
-    // TODO: when more projectile: match per kind & rename at consume_projectile_from_inventory
     fn consume_arrow_from_inventory(&mut self) {
         for slot in self.inventory.slots.iter_mut() {
             if let Some(s) = slot
@@ -403,10 +392,9 @@ impl PlayerState {
                 .await;
         }
 
-        equip_tx.send((self.entity_id, 1, boots, 1, 0)).ok();
-        equip_tx.send((self.entity_id, 2, legs, 1, 0)).ok();
-        equip_tx.send((self.entity_id, 3, chest, 1, 0)).ok();
-        equip_tx.send((self.entity_id, 4, helmet, 1, 0)).ok();
+        for (slot, item) in [(1, boots), (2, legs), (3, chest), (4, helmet)] {
+            equip_tx.send((self.entity_id, slot, item, 1, 0)).ok();
+        }
     }
 
     async fn try_retract_fishing_hook(
@@ -575,25 +563,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                                 }
                                             };
                                             let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
-                                            if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
-                                                kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                                return;
-                                            }
-                                            else if config.server.whitelisted
-                                                && !whitelist.read().await.is_whitelisted(uuid)
-                                            {
-                                                kick(&mut framed, "You're not whitelisted on this server!").await;
-                                                return;
-                                            }
 
                                             framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                            make_player_join(&mut framed,
+                                            do_join(&mut framed,
                                                 &mut state,
                                                 uuid,
                                                 profile,
                                                 client_protocol,
-                                                config.server.max_players as u8,
                                                 &peer_ip,
                                                 &player_registry,
                                                 &channels.join_tx,
@@ -603,53 +580,45 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                                 &entity_tracker,
                                                 &config,
                                                 &spawn_point,
-                                                &world_dir
+                                                &world_dir,
+                                                &banlist,
+                                                &whitelist,
+                                                &ops,
                                             ).await;
                                             continue;
                                         }
-                                    } else {
-                                        if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                            let uuid = Uuid::new_v3(
-                                                &Uuid::NAMESPACE_DNS,
-                                                format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                            );
+                                    } else if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                        let uuid = Uuid::new_v3(
+                                            &Uuid::NAMESPACE_DNS,
+                                            format!("OfflinePlayer:{}", login_start.username).as_bytes(),
+                                        );
 
-                                            if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
-                                                kick(&mut framed, &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason)).await;
-                                                return;
-                                            }
-                                            else if config.server.whitelisted
-                                                && !whitelist.read().await.is_whitelisted(uuid)
-                                            {
-                                                kick(&mut framed, "You're not whitelisted on this server!").await;
-                                                return;
-                                            }
+                                        let profile = AuthProfile {
+                                            uuid: uuid.to_string(),
+                                            username: login_start.username.clone(),
+                                            properties: vec![]
+                                        };
 
-                                            let profile = AuthProfile {
-                                                uuid: uuid.to_string(),
-                                                username: login_start.username.clone(),
-                                                properties: vec![]
-                                            };
-
-                                            make_player_join(&mut framed,
-                                                &mut state,
-                                                uuid,
-                                                profile,
-                                                client_protocol,
-                                                config.server.max_players as u8,
-                                                &peer_ip,
-                                                &player_registry,
-                                                &channels.join_tx,
-                                                &channels.chat_tx,
-                                                &world_blocks,
-                                                &generator,
-                                                &entity_tracker,
-                                                &config,
-                                                &spawn_point,
-                                                &world_dir
-                                            ).await;
-                                            continue;
-                                        }
+                                        do_join(&mut framed,
+                                            &mut state,
+                                            uuid,
+                                            profile,
+                                            client_protocol,
+                                            &peer_ip,
+                                            &player_registry,
+                                            &channels.join_tx,
+                                            &channels.chat_tx,
+                                            &world_blocks,
+                                            &generator,
+                                            &entity_tracker,
+                                            &config,
+                                            &spawn_point,
+                                            &world_dir,
+                                            &banlist,
+                                            &whitelist,
+                                            &ops,
+                                        ).await;
+                                        continue;
                                     }
                                     // TODO: check login from another location
                                 }
@@ -669,6 +638,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             break;
         }
     }
+    drop(server_icon);
+    drop(ops);
+    drop(banlist);
+    drop(whitelist);
+    drop(verify_token);
+    // ^^^^^^^^^^ TODO: remove all thoses drop and make a function and a pre play context
+
     let mut chat_rx = channels.chat_tx.subscribe();
     let mut join_rx = channels.join_tx.subscribe();
     let mut pos_rx = channels.pos_tx.subscribe();
@@ -1016,36 +992,27 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 if health > 0.0
                     && let Some(uuid_val) = state.uuid
                     && let Some(me) = player_registry.get(&uuid_val).await
+                    && let Some(attacker) = player_registry.get_by_entity_id(attacker_eid).await
                 {
-                    let players = player_registry.get_all().await;
-                    if let Some(attacker) = players.iter().find(|p| p.entity_id == attacker_eid) {
-                        let dx = me.x - attacker.x;
-                        let dz = me.z - attacker.z;
-                        let magnitude = (dx * dx + dz * dz).sqrt().max(0.0001);
+                    let dx = me.x - attacker.x;
+                    let dz = me.z - attacker.z;
+                    let magnitude = (dx * dx + dz * dz).sqrt().max(0.0001);
 
-                        let horizontal = 0.4f64;
-                        let mut vx = (dx / magnitude) * horizontal;
-                        let mut vy = 0.2f64;
-                        let mut vz = (dz / magnitude) * horizontal;
+                    let mut vx = (dx / magnitude) * 0.4;
+                    let mut vz = (dz / magnitude) * 0.4;
 
-                        if attacker.is_sprinting {
-                            let yaw_rad = attacker.yaw * std::f32::consts::PI / 180.0;
-                            let sin_yaw = -yaw_rad.sin() as f64;
-                            let cos_yaw = yaw_rad.cos() as f64;
-                            let sprint_horizontal = 0.5f64;
-                            let sprint_vertical = 0.1f64;
-
-                            vx += sin_yaw * sprint_horizontal;
-                            vy = sprint_vertical;
-                            vz += cos_yaw * sprint_horizontal;
-                        }
-                        send_packet(&mut framed, EntityVelocity {
-                            entity_id: state.entity_id,
-                            vx,
-                            vy,
-                            vz
-                        }).await;
+                    if attacker.is_sprinting {
+                        let yaw_rad = (attacker.yaw * std::f32::consts::PI / 180.0) as f64;
+                        vx += -yaw_rad.sin() * 0.4;
+                        vz +=  yaw_rad.cos() * 0.4;
                     }
+
+                    send_packet(&mut framed, EntityVelocity {
+                        entity_id: state.entity_id,
+                        vx,
+                        vy: 0.4,
+                        vz,
+                    }).await;
                 }
             }
             Ok((eid, x, y, z, item_id, count, metadata)) = item_rx.recv() => {
@@ -1079,9 +1046,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             Ok((_uuid, gamemode)) = gm_rx.recv() => {
                 if state.uuid.is_some() {
                     state.gamemode = gamemode;
-                    send_packet(&mut framed, ChangeGameState::set_gamemode(gamemode)).await;
+                    let gm_u8 = u8::from(gamemode);
+                    send_packet(&mut framed, ChangeGameState::set_gamemode(gm_u8)).await;
 
-                    let (flags, fly_speed, walk_speed) = match gamemode {
+                    let (flags, fly_speed, walk_speed) = match gm_u8 {
                         1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
                         3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
                         _ => (0x00, 0.05, 0.1),
@@ -1132,18 +1100,19 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                         if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
                             match dig.status {
-                                0 if state.gamemode == 1 => {
+                                0 => {
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
-                                    world_blocks.set(dig.x, dig.y, dig.z, Block::air(), &generator).await;
-                                    channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
-                                    channels.sound_tx.send((
-                                        block_break_sound(block.id).to_string(),
-                                        dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
-                                        1.0, 63
-                                    )).ok();
-                                }
-                                0 if state.gamemode == 0 => {
-                                    let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
+
+                                    if state.gamemode == GameMode::Creative {
+                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air(), &generator).await;
+                                        channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
+                                        channels.sound_tx.send((
+                                            block_break_sound(block.id).to_string(),
+                                            dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
+                                            1.0, 63
+                                        )).ok();
+                                        continue;
+                                    }
                                     let required = break_time_ticks(&item_registry, &block_registry, state.held_item, block.id, false, true);
 
                                     state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
@@ -1156,7 +1125,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         channels.break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
                                     }
                                 }
-                                2 if state.gamemode == 0 => {
+                                2 if state.gamemode == GameMode::Survival => {
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
                                         let block = world_blocks.get(bx, by as u8, bz, &generator).await;
 
@@ -1280,7 +1249,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                         }
                                         send_held_equip(&channels.equip_tx, &state);
 
-                                        if let Some(p) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                                        if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
                                             let drop_x = p.x + (-yaw_rad.sin() * 0.5) as f64;
                                             let drop_y = p.y + 1.0;
@@ -1351,7 +1320,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
                                             channels.sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();
 
-                                            if state.gamemode == 0 {
+                                            if state.gamemode == GameMode::Survival {
                                                 state.consume_arrow_from_inventory();
                                             }
                                         }
@@ -1482,7 +1451,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                             if place.held_item_id == -1 {
                                 continue;
                             }
-                            if state.gamemode == 2 || state.gamemode == 3 {
+                            if state.gamemode >= GameMode::Adventure {
                                 continue;
                             }
                             let (tx, ty, tz): (i32, i32, i32) = match place.face {
@@ -1504,7 +1473,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 continue;
                             }
 
-                            if state.gamemode == 0 {
+                            if state.gamemode == GameMode::Survival {
                                 let hotbar_slot = state.held_slot as usize;
                                 if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
                                     slot.count -= 1;
@@ -1678,7 +1647,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }
 
                         if let Some(creative) = packet.as_any().downcast_ref::<CreativeInventoryAction>() {
-                            if state.gamemode != 1 {
+                            if state.gamemode != GameMode::Creative {
                                 continue;
                             }
 
@@ -1740,9 +1709,18 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                 send_packet(&mut framed, Respawn {
                                     dimension: 0,
                                     difficulty: config.world.difficulty,
-                                    gamemode: state.gamemode,
+                                    gamemode: u8::from(state.gamemode),
                                     level_type: "flat".to_string()
                                 }).await;
+
+                                let (sx, sy, sz) = *spawn_point.read().await;
+
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_position(&uuid, sx, sy, sz, 90.0, 0.0, false).await;
+                                }
+
+                                let spawn_cx = (sx as i32) >> 4;
+                                let spawn_cz = (sz as i32) >> 4;
 
                                 state.loaded_chunks.clear();
                                 send_chunks(
@@ -1750,12 +1728,13 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     client_protocol,
                                     &world_blocks,
                                     &generator,
-                                    0, 0,
+                                    spawn_cx, spawn_cz,
                                     config.server.view_distance,
                                     &mut state.loaded_chunks
                                 ).await;
 
-                                let (sx, sy, sz) = *spawn_point.read().await;
+                                state.chunk_x = spawn_cx;
+                                state.chunk_z = spawn_cz;
 
                                 send_packet(&mut framed, PlayerPositionAndLook {
                                     x: sx,
@@ -1816,7 +1795,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                         }
 
                         if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
-                            if use_entity.action == 1 && state.gamemode != 3 {
+                            if use_entity.action == 1 && state.gamemode != GameMode::Spectator {
                                 let players = player_registry.get_all().await;
                                 if let Some(target) = players.iter()
                                     .find(|p| p.entity_id == use_entity.target_entity_id)
@@ -1826,7 +1805,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                                     }
                                     player_registry.update_no_damage_ticks(target.uuid, 10).await;
                                     if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
-                                        let reach = if state.gamemode == 1 {
+                                        let reach = if state.gamemode == GameMode::Creative {
                                             5.0
                                         } else {
                                             4.0
@@ -1960,7 +1939,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
                 health: state.health,
                 food: state.food,
                 food_saturation: state.food_saturation,
-                gamemode: state.gamemode,
+                gamemode: u8::from(state.gamemode),
                 inventory: inventory_data,
             };
             save_player_data(&world_dir, &uuid, &data).await;
@@ -2303,7 +2282,7 @@ async fn handle_landing(
     on_ground: bool,
 ) {
     if on_ground && !state.was_on_ground {
-        let damage_eligible = state.gamemode == 0 && !state.is_flying;
+        let damage_eligible = state.gamemode == GameMode::Survival && !state.is_flying;
 
         if damage_eligible && state.fall_distance > 3.0 {
             let damage = (state.fall_distance - 3.0).round();
@@ -2431,6 +2410,61 @@ async fn send_player_equipment(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn do_join(
+    framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
+    uuid: Uuid,
+    profile: AuthProfile,
+    client_protocol: i32,
+    peer_ip: &Option<SocketAddr>,
+    player_registry: &Arc<PlayerRegistry>,
+    join_tx: &Arc<broadcast::Sender<JoinLeave>>,
+    chat_tx: &Arc<broadcast::Sender<String>>,
+    world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
+    config: &Config,
+    spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
+    world_dir: &Path,
+    banlist: &Arc<RwLock<BanList>>,
+    whitelist: &Arc<RwLock<WhitelistFile>>,
+    ops: &Arc<RwLock<OpsFile>>,
+) {
+    if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
+        kick(
+            framed,
+            &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason),
+        )
+        .await;
+        return;
+    }
+    if config.server.whitelisted && !whitelist.read().await.is_whitelisted(uuid) {
+        kick(framed, "You're not whitelisted on this server!").await;
+        return;
+    }
+
+    make_player_join(
+        framed,
+        state,
+        uuid,
+        profile,
+        client_protocol,
+        config.server.max_players as u8,
+        peer_ip,
+        player_registry,
+        join_tx,
+        chat_tx,
+        world_blocks,
+        generator,
+        entity_tracker,
+        config,
+        spawn_point,
+        world_dir,
+        ops,
+    )
+    .await;
+}
 async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &Player) {
     send_packet(
         framed,
@@ -2488,6 +2522,7 @@ async fn make_player_join(
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
     world_dir: &Path,
+    ops: &Arc<RwLock<OpsFile>>,
 ) {
     if config.server.compression_threshold >= 0 {
         send_packet(
@@ -2577,15 +2612,6 @@ async fn make_player_join(
         .await;
     }
 
-    /*send_packet(
-        framed,
-        TimeUpdate {
-            world_age: 0,
-            time_of_day: 6000,
-        },
-    )
-    .await;*/
-
     let saved = load_player_data(world_dir, &uuid).await;
     let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = saved {
         (
@@ -2597,7 +2623,7 @@ async fn make_player_join(
             d.health,
             d.food,
             d.food_saturation,
-            d.gamemode,
+            GameMode::try_from(d.gamemode).unwrap_or(GameMode::Survival),
         )
     } else {
         let (sx, sy, sz) = *spawn_point.read().await;
@@ -2610,7 +2636,7 @@ async fn make_player_join(
             20.0,
             20,
             5.0,
-            config.server.default_gamemode,
+            GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival),
         )
     };
 
@@ -2759,6 +2785,7 @@ async fn make_player_join(
     state.health = phealth;
     state.food = pfood;
     state.food_saturation = psat;
+    state.is_op = ops.read().await.is_op(uuid);
 
     state.chunk_x = (px as i32) >> 4;
     state.chunk_z = (pz as i32) >> 4;

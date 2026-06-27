@@ -1,6 +1,7 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
+use coral_server::registry::PlayerRegistry;
 use tokio::sync::RwLock;
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
@@ -84,7 +85,7 @@ pub fn version_command() -> Command {
     Command {
         name: "version".to_string(),
         description: "Show Coral version".to_string(),
-        usage: "/verison".to_string(),
+        usage: "/version".to_string(),
         handler: make_handler(|_| async move {
             let msg = ChatAppender::new()
                 .add(ChatBuilder::new("This server is running ").color(ChatColor::White))
@@ -98,6 +99,42 @@ pub fn version_command() -> Command {
                 .add(ChatBuilder::new(" for Minecraft Protocol 47 (1.8.x)").color(ChatColor::White))
                 .build();
             CommandResult::Success(msg)
+        }),
+    }
+}
+
+pub fn list_command(player_registry: Arc<PlayerRegistry>) -> Command {
+    Command {
+        name: "list".to_string(),
+        description: "Show online players list".to_string(),
+        usage: "/list".to_string(),
+        handler: make_handler(move |_| {
+            let registry = player_registry.clone();
+            async move {
+                let players = registry.get_all().await;
+                let count = players.len();
+
+                if count == 0 {
+                    return CommandResult::Success(ChatBuilder::plain_json(
+                        "There are 0 players online.",
+                    ));
+                }
+
+                let names = players
+                    .iter()
+                    .map(|p| p.username.clone())
+                    .collect::<Vec<String>>();
+
+                let msg = ChatAppender::new()
+                    .add(
+                        ChatBuilder::new(format!("There are {} players online: ", count))
+                            .color(ChatColor::Yellow),
+                    )
+                    .add(ChatBuilder::new(names.join(", ")).color(ChatColor::White))
+                    .build();
+
+                CommandResult::Success(msg)
+            }
         }),
     }
 }

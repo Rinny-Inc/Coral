@@ -1,10 +1,9 @@
 use aes::Aes128;
 use cfb8::{Decryptor, Encryptor};
 use cipher::KeyIvInit;
+use rand::{Rng, rngs::SysRng};
 use rsa::{
-    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
-    pkcs8::EncodePublicKey,
-    rand_core::{OsRng, RngCore},
+    Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey, pkcs8::EncodePublicKey, rand_core::UnwrapErr,
 };
 
 pub type Aes128Cfb8Enc = Encryptor<Aes128>;
@@ -37,7 +36,7 @@ impl Encryption {
 }
 
 pub fn generate_rsa_key() -> (RsaPrivateKey, Vec<u8>) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let private_key = RsaPrivateKey::new(&mut rng, 1024).unwrap();
     let public_key = RsaPublicKey::from(&private_key);
     let der = public_key.to_public_key_der().unwrap();
@@ -50,6 +49,6 @@ pub fn decrypt_rsa(private_key: &RsaPrivateKey, data: &[u8]) -> Vec<u8> {
 
 pub fn generate_verify_token() -> Vec<u8> {
     let mut token = vec![0u8; 4];
-    OsRng.fill_bytes(&mut token);
+    UnwrapErr(SysRng).fill_bytes(&mut token);
     token
 }

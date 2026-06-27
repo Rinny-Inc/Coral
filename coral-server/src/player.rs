@@ -1,3 +1,4 @@
+use coral_types::GameMode;
 use uuid::Uuid;
 
 use coral_protocol::auth::ProfileProperty;
@@ -16,7 +17,7 @@ pub struct Player {
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
-    pub gamemode: u8,
+    pub gamemode: GameMode,
     pub held_slot: u8,
     pub held_item_id: i16,
     pub latency_ms: u32,
@@ -47,7 +48,7 @@ impl Player {
         z: f64,
         yaw: f32,
         pitch: f32,
-        gamemode: u8,
+        gamemode: GameMode,
         health: f32,
         food: i32,
         food_saturation: f32,

@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+coral-server = { path = "../coral-server" }
 coral-protocol = { path = "../coral-protocol" }
 tokio.workspace = true

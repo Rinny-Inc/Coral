@@ -7,6 +7,7 @@ use coral_protocol::packets::play::{
 use coral_server::{
     bounding_box::EntityBounds, effects::EffectKind, items::ItemRegistry, registry::PlayerRegistry,
 };
+use coral_types::GameMode;
 use rand::RngExt;
 use tokio::{
     net::TcpStream,
@@ -299,7 +300,7 @@ async fn tick_food_and_regen(
     player_registry: &Arc<PlayerRegistry>,
     chat_tx: &Arc<Sender<String>>,
 ) {
-    if state.gamemode != 0 {
+    if state.gamemode != GameMode::Survival {
         return;
     }
     if config.world.difficulty == 0 {

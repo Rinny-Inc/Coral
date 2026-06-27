@@ -8,6 +8,7 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
+use coral_types::GameMode;
 use rsa::RsaPrivateKey;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -17,7 +18,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use coral_command::{CommandContext, CommandDispatcher, CommandResult, version_command};
+use coral_command::{
+    CommandContext, CommandDispatcher, CommandResult, list_command, version_command,
+};
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
@@ -66,7 +69,7 @@ pub struct ServerContext {
 
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
 type JoinLeave = (Player, bool);
-type GamemodeUpdate = (Uuid, u8);
+type GamemodeUpdate = (Uuid, GameMode);
 type PingUpdate = (Uuid, u32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
@@ -171,8 +174,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         });
 
+    let player_registry = Arc::new(PlayerRegistry::new());
+
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
+    dispatcher
+        .register(list_command(player_registry.clone()))
+        .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 
@@ -193,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         channels: Channels::new(),
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
-        player_registry: Arc::new(PlayerRegistry::new()),
+        player_registry,
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
         ops: Arc::new(RwLock::new(OpsFile::load())),
