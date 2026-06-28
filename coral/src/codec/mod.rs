@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
-use coral_server::banlist::BanList;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::items::ItemRegistry;
 use coral_server::items::armor::{apply_armor_reduction, total_defense};
@@ -15,7 +14,6 @@ use coral_server::items::potions::PotionEffect;
 use coral_server::mining::break_time_ticks;
 use coral_server::ops::OpsFile;
 use coral_server::projectile::{Projectile, ProjectileKind};
-use coral_server::whitelist::WhitelistFile;
 use coral_types::{GameMode, ToolMaterial};
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::{PlayerData, load_player_data, save_player_data};
@@ -27,14 +25,14 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
+use crate::codec::preplay::{JoinRequest, PrePlayContext};
 use crate::{EquipmentUpdate, JoinLeave, ServerContext, SoundEffect};
 use coral_command::{CommandContext, CommandResult};
 use coral_config::Config;
-use coral_protocol::auth::{AuthProfile, authenticate, compute_server_hash};
-use coral_protocol::encryption::{Encryption, decrypt_rsa, generate_verify_token};
+use coral_protocol::encryption::Encryption;
 use coral_protocol::packets::handshake::keepalive::KeepAlive;
+use coral_protocol::packets::login::SetCompression;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
-use coral_protocol::packets::login::{EncryptionRequest, EncryptionResponse, SetCompression};
 use coral_protocol::packets::play::block::{
     BlockBreakAnimation, BlockChange, HeldItemChange, ItemEntityMetadata, PlayerBlockPlacement,
     PlayerDig,
@@ -69,10 +67,9 @@ use coral_protocol::packets::{PacketIn, PacketOut};
 use coral_protocol::{
     packets::{
         PacketKey, PacketRegistry,
-        handshake::{self, EnumProtocol, PacketHandshake},
-        login::{LoginStart, LoginSuccess},
+        handshake::{self, EnumProtocol},
+        login::LoginSuccess,
         play::{PlayerAbilities, SpawnPosition, SpawnPosition17, join_game::JoinGame},
-        status::{Ping, Pong, Request, Response},
     },
     reader::Reader,
     writer::Writer,
@@ -89,6 +86,7 @@ use coral_world::{
     weather::WeatherState,
 };
 
+mod preplay;
 mod ticking;
 
 pub struct Codec {
@@ -255,8 +253,6 @@ async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Code
     }
 }
 
-const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
-
 struct PlayerState {
     uuid: Option<Uuid>,
     entity_id: i32,
@@ -277,7 +273,6 @@ struct PlayerState {
     was_on_ground: bool,
     latency_ms: u32,
     name: Option<String>,
-    pending_username: Option<String>,
     keep_alive_count: i32,
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
     inventory: Inventory,
@@ -319,7 +314,6 @@ impl PlayerState {
             was_on_ground: true,
             latency_ms: 0,
             name: None,
-            pending_username: None,
             keep_alive_count: 0,
             last_sent_keep_alive: None,
             inventory: Inventory::new(),
@@ -439,212 +433,64 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         world_dir,
     } = ctx;
     let codec = Codec {
-        registry: packet_registry,
+        registry: packet_registry.clone(),
         state: EnumProtocol::Handshaking,
         encryption: None,
         compression_threshold: -1,
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
-    let mut shutdown_rx = channels.shutdown_tx.subscribe();
 
     let mut state = PlayerState::new(config.server.default_gamemode);
 
     let mut framed = Framed::new(socket, codec);
-    let mut client_protocol = -1;
 
-    let verify_token = generate_verify_token();
+    let Some(req) = preplay::pre_play(
+        &mut framed,
+        &mut state,
+        PrePlayContext {
+            packet_registry: packet_registry.clone(),
+            player_registry: player_registry.clone(),
+            config: config.clone(),
+            server_icon: server_icon,
+            banlist,
+            whitelist,
+            ops: ops.clone(), // TODO: handle ops in here so it gets dropped
+            private_key,
+            public_key_der,
+            channels: channels.clone(),
+        },
+        peer_ip,
+    )
+    .await
+    else {
+        return;
+    };
 
-    loop {
-        tokio::select! {
-                Ok(()) = shutdown_rx.recv() => {
-                    if framed.codec().state == EnumProtocol::Login {
-                        kick(&mut framed, "Server closed.").await;
-                    }
-                    return;
-                }
-                result = framed.next() => {
-                    let Some(result) = result else {
-                        return
-                    };
-                    match result {
-                        Ok(packet) => {
-                            match framed.codec().state {
-                                EnumProtocol::Handshaking => {
-                                    if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
-                                        client_protocol = handshake.protocol_version;
-                                        framed.codec_mut().state = handshake.requested_protocol.clone();
-                                    }
-                                }
-                                EnumProtocol::Status => {
-                                    if packet.as_any().downcast_ref::<Request>().is_some() {
-                                        let players = player_registry.get_all().await;
-                                        let sample: Vec<(&str, String)> = players.iter()
-                                            .take(config.server.player_sample_size as usize)
-                                            .map(|p| (p.username.as_str(), p.uuid.hyphenated().to_string()))
-                                            .collect();
-                                        let sample_refs: Vec<(&str, &str)> = sample.iter()
-                                            .map(|(name, uuid)| (*name, uuid.as_str()))
-                                            .collect();
+    let client_protocol = req.client_protocol;
 
-                                        let server_protocol = if ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                                            client_protocol
-                                        } else {
-                                            -1
-                                        };
+    // TODO: check login from another location
 
-                                        send_packet(
-                                            &mut framed,
-                                            Response::new(
-                                                &config.server.motd,
-                                                player_registry.get_online_count().await,
-                                                config.server.max_players,
-                                                server_protocol,
-                                                server_icon.as_deref(),
-                                                &sample_refs
-                                            ),
-                                        )
-                                        .await;
-                                        continue;
-                                    }
-                                    if let Some(ping) = packet.as_any().downcast_ref::<Ping>() {
-                                        send_packet(&mut framed, Pong { time: ping.time }).await;
-                                        continue;
-                                    }
-                                }
-                                EnumProtocol::Login => {
-                                    // TODO: connection throttled
-                                    if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
-                                        kick(&mut framed, "Unsupported version. Use 1.8.x").await;
-                                        return;
-                                    }
-                                    if player_registry.get_online_count().await > config.server.max_players {
-                                        kick(&mut framed, "Server is full!").await;
-                                        return;
-                                    }
-                                    if let Some(ip) = peer_ip
-                                        && let Some(ban) = banlist.read().await.is_ip_banned(&ip.ip())
-                                    {
-                                        kick(&mut framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
-                                        return;
-                                    }
-                                    if config.server.online_mode {
-                                        if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                            state.pending_username = Some(login_start.username.clone());
+    make_player_join(
+        &mut framed,
+        &mut state,
+        req,
+        config.server.max_players as u8,
+        &peer_ip,
+        &player_registry,
+        &channels.join_tx,
+        &channels.chat_tx,
+        &world_blocks,
+        &generator,
+        &entity_tracker,
+        &config,
+        &spawn_point,
+        &world_dir,
+        &ops,
+    )
+    .await;
 
-                                            send_packet(&mut framed, EncryptionRequest {
-                                                server_id: "".to_string(),
-                                                public_key: public_key_der.to_vec(),
-                                                verify_token: verify_token.clone(),
-                                            }).await;
-                                            continue;
-                                        }
-
-                                        if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
-                                            let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
-                                            let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
-
-                                            if decrypted_token != verify_token {
-                                                kick(&mut framed, "Encryption Error!").await;
-                                                return;
-                                            }
-                                            let username = match state.pending_username.take() {
-                                                Some(u) => u,
-                                                None => return
-                                            };
-
-                                            let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
-
-                                            let profile = match authenticate(&username, &server_hash).await {
-                                                Some(p) => p,
-                                                None => {
-                                                    kick(&mut framed, "Failed to verify username!").await;
-                                                    return
-                                                }
-                                            };
-                                            let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
-
-                                            framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
-
-                                            do_join(&mut framed,
-                                                &mut state,
-                                                uuid,
-                                                profile,
-                                                client_protocol,
-                                                &peer_ip,
-                                                &player_registry,
-                                                &channels.join_tx,
-                                                &channels.chat_tx,
-                                                &world_blocks,
-                                                &generator,
-                                                &entity_tracker,
-                                                &config,
-                                                &spawn_point,
-                                                &world_dir,
-                                                &banlist,
-                                                &whitelist,
-                                                &ops,
-                                            ).await;
-                                            continue;
-                                        }
-                                    } else if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                        let uuid = Uuid::new_v3(
-                                            &Uuid::NAMESPACE_DNS,
-                                            format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                        );
-
-                                        let profile = AuthProfile {
-                                            uuid: uuid.to_string(),
-                                            username: login_start.username.clone(),
-                                            properties: vec![]
-                                        };
-
-                                        do_join(&mut framed,
-                                            &mut state,
-                                            uuid,
-                                            profile,
-                                            client_protocol,
-                                            &peer_ip,
-                                            &player_registry,
-                                            &channels.join_tx,
-                                            &channels.chat_tx,
-                                            &world_blocks,
-                                            &generator,
-                                            &entity_tracker,
-                                            &config,
-                                            &spawn_point,
-                                            &world_dir,
-                                            &banlist,
-                                            &whitelist,
-                                            &ops,
-                                        ).await;
-                                        continue;
-                                    }
-                                    // TODO: check login from another location
-                                }
-                                _ => {}
-                            }
-                        }
-                        Err(e) => {
-                            if !is_normal_disconnect(&e) {
-                                eprintln!("Error processing packet: {:?}", e);
-                            }
-                            return;
-                        }
-                }
-            }
-        }
-        if framed.codec().state == EnumProtocol::Play {
-            break;
-        }
-    }
-    drop(server_icon);
-    drop(ops);
-    drop(banlist);
-    drop(whitelist);
-    drop(verify_token);
-    // ^^^^^^^^^^ TODO: remove all thoses drop and make a function and a pre play context
-
+    // todo make_player_join
     let mut chat_rx = channels.chat_tx.subscribe();
     let mut join_rx = channels.join_tx.subscribe();
     let mut pos_rx = channels.pos_tx.subscribe();
@@ -668,6 +514,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let mut projectile_spawn_rx = channels.projectile_spawn_tx.subscribe();
     let mut projectile_move_rx = channels.projectile_move_tx.subscribe();
     let mut splash_effect_rx = channels.splash_effect_tx.subscribe();
+    let mut shutdown_rx = channels.shutdown_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -2410,61 +2257,6 @@ async fn send_player_equipment(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn do_join(
-    framed: &mut Framed<TcpStream, Codec>,
-    state: &mut PlayerState,
-    uuid: Uuid,
-    profile: AuthProfile,
-    client_protocol: i32,
-    peer_ip: &Option<SocketAddr>,
-    player_registry: &Arc<PlayerRegistry>,
-    join_tx: &Arc<broadcast::Sender<JoinLeave>>,
-    chat_tx: &Arc<broadcast::Sender<String>>,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
-    entity_tracker: &Arc<RwLock<EntityTracker>>,
-    config: &Config,
-    spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
-    world_dir: &Path,
-    banlist: &Arc<RwLock<BanList>>,
-    whitelist: &Arc<RwLock<WhitelistFile>>,
-    ops: &Arc<RwLock<OpsFile>>,
-) {
-    if let Some(ban) = banlist.read().await.is_player_banned(&uuid) {
-        kick(
-            framed,
-            &format!("§cYou are banned!\n§7Reason: §f{}", ban.reason),
-        )
-        .await;
-        return;
-    }
-    if config.server.whitelisted && !whitelist.read().await.is_whitelisted(uuid) {
-        kick(framed, "You're not whitelisted on this server!").await;
-        return;
-    }
-
-    make_player_join(
-        framed,
-        state,
-        uuid,
-        profile,
-        client_protocol,
-        config.server.max_players as u8,
-        peer_ip,
-        player_registry,
-        join_tx,
-        chat_tx,
-        world_blocks,
-        generator,
-        entity_tracker,
-        config,
-        spawn_point,
-        world_dir,
-        ops,
-    )
-    .await;
-}
 async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &Player) {
     send_packet(
         framed,
@@ -2508,9 +2300,7 @@ async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &Playe
 async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
-    uuid: Uuid,
-    profile: AuthProfile,
-    client_protocol: i32,
+    req: JoinRequest,
     max_players: u8,
     peer_ip: &Option<SocketAddr>,
     player_registry: &Arc<PlayerRegistry>,
@@ -2535,6 +2325,12 @@ async fn make_player_join(
 
         framed.codec_mut().compression_threshold = config.server.compression_threshold;
     }
+
+    let JoinRequest {
+        uuid,
+        profile,
+        client_protocol,
+    } = req;
 
     let entity_id = next_entity_id();
 

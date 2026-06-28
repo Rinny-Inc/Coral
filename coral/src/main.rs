@@ -111,7 +111,7 @@ pub struct Channels {
     status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
     equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
     sound_tx: Arc<broadcast::Sender<SoundEffect>>,
-    shutdown_tx: Arc<broadcast::Sender<()>>,
+    pub shutdown_tx: Arc<broadcast::Sender<()>>,
     particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
     projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
     projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
