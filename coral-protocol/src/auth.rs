@@ -1,4 +1,5 @@
 use num_bigint::BigInt;
+use serde::Deserialize;
 use sha1::{Digest, Sha1};
 
 #[derive(Debug, Clone)]
@@ -8,7 +9,7 @@ pub struct AuthProfile {
     pub properties: Vec<ProfileProperty>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ProfileProperty {
     pub name: String,
     pub value: String,

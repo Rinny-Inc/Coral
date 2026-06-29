@@ -8,18 +8,22 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
-use coral_types::GameMode;
+use coral_types::GamemodeUpdate;
 use rsa::RsaPrivateKey;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     net::TcpListener,
-    sync::{RwLock, broadcast},
+    sync::{
+        RwLock,
+        broadcast::{Sender, channel},
+    },
     time::interval,
 };
 use uuid::Uuid;
 
 use coral_command::{
-    CommandContext, CommandDispatcher, CommandResult, list_command, version_command,
+    CommandContext, CommandDispatcher, CommandResult, gamemode_command, list_command,
+    version_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -69,7 +73,6 @@ pub struct ServerContext {
 
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
 type JoinLeave = (Player, bool);
-type GamemodeUpdate = (Uuid, GameMode);
 type PingUpdate = (Uuid, i32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
@@ -92,58 +95,58 @@ type SplashEffect = (Uuid, u8, u8, i32);
 
 #[derive(Clone)]
 pub struct Channels {
-    chat_tx: Arc<broadcast::Sender<String>>,
-    join_tx: Arc<broadcast::Sender<JoinLeave>>,
-    pos_tx: Arc<broadcast::Sender<PositionUpdate>>,
-    gm_tx: Arc<broadcast::Sender<GamemodeUpdate>>,
-    ping_tx: Arc<broadcast::Sender<PingUpdate>>,
-    block_tx: Arc<broadcast::Sender<BlockUpdate>>,
-    break_tx: Arc<broadcast::Sender<BreakAnimation>>,
-    anim_tx: Arc<broadcast::Sender<AnimationUpdate>>,
-    meta_tx: Arc<broadcast::Sender<MetadataUpdate>>,
-    dmg_tx: Arc<broadcast::Sender<DamageEvent>>,
-    item_tx: Arc<broadcast::Sender<ItemDrop>>,
-    despawn_tx: Arc<broadcast::Sender<DespawnEntity>>,
-    pickup_tx: Arc<broadcast::Sender<ItemPickup>>,
-    time_tx: Arc<broadcast::Sender<TimeUpdate>>,
-    weather_tx: Arc<broadcast::Sender<WeatherUpdate>>,
-    tick_tx: Arc<broadcast::Sender<()>>,
-    status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
-    equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
-    sound_tx: Arc<broadcast::Sender<SoundEffect>>,
-    shutdown_tx: Arc<broadcast::Sender<()>>,
-    particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
-    projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
-    projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,
-    splash_effect_tx: Arc<broadcast::Sender<SplashEffect>>,
+    chat_tx: Arc<Sender<String>>,
+    join_tx: Arc<Sender<JoinLeave>>,
+    pos_tx: Arc<Sender<PositionUpdate>>,
+    gm_tx: Arc<Sender<GamemodeUpdate>>,
+    ping_tx: Arc<Sender<PingUpdate>>,
+    block_tx: Arc<Sender<BlockUpdate>>,
+    break_tx: Arc<Sender<BreakAnimation>>,
+    anim_tx: Arc<Sender<AnimationUpdate>>,
+    meta_tx: Arc<Sender<MetadataUpdate>>,
+    dmg_tx: Arc<Sender<DamageEvent>>,
+    item_tx: Arc<Sender<ItemDrop>>,
+    despawn_tx: Arc<Sender<DespawnEntity>>,
+    pickup_tx: Arc<Sender<ItemPickup>>,
+    time_tx: Arc<Sender<TimeUpdate>>,
+    weather_tx: Arc<Sender<WeatherUpdate>>,
+    tick_tx: Arc<Sender<()>>,
+    status_tx: Arc<Sender<EntityStatusUpdate>>,
+    equip_tx: Arc<Sender<EquipmentUpdate>>,
+    sound_tx: Arc<Sender<SoundEffect>>,
+    shutdown_tx: Arc<Sender<()>>,
+    particle_tx: Arc<Sender<ParticleEffect>>,
+    projectile_spawn_tx: Arc<Sender<ProjectileSpawn>>,
+    projectile_move_tx: Arc<Sender<ProjectileMove>>,
+    splash_effect_tx: Arc<Sender<SplashEffect>>,
 }
 impl Channels {
     pub fn new() -> Self {
         Self {
-            chat_tx: Arc::new(broadcast::channel::<String>(50).0),
-            join_tx: Arc::new(broadcast::channel::<JoinLeave>(16).0),
-            pos_tx: Arc::new(broadcast::channel::<PositionUpdate>(100).0),
-            gm_tx: Arc::new(broadcast::channel::<GamemodeUpdate>(16).0),
-            ping_tx: Arc::new(broadcast::channel::<PingUpdate>(16).0),
-            block_tx: Arc::new(broadcast::channel::<BlockUpdate>(100).0),
-            break_tx: Arc::new(broadcast::channel::<BreakAnimation>(100).0),
-            anim_tx: Arc::new(broadcast::channel::<AnimationUpdate>(100).0),
-            meta_tx: Arc::new(broadcast::channel::<MetadataUpdate>(100).0),
-            dmg_tx: Arc::new(broadcast::channel::<DamageEvent>(100).0),
-            item_tx: Arc::new(broadcast::channel::<ItemDrop>(1000).0),
-            despawn_tx: Arc::new(broadcast::channel::<DespawnEntity>(100).0),
-            pickup_tx: Arc::new(broadcast::channel::<ItemPickup>(100).0),
-            time_tx: Arc::new(broadcast::channel::<TimeUpdate>(1).0),
-            weather_tx: Arc::new(broadcast::channel::<WeatherUpdate>(1).0),
-            tick_tx: Arc::new(broadcast::channel(4).0),
-            status_tx: Arc::new(broadcast::channel::<EntityStatusUpdate>(100).0),
-            equip_tx: Arc::new(broadcast::channel::<EquipmentUpdate>(100).0),
-            sound_tx: Arc::new(broadcast::channel::<SoundEffect>(100).0),
-            shutdown_tx: Arc::new(broadcast::channel::<()>(1).0),
-            particle_tx: Arc::new(broadcast::channel::<ParticleEffect>(100).0),
-            projectile_spawn_tx: Arc::new(broadcast::channel::<ProjectileSpawn>(100).0),
-            projectile_move_tx: Arc::new(broadcast::channel::<ProjectileMove>(200).0),
-            splash_effect_tx: Arc::new(broadcast::channel::<SplashEffect>(100).0),
+            chat_tx: Arc::new(channel::<String>(50).0),
+            join_tx: Arc::new(channel::<JoinLeave>(16).0),
+            pos_tx: Arc::new(channel::<PositionUpdate>(100).0),
+            gm_tx: Arc::new(channel::<GamemodeUpdate>(16).0),
+            ping_tx: Arc::new(channel::<PingUpdate>(16).0),
+            block_tx: Arc::new(channel::<BlockUpdate>(100).0),
+            break_tx: Arc::new(channel::<BreakAnimation>(100).0),
+            anim_tx: Arc::new(channel::<AnimationUpdate>(100).0),
+            meta_tx: Arc::new(channel::<MetadataUpdate>(100).0),
+            dmg_tx: Arc::new(channel::<DamageEvent>(100).0),
+            item_tx: Arc::new(channel::<ItemDrop>(1000).0),
+            despawn_tx: Arc::new(channel::<DespawnEntity>(100).0),
+            pickup_tx: Arc::new(channel::<ItemPickup>(100).0),
+            time_tx: Arc::new(channel::<TimeUpdate>(1).0),
+            weather_tx: Arc::new(channel::<WeatherUpdate>(1).0),
+            tick_tx: Arc::new(channel(4).0),
+            status_tx: Arc::new(channel::<EntityStatusUpdate>(100).0),
+            equip_tx: Arc::new(channel::<EquipmentUpdate>(100).0),
+            sound_tx: Arc::new(channel::<SoundEffect>(100).0),
+            shutdown_tx: Arc::new(channel::<()>(1).0),
+            particle_tx: Arc::new(channel::<ParticleEffect>(100).0),
+            projectile_spawn_tx: Arc::new(channel::<ProjectileSpawn>(100).0),
+            projectile_move_tx: Arc::new(channel::<ProjectileMove>(200).0),
+            splash_effect_tx: Arc::new(channel::<SplashEffect>(100).0),
         }
     }
 }
@@ -175,11 +178,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     let player_registry = Arc::new(PlayerRegistry::new());
+    let channels = Channels::new();
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
     dispatcher
         .register(list_command(player_registry.clone()))
+        .await;
+    dispatcher
+        .register(gamemode_command(
+            player_registry.clone(),
+            channels.gm_tx.clone(),
+        ))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -198,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
         item_positions: Arc::new(RwLock::new(HashMap::new())),
         projectiles: Arc::new(RwLock::new(Vec::new())),
-        channels: Channels::new(),
+        channels,
         world_blocks: Arc::new(WorldBlocks::new()),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry,
@@ -269,7 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn spawn_shutdown_task(
-    shutdown_signal: Arc<broadcast::Sender<()>>,
+    shutdown_signal: Arc<Sender<()>>,
     player_registry: Arc<PlayerRegistry>,
     world_blocks: Arc<WorldBlocks>,
     world_dir: PathBuf,
@@ -292,7 +302,7 @@ fn spawn_shutdown_task(
         std::process::exit(0);
     });
 }
-fn spawn_tick_task(tick_tx: Arc<broadcast::Sender<()>>, player_registry: Arc<PlayerRegistry>) {
+fn spawn_tick_task(tick_tx: Arc<Sender<()>>, player_registry: Arc<PlayerRegistry>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50));
         loop {
@@ -302,7 +312,7 @@ fn spawn_tick_task(tick_tx: Arc<broadcast::Sender<()>>, player_registry: Arc<Pla
         }
     });
 }
-fn spawn_world_time_task(time_tx: Arc<broadcast::Sender<(i64, i64)>>) {
+fn spawn_world_time_task(time_tx: Arc<Sender<(i64, i64)>>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50)); // 1 tick
         let mut world_age: i64 = 0;
@@ -319,7 +329,7 @@ fn spawn_world_time_task(time_tx: Arc<broadcast::Sender<(i64, i64)>>) {
         }
     });
 }
-fn spawn_weather_task(weather_tx: Arc<broadcast::Sender<WeatherState>>) {
+fn spawn_weather_task(weather_tx: Arc<Sender<WeatherState>>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50));
         let mut weather = Weather::new();
@@ -333,7 +343,7 @@ fn spawn_weather_task(weather_tx: Arc<broadcast::Sender<WeatherState>>) {
     });
 }
 fn spawn_item_despawn_task(
-    despawn_tx: Arc<broadcast::Sender<i32>>,
+    despawn_tx: Arc<Sender<i32>>,
     item_despawn_secs: u64,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
@@ -365,7 +375,7 @@ fn spawn_item_despawn_task(
         }
     });
 }
-fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<broadcast::Sender<String>>) {
+fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sender<String>>) {
     tokio::spawn(async move {
         let stdin = tokio::io::stdin();
         let mut lines = BufReader::new(stdin).lines();

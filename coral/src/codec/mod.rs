@@ -433,6 +433,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             private_key: ctx.private_key.clone(),
             public_key_der: ctx.public_key_der.clone(),
             channels: ctx.channels.clone(),
+            bungee_adresses: Arc::new(ctx.config.bungee.adresses.clone()),
         },
         peer_ip,
     )
@@ -511,6 +512,7 @@ async fn make_player_join(
         uuid,
         profile,
         client_protocol,
+        peer_ip,
     } = req;
 
     let entity_id = next_entity_id();

@@ -2,7 +2,8 @@ use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
 use coral_server::registry::PlayerRegistry;
-use tokio::sync::RwLock;
+use coral_types::{GameMode, GamemodeUpdate};
+use tokio::sync::{RwLock, broadcast::Sender};
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
 pub type CommandHandler = Arc<dyn Fn(CommandContext) -> CommandFuture + Send + Sync>;
@@ -134,6 +135,62 @@ pub fn list_command(player_registry: Arc<PlayerRegistry>) -> Command {
                     .build();
 
                 CommandResult::Success(msg)
+            }
+        }),
+    }
+}
+
+// TODO: check if player is op
+// then in the future check if the player has the permission
+pub fn gamemode_command(
+    player_registry: Arc<PlayerRegistry>,
+    gm_tx: Arc<Sender<GamemodeUpdate>>,
+) -> Command {
+    Command {
+        name: "gamemode".to_string(),
+        description: "Change a player's gamemode".to_string(),
+        usage: "/gamemode <mode> [player]".to_string(),
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let tx = gm_tx.clone();
+            async move {
+                let Some(mode_arg) = ctx.arg(1) else {
+                    return CommandResult::Error("Usage: /gamemode <mode> [player]".to_string());
+                };
+
+                let gamemode = match mode_arg.to_lowercase().as_str() {
+                    "survival" | "s" | "0" => GameMode::Survival,
+                    "creative" | "c" | "1" => GameMode::Creative,
+                    "adventure" | "a" | "2" => GameMode::Adventure,
+                    "spectator" | "sp" | "3" => GameMode::Spectator,
+                    _ => return CommandResult::Error(format!("Unknown gamemode: {}", mode_arg)),
+                };
+
+                // if player arg provided, target that player — else target sender
+                let target_name = ctx.arg(2).unwrap_or(&ctx.sender).to_string();
+
+                let players = registry.get_all().await;
+                let Some(target) = players
+                    .iter()
+                    .find(|p| p.username.to_lowercase() == target_name.to_lowercase())
+                else {
+                    return CommandResult::Error(format!("Player not found: {}", target_name));
+                };
+
+                let uuid = target.uuid;
+                let username = target.username.clone();
+
+                registry.update_gamemode(uuid, gamemode).await;
+                tx.send((uuid, gamemode)).ok();
+
+                CommandResult::Success(
+                    ChatAppender::new()
+                        .add(ChatBuilder::new("Set ").color(ChatColor::Gray))
+                        .add(ChatBuilder::new(&username).color(ChatColor::White))
+                        .add(ChatBuilder::new("'s gamemode to ").color(ChatColor::Gray))
+                        .add(ChatBuilder::new(&format!("{:?}", gamemode)).color(ChatColor::White))
+                        .build(),
+                )
             }
         }),
     }

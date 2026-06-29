@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolKind {
     Pickaxe,
@@ -16,6 +18,8 @@ pub enum ToolMaterial {
     Diamond,
     Any,
 }
+
+pub type GamemodeUpdate = (Uuid, GameMode);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 #[repr(u8)]

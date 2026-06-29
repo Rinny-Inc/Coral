@@ -20,3 +20,4 @@ tokio-util.workspace = true
 uuid.workspace = true
 rand.workspace = true
 flate2.workspace = true
+serde_json.workspace = true

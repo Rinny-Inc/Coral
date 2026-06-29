@@ -11,7 +11,7 @@ pub mod keepalive;
 #[derive(Debug)]
 pub struct PacketHandshake {
     pub protocol_version: i32,
-    host_name: String,
+    pub host_name: String,
     port: u16,
     pub requested_protocol: EnumProtocol,
 }

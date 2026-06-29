@@ -11,6 +11,14 @@ pub struct Config {
     pub world: WorldConfig,
     #[serde(default)]
     pub tracking: TrackingConfig,
+    #[serde(default)]
+    pub bungee: Bungeecord,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Bungeecord {
+    pub enabled: bool,
+    pub adresses: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -97,6 +105,14 @@ impl Default for TrackingConfig {
         }
     }
 }
+impl Default for Bungeecord {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            adresses: vec!["127.0.0.1".to_string()],
+        }
+    }
+}
 
 impl Config {
     pub fn load() -> Self {
@@ -161,4 +177,8 @@ player = 512
 mob = 80
 item = 64
 experience_orb = 64
+
+[bungee]
+enabled = false
+addresses = ["127.0.0.1"]
 "#;

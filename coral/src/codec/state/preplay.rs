@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use coral_config::Config;
 use coral_protocol::{
-    auth::{AuthProfile, authenticate, compute_server_hash},
+    auth::{AuthProfile, ProfileProperty, authenticate, compute_server_hash},
     encryption::{Encryption, decrypt_rsa, generate_verify_token},
     packets::{
         handshake::{EnumProtocol, PacketHandshake},
@@ -36,12 +36,14 @@ pub struct PrePlayContext {
     pub private_key: Arc<RsaPrivateKey>,
     pub public_key_der: Arc<Vec<u8>>,
     pub channels: Channels,
+    pub bungee_adresses: Arc<Vec<String>>,
 }
 
 pub struct JoinRequest {
     pub uuid: Uuid,
     pub profile: AuthProfile,
     pub client_protocol: i32,
+    pub peer_ip: Option<SocketAddr>,
 }
 
 pub async fn pre_play(
@@ -58,12 +60,17 @@ pub async fn pre_play(
         private_key,
         public_key_der,
         channels,
+        bungee_adresses,
         ..
     } = ctx;
     let verify_token = generate_verify_token();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
     let mut pending_username: Option<String> = None;
     let mut client_protocol = -1;
+
+    let mut forwarded_ip: Option<std::net::IpAddr> = None;
+    let mut forwarded_uuid: Option<Uuid> = None;
+    let mut forwarded_properties: Vec<ProfileProperty> = vec![];
 
     loop {
         tokio::select! {
@@ -82,6 +89,44 @@ pub async fn pre_play(
                                 EnumProtocol::Handshaking => {
                                     if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
                                         client_protocol = handshake.protocol_version;
+
+                                        // bungee ip forwarding
+                                        // only trust forwarded if the connection comes from a known proxy IP
+                                        let is_proxied = if config.bungee.enabled {
+                                            let peer_addr = peer_ip
+                                                .map(|a| a.ip().to_string())
+                                                .unwrap_or_default();
+                                            bungee_adresses.iter().any(|a| a == &peer_addr)
+                                        } else {
+                                            false
+                                        };
+
+                                        if is_proxied {
+                                            let mut parts: Vec<&str> = handshake.host_name.split('\0').collect();
+
+                                            // FML/Forge
+                                            if parts.len() == 6 && parts[1] == "FML" {
+                                                parts = vec![parts[0], parts[3], parts[4], parts[5]];
+                                            }
+
+                                            if parts.len() == 3 || parts.len() == 4 {
+                                                // 0 = hostname (discard)
+                                                // 1 = real client ip
+                                                // 2 = uuid
+                                                // 3 = properties json (skin..)
+                                                if let Ok(real_ip) = parts[1].parse::<std::net::IpAddr>() {
+                                                    forwarded_ip = Some(real_ip);
+                                                }
+                                                if let Ok(uuid) = Uuid::parse_str(parts[2]) {
+                                                    forwarded_uuid = Some(uuid);
+                                                }
+                                                if let Some(props_json) = parts.get(3)
+                                                    && let Ok(props) = serde_json::from_str::<Vec<ProfileProperty>>(props_json)
+                                                {
+                                                    forwarded_properties = props;
+                                                }
+                                            }
+                                        }
                                         framed.codec_mut().state = handshake.requested_protocol.clone();
                                     }
                                 }
@@ -185,28 +230,47 @@ pub async fn pre_play(
                                                 uuid,
                                                 profile,
                                                 client_protocol,
+                                                peer_ip
                                             });
                                         }
                                     } else if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
-                                        let uuid = Uuid::new_v3(
-                                            &Uuid::NAMESPACE_DNS,
-                                            format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                        );
+                                        let uuid = if config.bungee.enabled {
+                                            forwarded_uuid.unwrap_or_else(|| {
+                                                Uuid::new_v3(
+                                                    &Uuid::NAMESPACE_DNS,
+                                                    format!("OfflinePlayer:{}", login_start.username).as_bytes()
+                                                )
+                                            })
+                                        } else {
+                                            Uuid::new_v3(
+                                                &Uuid::NAMESPACE_DNS,
+                                                format!("OfflinePlayer:{}", login_start.username).as_bytes(),
+                                            )
+                                        };
 
                                         let profile = AuthProfile {
                                             uuid: uuid.to_string(),
                                             username: login_start.username.clone(),
-                                            properties: vec![]
+                                            properties: if config.bungee.enabled {
+                                                forwarded_properties.clone()
+                                            } else {
+                                                vec![]
+                                            }
                                         };
 
                                         if !is_allowed_to_join(framed, uuid, banlist, whitelist, &config).await {
                                             return None;
                                         }
 
+                                        let effective_ip = forwarded_ip
+                                            .map(|ip| SocketAddr::new(ip, peer_ip.map(|a| a.port()).unwrap_or(0)))
+                                            .or(peer_ip);
+
                                         return Some(JoinRequest {
                                             uuid,
                                             profile,
                                             client_protocol,
+                                            peer_ip: effective_ip
                                         });
                                     }
                                 }

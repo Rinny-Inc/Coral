@@ -101,6 +101,10 @@ player = 512
 mob = 80
 item = 64
 experience_orb = 64
+
+[bungee]
+enabled = false
+addresses = ["127.0.0.1"]
 ```
 
 ## 🤝 Contributing
