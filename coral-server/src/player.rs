@@ -20,7 +20,7 @@ pub struct Player {
     pub gamemode: GameMode,
     pub held_slot: u8,
     pub held_item_id: i16,
-    pub latency_ms: u32,
+    pub latency_ms: i32,
     pub health: f32,
     pub food: i32,
     pub food_saturation: f32,

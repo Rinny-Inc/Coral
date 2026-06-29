@@ -70,7 +70,7 @@ pub struct ServerContext {
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
 type JoinLeave = (Player, bool);
 type GamemodeUpdate = (Uuid, GameMode);
-type PingUpdate = (Uuid, u32);
+type PingUpdate = (Uuid, i32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
 type AnimationUpdate = (i32, u8);
@@ -111,7 +111,7 @@ pub struct Channels {
     status_tx: Arc<broadcast::Sender<EntityStatusUpdate>>,
     equip_tx: Arc<broadcast::Sender<EquipmentUpdate>>,
     sound_tx: Arc<broadcast::Sender<SoundEffect>>,
-    pub shutdown_tx: Arc<broadcast::Sender<()>>,
+    shutdown_tx: Arc<broadcast::Sender<()>>,
     particle_tx: Arc<broadcast::Sender<ParticleEffect>>,
     projectile_spawn_tx: Arc<broadcast::Sender<ProjectileSpawn>>,
     projectile_move_tx: Arc<broadcast::Sender<ProjectileMove>>,

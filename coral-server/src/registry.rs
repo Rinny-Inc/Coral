@@ -108,7 +108,7 @@ impl PlayerRegistry {
             .unwrap_or((-1, -1, -1, -1))
     }
 
-    pub async fn update_latency(&self, uuid: Uuid, latency_ms: u32) {
+    pub async fn update_latency(&self, uuid: Uuid, latency_ms: i32) {
         if let Some(player) = self.players.write().await.get_mut(&uuid) {
             player.latency_ms = latency_ms;
         }

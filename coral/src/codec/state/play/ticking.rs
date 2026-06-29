@@ -18,8 +18,8 @@ use tokio_util::codec::Framed;
 use crate::{
     BreakAnimation, Channels, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect,
     codec::{
-        Codec, PlayerState, apply_potion_effect, damage_player, remove_effect, send_held_equip,
-        send_packet,
+        Codec, PlayerState, send_packet,
+        state::play::{apply_potion_effect, remove_effect, send_held_equip},
     },
 };
 
@@ -85,17 +85,7 @@ async fn tick_void_damage(
         && let Some(p) = player_registry.get(&uuid).await
         && p.y < -64.0
     {
-        let died = damage_player(
-            framed,
-            &mut state.health,
-            &mut state.food,
-            &mut state.food_saturation,
-            &mut state.is_dead,
-            4.0,
-            player_registry,
-            uuid,
-        )
-        .await;
+        let died = state.damage_player(framed, 4.0, player_registry).await;
         if died && let Some(ref name) = state.name {
             chat_tx
                 .send(ChatBuilder::plain_json(&format!(
@@ -498,17 +488,7 @@ async fn tick_effects(
         .await;
     }
     if wither_tick {
-        let died = damage_player(
-            framed,
-            &mut state.health,
-            &mut state.food,
-            &mut state.food_saturation,
-            &mut state.is_dead,
-            1.0,
-            player_registry,
-            state.uuid.unwrap_or_default(),
-        )
-        .await;
+        let died = state.damage_player(framed, 1.0, player_registry).await;
         if died && let Some(ref name) = state.name {
             chat_tx
                 .send(ChatBuilder::plain_json(&format!("{} withered away", name)))

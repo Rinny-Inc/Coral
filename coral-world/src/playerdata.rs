@@ -138,6 +138,145 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
     })
 }
 
+// TODO: complete player save and load
+/*
+// EntityHuman
+public void b(NBTTagCompound nbttagcompound) {
+        super.b(nbttagcompound);
+        nbttagcompound.set("Inventory", this.inventory.a(new NBTTagList()));
+        nbttagcompound.setInt("SelectedItemSlot", this.inventory.itemInHandIndex);
+        nbttagcompound.setBoolean("Sleeping", this.sleeping);
+        nbttagcompound.setShort("SleepTimer", (short) this.sleepTicks);
+        nbttagcompound.setFloat("XpP", this.exp);
+        nbttagcompound.setInt("XpLevel", this.expLevel);
+        nbttagcompound.setInt("XpTotal", this.expTotal);
+        nbttagcompound.setInt("Score", this.getScore());
+        if (this.c != null) {
+            nbttagcompound.setInt("SpawnX", this.c.x);
+            nbttagcompound.setInt("SpawnY", this.c.y);
+            nbttagcompound.setInt("SpawnZ", this.c.z);
+            nbttagcompound.setBoolean("SpawnForced", this.d);
+            nbttagcompound.setString("SpawnWorld", spawnWorld); // CraftBukkit - fixes bed spawns for multiworld worlds
+        }
+
+        this.foodData.b(nbttagcompound);
+        this.abilities.a(nbttagcompound);
+        nbttagcompound.set("EnderItems", this.enderChest.h());
+    }
+
+    // EntityPlayer
+    public void b(NBTTagCompound nbttagcompound) {
+            super.b(nbttagcompound);
+            nbttagcompound.setInt("playerGameType", this.playerInteractManager.getGameMode().getId());
+            this.getBukkitEntity().setExtraData(nbttagcompound); // CraftBukkit
+        }
+
+    // EntityLiving
+    public void b(NBTTagCompound nbttagcompound) {
+            nbttagcompound.setFloat("HealF", this.getHealth());
+            nbttagcompound.setShort("Health", (short) ((int) Math.ceil((double) this.getHealth())));
+            nbttagcompound.setShort("HurtTime", (short) this.hurtTicks);
+            nbttagcompound.setShort("DeathTime", (short) this.deathTicks);
+            nbttagcompound.setShort("AttackTime", (short) this.attackTicks);
+            nbttagcompound.setFloat("AbsorptionAmount", this.getAbsorptionHearts());
+            ItemStack[] aitemstack = this.getEquipment();
+            int i = aitemstack.length;
+
+            int j;
+            ItemStack itemstack;
+
+            for (j = 0; j < i; ++j) {
+                itemstack = aitemstack[j];
+                if (itemstack != null) {
+                    this.d.a(itemstack.D());
+                }
+            }
+
+            nbttagcompound.set("Attributes", GenericAttributes.a(this.getAttributeMap()));
+            aitemstack = this.getEquipment();
+            i = aitemstack.length;
+
+            for (j = 0; j < i; ++j) {
+                itemstack = aitemstack[j];
+                if (itemstack != null) {
+                    this.d.b(itemstack.D());
+                }
+            }
+
+            if (!this.effects.isEmpty()) {
+                final NBTTagList nbttaglist = new NBTTagList();
+                final Iterator<MobEffect> iterator = this.effects.values().iterator();
+
+                while (iterator.hasNext()) {
+                    MobEffect mobeffect = iterator.next();
+
+                    nbttaglist.add(mobeffect.a(new NBTTagCompound()));
+                }
+
+                nbttagcompound.set("ActiveEffects", nbttaglist);
+            }
+        }
+
+    // Entity
+    public void e(NBTTagCompound nbttagcompound) {
+            try {
+                //nbttagcompound.set("Pos", this.a(new double[] { this.locX, this.locY + (double) this.V, this.locZ}));
+                // Reaper start // TODO: check if it does shit
+                double locX = this.locX;
+                double locY = this.locY + (double) this.V;
+                double locZ = this.locZ;
+                if (Double.isNaN(locX)) locX = 0;
+                if (Double.isNaN(locY)) locY = 0;
+                if (Double.isNaN(locZ)) locZ = 0;
+                nbttagcompound.set("Pos", this.a(new double[] {locX, locY, locZ}));
+                // Reaper end
+                nbttagcompound.set("Motion", this.a(new double[] { this.motX, this.motY, this.motZ}));
+
+                // CraftBukkit start - Checking for NaN pitch/yaw and resetting to zero
+                // TODO: make sure this is the best way to address this.
+                if (Float.isNaN(this.yaw)) {
+                    this.yaw = 0;
+                }
+
+                if (Float.isNaN(this.pitch)) {
+                    this.pitch = 0;
+                }
+                // CraftBukkit end
+
+                nbttagcompound.set("Rotation", this.a(new float[] { this.yaw, this.pitch}));
+                nbttagcompound.setFloat("FallDistance", this.fallDistance);
+                nbttagcompound.setShort("Fire", (short) this.fireTicks);
+                nbttagcompound.setShort("Air", (short) this.getAirTicks());
+                nbttagcompound.setBoolean("OnGround", this.onGround);
+                nbttagcompound.setInt("Dimension", this.dimension);
+                nbttagcompound.setBoolean("Invulnerable", this.invulnerable);
+                nbttagcompound.setInt("PortalCooldown", this.portalCooldown);
+                nbttagcompound.setLong("UUIDMost", this.getUniqueID().getMostSignificantBits());
+                nbttagcompound.setLong("UUIDLeast", this.getUniqueID().getLeastSignificantBits());
+                // CraftBukkit start
+                nbttagcompound.setLong("WorldUUIDLeast", this.world.getDataManager().getUUID().getLeastSignificantBits());
+                nbttagcompound.setLong("WorldUUIDMost", this.world.getDataManager().getUUID().getMostSignificantBits());
+                //nbttagcompound.setByte("Bukkit.updateLevel", CURRENT_LEVEL); // Rinny - moved to EntityInsentient
+                nbttagcompound.setInt("Spigot.ticksLived", this.ticksLived);
+                // CraftBukkit end
+                this.b(nbttagcompound);
+                if (this.vehicle != null) {
+                    NBTTagCompound nbttagcompound1 = new NBTTagCompound();
+
+                    if (this.vehicle.c(nbttagcompound1)) {
+                        nbttagcompound.set("Riding", nbttagcompound1);
+                    }
+                }
+            } catch (Throwable throwable) {
+                CrashReport crashreport = CrashReport.a(throwable, "Saving entity NBT");
+                CrashReportSystemDetails crashreportsystemdetails = crashreport.a("Entity being saved");
+
+                this.a(crashreportsystemdetails);
+                throw new ReportedException(crashreport);
+            }
+        }
+*/
+
 pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) {
     let mut inventory_list = vec![];
     for (slot, id, count, damage) in &data.inventory {

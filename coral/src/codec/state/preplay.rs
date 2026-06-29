@@ -5,7 +5,6 @@ use coral_protocol::{
     auth::{AuthProfile, authenticate, compute_server_hash},
     encryption::{Encryption, decrypt_rsa, generate_verify_token},
     packets::{
-        PacketRegistry,
         handshake::{EnumProtocol, PacketHandshake},
         login::{EncryptionRequest, EncryptionResponse, LoginStart},
         status::{Ping, Pong, Request, Response},
@@ -22,13 +21,12 @@ use uuid::Uuid;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, is_normal_disconnect, kick, send_packet},
+    codec::{Codec, is_normal_disconnect, kick, send_packet},
 };
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
 
 pub struct PrePlayContext {
-    pub packet_registry: Arc<PacketRegistry>,
     pub player_registry: Arc<PlayerRegistry>,
     pub config: Arc<Config>,
     pub server_icon: Arc<Option<String>>,
@@ -48,21 +46,19 @@ pub struct JoinRequest {
 
 pub async fn pre_play(
     framed: &mut Framed<TcpStream, Codec>,
-    state: &mut PlayerState,
     ctx: PrePlayContext,
     peer_ip: Option<SocketAddr>,
 ) -> Option<JoinRequest> {
     let PrePlayContext {
-        packet_registry,
         player_registry,
         config,
         server_icon,
         banlist,
         whitelist,
-        ops,
         private_key,
         public_key_der,
         channels,
+        ..
     } = ctx;
     let verify_token = generate_verify_token();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
@@ -78,9 +74,8 @@ pub async fn pre_play(
                     return None;
                 }
                 result = framed.next() => {
-                    let Some(result) = result else {
-                        return None
-                    };
+                    let result = result?;
+
                     match result {
                         Ok(packet) => {
                             match framed.codec().state {
