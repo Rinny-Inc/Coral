@@ -188,7 +188,7 @@ pub fn gamemode_command(
                         .add(ChatBuilder::new("Set ").color(ChatColor::Gray))
                         .add(ChatBuilder::new(&username).color(ChatColor::White))
                         .add(ChatBuilder::new("'s gamemode to ").color(ChatColor::Gray))
-                        .add(ChatBuilder::new(&format!("{:?}", gamemode)).color(ChatColor::White))
+                        .add(ChatBuilder::new(format!("{:?}", gamemode)).color(ChatColor::White))
                         .build(),
                 )
             }

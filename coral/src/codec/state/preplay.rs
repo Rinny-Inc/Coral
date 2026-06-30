@@ -6,7 +6,7 @@ use coral_protocol::{
     encryption::{Encryption, decrypt_rsa, generate_verify_token},
     packets::{
         handshake::{EnumProtocol, PacketHandshake},
-        login::{EncryptionRequest, EncryptionResponse, LoginStart},
+        login::{self, EncryptionRequest, EncryptionResponse, LoginStart},
         status::{Ping, Pong, Request, Response},
     },
 };
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     Channels,
-    codec::{Codec, is_normal_disconnect, kick, send_packet},
+    codec::{Codec, is_normal_disconnect, kick, send_packet, state::throttle},
 };
 
 const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
@@ -37,6 +37,7 @@ pub struct PrePlayContext {
     pub public_key_der: Arc<Vec<u8>>,
     pub channels: Channels,
     pub bungee_adresses: Arc<Vec<String>>,
+    pub connection_throttle: Arc<throttle::ConnectionThrottle>,
 }
 
 pub struct JoinRequest {
@@ -61,6 +62,7 @@ pub async fn pre_play(
         public_key_der,
         channels,
         bungee_adresses,
+        connection_throttle,
         ..
     } = ctx;
     let verify_token = generate_verify_token();
@@ -169,7 +171,6 @@ pub async fn pre_play(
                                     }
                                 }
                                 EnumProtocol::Login => {
-                                    // TODO: connection throttled
                                     if !ALLOWED_PROTOCOLS.contains(&client_protocol) {
                                         kick(framed, "Unsupported version. Use 1.8.x").await;
                                         return None;
@@ -184,10 +185,15 @@ pub async fn pre_play(
                                         kick(framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
                                         return None;
                                     }
-                                    if config.server.online_mode {
-                                        if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                    if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                        if let Some(addr) = peer_ip
+                                            && !connection_throttle.check(addr.ip()).await
+                                        {
+                                            kick(framed, "Connection throttled! Please wait before reconnecting.").await;
+                                            return None;
+                                        }
+                                        if config.server.online_mode {
                                             pending_username = Some(login_start.username.clone());
-
                                             send_packet(framed, EncryptionRequest {
                                                 server_id: "".to_string(),
                                                 public_key: public_key_der.to_vec(),
@@ -195,57 +201,10 @@ pub async fn pre_play(
                                             }).await;
                                             continue;
                                         }
-
-                                        if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
-                                            let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
-                                            let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
-
-                                            if decrypted_token != verify_token {
-                                                kick(framed, "Encryption Error!").await;
-                                                return None;
-                                            }
-                                            let username = match pending_username.take() {
-                                                Some(u) => u,
-                                                None => return None
-                                            };
-
-                                            let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
-
-                                            let profile = match authenticate(&username, &server_hash).await {
-                                                Some(p) => p,
-                                                None => {
-                                                    kick(framed, "Failed to verify username!").await;
-                                                    return None
-                                                }
-                                            };
-                                            let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
-
-                                            if !is_allowed_to_join(framed, uuid, banlist, whitelist, &config).await {
-                                                return None;
-                                            }
-
-                                            framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
-
-                                            return Some(JoinRequest {
-                                                uuid,
-                                                profile,
-                                                client_protocol,
-                                                peer_ip
-                                            });
-                                        }
-                                    } else if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
                                         let uuid = if config.bungee.enabled {
-                                            forwarded_uuid.unwrap_or_else(|| {
-                                                Uuid::new_v3(
-                                                    &Uuid::NAMESPACE_DNS,
-                                                    format!("OfflinePlayer:{}", login_start.username).as_bytes()
-                                                )
-                                            })
+                                            forwarded_uuid.unwrap_or_else(|| offline_uuid(&login_start.username))
                                         } else {
-                                            Uuid::new_v3(
-                                                &Uuid::NAMESPACE_DNS,
-                                                format!("OfflinePlayer:{}", login_start.username).as_bytes(),
-                                            )
+                                            offline_uuid(&login_start.username)
                                         };
 
                                         let profile = AuthProfile {
@@ -273,6 +232,43 @@ pub async fn pre_play(
                                             peer_ip: effective_ip
                                         });
                                     }
+                                    if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
+                                        let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
+                                        let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
+
+                                        if decrypted_token != verify_token {
+                                            kick(framed, "Encryption Error!").await;
+                                            return None;
+                                        }
+                                        let username = match pending_username.take() {
+                                            Some(u) => u,
+                                            None => return None
+                                        };
+
+                                        let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
+
+                                        let profile = match authenticate(&username, &server_hash).await {
+                                            Some(p) => p,
+                                            None => {
+                                                kick(framed, "Failed to verify username!").await;
+                                                return None
+                                            }
+                                        };
+                                        let uuid = Uuid::parse_str(&profile.uuid).unwrap_or_else(|_| Uuid::new_v4());
+
+                                        if !is_allowed_to_join(framed, uuid, banlist, whitelist, &config).await {
+                                            return None;
+                                        }
+
+                                        framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
+
+                                        return Some(JoinRequest {
+                                            uuid,
+                                            profile,
+                                            client_protocol,
+                                            peer_ip
+                                        });
+                                    }
                                 }
                                 _ => {}
                             }
@@ -287,6 +283,13 @@ pub async fn pre_play(
             }
         }
     }
+}
+
+fn offline_uuid(username: &str) -> Uuid {
+    Uuid::new_v3(
+        &Uuid::NAMESPACE_DNS,
+        format!("OfflinePlayer:{}", username).as_bytes(),
+    )
 }
 
 async fn is_allowed_to_join(

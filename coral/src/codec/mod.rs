@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,12 +14,13 @@ use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::load_player_data;
 use futures::SinkExt;
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast::Sender};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use uuid::Uuid;
 
 use crate::codec::state::play::{self, send_chunks, send_spawn_player, send_weather};
 use crate::codec::state::preplay::{JoinRequest, PrePlayContext};
+use crate::codec::state::throttle;
 use crate::{EquipmentUpdate, JoinLeave, ServerContext};
 use coral_config::Config;
 use coral_protocol::encryption::Encryption;
@@ -342,7 +342,7 @@ impl PlayerState {
     async fn sync_armor(
         &self,
         player_registry: &Arc<PlayerRegistry>,
-        equip_tx: &Arc<broadcast::Sender<EquipmentUpdate>>,
+        equip_tx: &Arc<Sender<EquipmentUpdate>>,
     ) {
         let (helmet, chest, legs, boots) = self.get_equipped_armor();
 
@@ -360,7 +360,7 @@ impl PlayerState {
     async fn try_retract_fishing_hook(
         &mut self,
         projectiles: &RwLock<Vec<Projectile>>,
-        despawn_tx: &broadcast::Sender<i32>,
+        despawn_tx: &Sender<i32>,
     ) -> bool {
         let Some(hook_eid) = self.fishing_hook_eid.take() else {
             return false;
@@ -433,7 +433,10 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
             private_key: ctx.private_key.clone(),
             public_key_der: ctx.public_key_der.clone(),
             channels: ctx.channels.clone(),
-            bungee_adresses: Arc::new(ctx.config.bungee.adresses.clone()),
+            bungee_adresses: Arc::new(ctx.config.bungee.addresses.clone()),
+            connection_throttle: Arc::new(throttle::ConnectionThrottle::new(
+                ctx.config.server.connection_throttle_ms,
+            )),
         },
         peer_ip,
     )
@@ -448,8 +451,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &mut framed,
         &mut state,
         req,
-        ctx.config.server.max_players as u8,
-        &peer_ip,
         &ctx.player_registry,
         &ctx.channels.join_tx,
         &ctx.channels.chat_tx,
@@ -483,11 +484,9 @@ async fn make_player_join(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     req: JoinRequest,
-    max_players: u8,
-    peer_ip: &Option<SocketAddr>,
     player_registry: &Arc<PlayerRegistry>,
-    join_tx: &Arc<broadcast::Sender<JoinLeave>>,
-    chat_tx: &Arc<broadcast::Sender<String>>,
+    join_tx: &Arc<Sender<JoinLeave>>,
+    chat_tx: &Arc<Sender<String>>,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
@@ -535,7 +534,7 @@ async fn make_player_join(
             gamemode: config.server.default_gamemode,
             dimension: 0,
             difficulty: config.world.difficulty,
-            max_player: max_players,
+            max_player: config.server.max_players as u8,
             level_type: "flat".to_string(),
             reduced_debug_info: false,
         },
@@ -751,6 +750,7 @@ async fn make_player_join(
     send_packet(
         framed,
         SetExperience {
+            // TODO: complete save and load to player world files
             experience_bar: 0.0,
             level: 0,
             total_experience: 0,

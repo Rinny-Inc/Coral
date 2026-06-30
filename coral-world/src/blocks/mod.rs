@@ -153,16 +153,18 @@ impl WorldBlocks {
         self.get_chunk_nbt(cx, cz).await;
 
         let gen_block = generator.get(y);
-        // TODO: remove this shit
-        {
-            let mut blocks = self.blocks.write().await;
-            if block.id == gen_block.id && block.metadata == gen_block.metadata {
-                blocks.remove(&(x, y, z));
-            } else {
-                blocks.insert((x, y, z), block);
-            }
-        }
+
+        self.update_block(x, y, z, block, gen_block).await;
         self.dirty_chunks.write().await.insert((cx, cz));
+    }
+
+    async fn update_block(&self, x: i32, y: u8, z: i32, block: Block, gen_block: Block) {
+        let mut blocks = self.blocks.write().await;
+        if block.id == gen_block.id && block.metadata == gen_block.metadata {
+            blocks.remove(&(x, y, z));
+        } else {
+            blocks.insert((x, y, z), block);
+        }
     }
 
     pub async fn evict_stale_chunks(&self, max_age: Duration) {

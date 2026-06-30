@@ -18,7 +18,7 @@ pub struct Config {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Bungeecord {
     pub enabled: bool,
-    pub adresses: Vec<String>,
+    pub addresses: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -32,6 +32,7 @@ pub struct ServerConfig {
     pub whitelisted: bool,
     pub view_distance: i32,
     pub compression_threshold: i32,
+    pub connection_throttle_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -71,6 +72,7 @@ impl Default for ServerConfig {
             whitelisted: false,
             view_distance: 10,
             compression_threshold: 256,
+            connection_throttle_ms: 4000,
         }
     }
 }
@@ -109,7 +111,7 @@ impl Default for Bungeecord {
     fn default() -> Self {
         Self {
             enabled: false,
-            adresses: vec!["127.0.0.1".to_string()],
+            addresses: vec!["127.0.0.1".to_string()],
         }
     }
 }
@@ -157,6 +159,7 @@ default_gamemode = 0
 whitelisted = false
 view_distance = 10
 compression_threshold = 256
+connection_throttle_ms = 4000
 
 [chat]
 format = "<{username}> {message}"
