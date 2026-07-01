@@ -99,8 +99,7 @@ impl EntityTracker {
 
     pub fn is_visible_to(&self, entity_id: i32, viewer_x: f64, viewer_z: f64) -> bool {
         if let Some(e) = self.entities.get(&entity_id) {
-            let dist_sq = dist_sq_xz(e.x, e.z, viewer_x, viewer_z);
-            dist_sq <= e.tracking_range * e.tracking_range
+            dist_sq_xz(e.x, e.z, viewer_x, viewer_z) <= e.tracking_range * e.tracking_range
         } else {
             false
         }
@@ -110,8 +109,7 @@ impl EntityTracker {
         self.entities
             .values()
             .filter(|e| {
-                let dist_sq = dist_sq_xz(e.x, e.z, viewer_x, viewer_z);
-                dist_sq <= e.tracking_range * e.tracking_range
+                dist_sq_xz(e.x, e.z, viewer_x, viewer_z) <= e.tracking_range * e.tracking_range
             })
             .collect()
     }

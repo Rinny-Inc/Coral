@@ -47,7 +47,7 @@ use coral_server::{
     projectile::{Projectile, ProjectileKind},
     registry::{PlayerRegistry, next_entity_id},
 };
-use coral_types::{GameMode, ToolMaterial, dist_xz, dist3};
+use coral_types::{GameMode, ToolMaterial, dist_xz, dist3, look_direction};
 use coral_world::{
     blocks::{Block, WorldBlocks},
     chunk::{ChunkData, UnloadChunk},
@@ -479,12 +479,9 @@ pub async fn play(
                     && let Some(me) = player_registry.get(&uuid_val).await
                     && let Some(attacker) = player_registry.get_by_entity_id(attacker_eid).await
                 {
-                    let dx = me.x - attacker.x;
-                    let dz = me.z - attacker.z;
-                    let magnitude = (dx * dx + dz * dz).sqrt().max(0.0001);
-
-                    let mut vx = (dx / magnitude) * 0.4;
-                    let mut vz = (dz / magnitude) * 0.4;
+                    let magnitude = dist_xz(me.x, me.z, attacker.x, attacker.z).max(0.0001);
+                    let mut vx = ((me.x - attacker.x) / magnitude) * 0.4;
+                    let mut vz = ((me.z - attacker.z) / magnitude) * 0.4;
 
                     if attacker.is_sprinting {
                         let yaw_rad = (attacker.yaw * std::f32::consts::PI / 180.0) as f64;
@@ -634,14 +631,20 @@ pub async fn play(
                                         }
                                         world_blocks.set(bx, by as u8, bz, Block::air(), &generator).await;
                                         channels.block_tx.send((
-                                            bx,
-                                            by,
-                                            bz,
-                                            0,
-                                            0
+                                            bx, by, bz,
+                                            0, 0
                                         )).ok();
                                         channels.break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
-                                        channels.particle_tx.send((state.entity_id, 37, bx as f32 + 0.5, by as f32 + 0.5, bz as f32 + 0.5, 0.3, 0.3, 0.3, block.id as f32, 8)).ok();
+                                        channels.particle_tx.send((
+                                            state.entity_id,
+                                            37,
+                                            bx as f32 + 0.5,
+                                            by as f32 + 0.5,
+                                            bz as f32 + 0.5,
+                                            0.3, 0.3, 0.3,
+                                            block.id as f32,
+                                            8
+                                        )).ok();
                                         channels.sound_tx.send((
                                             block_break_sound(block.id).to_string(),
                                             bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
@@ -797,13 +800,7 @@ pub async fn play(
                                         if let Some(uuid) = state.uuid
                                             && let Some(p) = player_registry.get(&uuid).await
                                         {
-                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
-                                            let pitch_rad = p.pitch * std::f32::consts::PI / 180.0;
-
-                                            let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
-                                            let dy = (-pitch_rad.sin()) as f64;
-                                            let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
-
+                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                                             let speed = power as f64 * 3.0;
                                             let arrow_eid = next_entity_id();
 
@@ -839,13 +836,7 @@ pub async fn play(
                                             && let Some(uuid) = state.uuid
                                             && let Some(p) = player_registry.get(&uuid).await
                                         {
-                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
-                                            let pitch_rad = p.pitch * std::f32::consts::PI / 180.0;
-
-                                            let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
-                                            let dy = (-pitch_rad.sin()) as f64;
-                                            let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
-
+                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                                             let speed = 0.5;
                                             let proj_eid = next_entity_id();
 
@@ -907,13 +898,7 @@ pub async fn play(
                                             && let Some(uuid) = state.uuid
                                             && let Some(p) = player_registry.get(&uuid).await
                                         {
-                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
-                                            let pitch_rad = p.pitch * std::f32::consts::PI / 180.0;
-
-                                            let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
-                                            let dy = (-pitch_rad.sin()) as f64;
-                                            let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
-
+                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                                             let speed = 1.5;
                                             let hook_eid = next_entity_id();
 
