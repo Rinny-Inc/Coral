@@ -20,6 +20,7 @@ pub struct PlayerData {
     pub food_saturation: f32,
     pub gamemode: u8,
     pub inventory: Vec<(i16, i16, u8, i16)>,
+    pub xp_total: i32,
 }
 impl Default for PlayerData {
     fn default() -> Self {
@@ -34,6 +35,7 @@ impl Default for PlayerData {
             food_saturation: 5.0,
             gamemode: 0,
             inventory: vec![],
+            xp_total: 0,
         }
     }
 }
@@ -124,6 +126,8 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         }
     }
 
+    let xp_total = root.get("XpTotal").and_then(|t| t.as_i32()).unwrap_or(0);
+
     Some(PlayerData {
         x,
         y,
@@ -135,6 +139,7 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         food_saturation,
         gamemode,
         inventory,
+        xp_total,
     })
 }
 
@@ -318,6 +323,7 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
             NbtTag::Byte(data.gamemode as i8),
         ),
         ("Inventory".to_string(), NbtTag::List(10, inventory_list)),
+        ("XpTotal".to_string(), NbtTag::Int(data.xp_total)),
     ]);
 
     let mut nbt_bytes = Vec::new();

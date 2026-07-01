@@ -30,6 +30,7 @@ use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
     banlist::BanList,
     entity_tracker::EntityTracker,
+    experience::XpOrb,
     items::ItemRegistry,
     ops::OpsFile,
     player::Player,
@@ -69,6 +70,7 @@ pub struct ServerContext {
     banlist: Arc<RwLock<BanList>>,
     spawn_point: Arc<RwLock<(f64, f64, f64)>>,
     world_dir: Arc<PathBuf>,
+    xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
 }
 
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
@@ -92,6 +94,9 @@ type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);
 type ProjectileSpawn = (i32, i32, ProjectileKind, f64, f64, f64, f64, f64, f64);
 type ProjectileMove = (i32, f64, f64, f64);
 type SplashEffect = (Uuid, u8, u8, i32);
+type XpOrbSpawn = (i32, f64, f64, f64, i32);
+type XpOrbMove = (i32, f64, f64, f64);
+type XpPickup = (Uuid, i32);
 
 #[derive(Clone)]
 pub struct Channels {
@@ -119,6 +124,9 @@ pub struct Channels {
     projectile_spawn_tx: Arc<Sender<ProjectileSpawn>>,
     projectile_move_tx: Arc<Sender<ProjectileMove>>,
     splash_effect_tx: Arc<Sender<SplashEffect>>,
+    xp_orb_spawn_tx: Arc<Sender<XpOrbSpawn>>,
+    xp_orb_move_tx: Arc<Sender<XpOrbMove>>,
+    xp_pickup_tx: Arc<Sender<XpPickup>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -147,6 +155,9 @@ impl Channels {
             projectile_spawn_tx: Arc::new(channel::<ProjectileSpawn>(100).0),
             projectile_move_tx: Arc::new(channel::<ProjectileMove>(200).0),
             splash_effect_tx: Arc::new(channel::<SplashEffect>(100).0),
+            xp_orb_spawn_tx: Arc::new(channel::<XpOrbSpawn>(100).0),
+            xp_orb_move_tx: Arc::new(channel::<XpOrbMove>(200).0),
+            xp_pickup_tx: Arc::new(channel::<XpPickup>(100).0),
         }
     }
 }
@@ -219,6 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         banlist: Arc::new(RwLock::new(BanList::load())),
         spawn_point: Arc::new(RwLock::new(spawn_point)),
         world_dir: Arc::new(world_dir.to_path_buf()),
+        xp_orbs: Arc::new(RwLock::new(Vec::new())),
     };
 
     ctx.world_blocks.load(world_dir, &ctx.generator).await;
@@ -267,6 +279,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
+
+    spawn_xp_orb_task(
+        ctx.xp_orbs.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.player_registry.clone(),
+        ctx.channels.clone(),
+    );
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -589,6 +609,90 @@ fn spawn_projectile_task(
                 channels
                     .splash_effect_tx
                     .send((uuid, effect_id, amplifier, duration))
+                    .ok();
+            }
+        }
+    });
+}
+fn spawn_xp_orb_task(
+    xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
+    world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
+    player_registry: Arc<PlayerRegistry>,
+    channels: Channels,
+) {
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_millis(50));
+        loop {
+            interval.tick().await;
+
+            let (moves, picked_up_per_player) = {
+                let mut orbs = xp_orbs.write().await;
+                let mut moves = vec![];
+                let mut to_remove = vec![];
+                let mut pickups: Vec<(Uuid, i32)> = vec![];
+
+                let players = player_registry.get_all().await;
+                for orb in orbs.iter_mut() {
+                    orb.ticks_alive += 1;
+                    orb.vy -= 0.01;
+                    orb.vy = orb.vy.clamp(-0.3, 0.3);
+                    orb.y += orb.vy;
+
+                    let bx = orb.x.floor() as i32;
+                    let by = (orb.y.floor() as i32).clamp(0, 255) as u8;
+                    let bz = orb.z.floor() as i32;
+                    let below = world_blocks
+                        .get(bx, by.saturating_sub(1), bz, &generator)
+                        .await;
+                    if !below.is_air() && orb.vy < 0.0 {
+                        orb.vy = 0.0;
+                    }
+
+                    let mut picked = false;
+                    for p in &players {
+                        if p.is_dead {
+                            continue;
+                        }
+                        let dx = p.x - orb.x;
+                        let dy = p.y - orb.y;
+                        let dz = p.z - orb.z;
+                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+
+                        if dist < 1.0 {
+                            pickups.push((p.uuid, orb.amount));
+                            to_remove.push(orb.entity_id);
+                            picked = true;
+                            break;
+                        }
+                    }
+                    if picked {
+                        continue;
+                    }
+
+                    if orb.ticks_alive > 6000 {
+                        // TODO: make it customable
+                        to_remove.push(orb.entity_id);
+                        continue;
+                    }
+
+                    moves.push((orb.entity_id, orb.x, orb.y, orb.z));
+                }
+                orbs.retain(|o| !to_remove.contains(&o.entity_id));
+                (moves, (to_remove, pickups))
+            };
+
+            for mv in moves {
+                channels.xp_orb_move_tx.send(mv).ok();
+            }
+            for eid in picked_up_per_player.0 {
+                channels.despawn_tx.send(eid).ok();
+            }
+            for (uuid, amount) in picked_up_per_player.1 {
+                channels.xp_pickup_tx.send((uuid, amount)).ok();
+                channels
+                    .sound_tx
+                    .send(("random.orb".to_string(), 0.0, 0.0, 0.0, 0.5, 63))
                     .ok();
             }
         }

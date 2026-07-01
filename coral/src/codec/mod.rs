@@ -7,7 +7,6 @@ use std::vec;
 use bytes::{Buf, Bytes, BytesMut};
 use coral_server::effects::ActiveEffect;
 use coral_server::items::ItemRegistry;
-use coral_server::ops::OpsFile;
 use coral_server::projectile::Projectile;
 use coral_types::GameMode;
 use coral_world::generator::FlatWorldGenerator;
@@ -256,6 +255,9 @@ struct PlayerState {
     fishing_hook_eid: Option<i32>,
     is_op: bool,
     first_position_received: bool,
+    xp_level: i32,
+    xp_total: i32,
+    xp_progress: f32, // 0.0 to 1.0
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -298,6 +300,9 @@ impl PlayerState {
             fishing_hook_eid: None,
             is_op: false,
             first_position_received: false,
+            xp_level: 0,
+            xp_total: 0,
+            xp_progress: 0.0,
         }
     }
 
@@ -460,7 +465,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &ctx.config,
         &ctx.spawn_point,
         &ctx.world_dir,
-        &ctx.ops,
     )
     .await;
 
@@ -493,7 +497,6 @@ async fn make_player_join(
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
     world_dir: &Path,
-    ops: &Arc<RwLock<OpsFile>>,
 ) {
     if config.server.compression_threshold >= 0 {
         send_packet(
@@ -512,6 +515,7 @@ async fn make_player_join(
         profile,
         client_protocol,
         peer_ip,
+        is_op,
     } = req;
 
     let entity_id = next_entity_id();
@@ -708,12 +712,13 @@ async fn make_player_join(
         ))
         .ok();
     println!(
-        "[INFO] {}[/{}] logged in with entity id {}, at ([DEV] {}, {}, {})",
+        "[INFO] {}[/{}] logged in with entity id {}, at ([{:?}] {}, {}, {})",
         profile.username,
         peer_ip
             .map(|a| a.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
         entity_id,
+        world_dir.file_name().unwrap_or("unknown".as_ref()),
         px,
         py,
         pz
@@ -767,7 +772,7 @@ async fn make_player_join(
     state.health = phealth;
     state.food = pfood;
     state.food_saturation = psat;
-    state.is_op = ops.read().await.is_op(uuid);
+    state.is_op = is_op;
 
     entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,

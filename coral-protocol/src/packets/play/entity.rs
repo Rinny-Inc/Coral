@@ -397,3 +397,23 @@ impl PacketOut for EntityEquipment {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct SpawnExperienceOrb {
+    pub entity_id: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub count: i16,
+}
+impl PacketOut for SpawnExperienceOrb {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x11);
+        writer.write_varint(self.entity_id);
+        writer.write_i32((self.x * 32.0) as i32);
+        writer.write_i32((self.y * 32.0) as i32);
+        writer.write_i32((self.z * 32.0) as i32);
+        writer.write_i16(self.count);
+        Ok(())
+    }
+}

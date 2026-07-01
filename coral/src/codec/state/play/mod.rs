@@ -20,9 +20,9 @@ use coral_protocol::packets::{
         entity::{
             ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation,
             EntityEquipment, EntityHeadLook, EntityMetadata, EntityTeleport, EntityVelocity,
-            SpawnObject, SpawnPlayer, UseEntity,
+            SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseEntity,
         },
-        game::{ChangeGameState, ClientStatus, EntityStatus, Respawn, UpdateHealth},
+        game::{ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth},
         inventory::{
             ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
             SetSlot, Slot,
@@ -36,6 +36,7 @@ use coral_protocol::packets::{
 use coral_server::{
     effects::{ActiveEffect, EffectKind},
     entity_tracker::TrackedEntity,
+    experience::{self, XpOrb, xp_needed_for_level},
     items::{
         armor::{apply_armor_reduction, total_defense},
         drops::block_drop,
@@ -87,6 +88,7 @@ pub async fn play(
         generator,
         spawn_point,
         world_dir,
+        xp_orbs,
         ..
     } = ctx;
 
@@ -114,6 +116,9 @@ pub async fn play(
     let mut projectile_move_rx = channels.projectile_move_tx.subscribe();
     let mut splash_effect_rx = channels.splash_effect_tx.subscribe();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
+    let mut xp_pickup_rx = channels.xp_pickup_tx.subscribe();
+    let mut xp_orb_spawn_rx = channels.xp_orb_spawn_tx.subscribe();
+    let mut xp_orb_move_rx = channels.xp_orb_move_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -340,6 +345,38 @@ pub async fn play(
                     }
                 }
             }
+            Ok((uuid, amount)) = xp_pickup_rx.recv() => {
+                if Some(uuid) != state.uuid {
+                    continue;
+                }
+                state.xp_total += amount;
+                let (level, progress) = experience::xp_to_level(state.xp_total);
+                state.xp_level = level;
+                state.xp_progress = progress;
+
+                send_packet(framed, SetExperience {
+                    experience_bar: progress,
+                    level,
+                    total_experience: state.xp_total
+                }).await;
+
+                channels.sound_tx.send(("random.orb".to_string(), 0.0, 0.0, 0.0, 0.5, 63)).ok();
+            }
+            Ok((eid, x, y, z, amount)) = xp_orb_spawn_rx.recv() => {
+                send_packet(framed, SpawnExperienceOrb {
+                    entity_id: eid,
+                    x, y, z,
+                    count: amount as i16
+                }).await;
+            }
+            Ok((eid, x, y, z)) = xp_orb_move_rx.recv() => {
+                send_packet(framed, EntityTeleport {
+                    entity_id: eid,
+                    x, y, z,
+                    yaw: 0, pitch: 0,
+                    on_ground: false
+                }).await;
+            }
 
             Ok((eid, anim)) = anim_rx.recv() => {
                 if eid == state.entity_id {
@@ -430,9 +467,14 @@ pub async fn play(
                     food_saturation,
                 }).await;
 
+                let status = if state.is_dead {
+                    3
+                } else {
+                    2
+                };
                 send_packet(framed, EntityStatus {
                     entity_id: state.entity_id,
-                    status: 2,
+                    status,
                 }).await;
 
                 if health > 0.0
@@ -645,6 +687,23 @@ pub async fn play(
                                                     drop_eid,
                                                     (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
                                                 );
+                                            }
+
+                                            let xp = experience::xp_for_block(block.id);
+                                            if xp > 0 {
+                                                let orb_eid = next_entity_id();
+                                                let ox = bx as f64 + 0.5;
+                                                let oy = by as f64 + 0.5;
+                                                let oz = bz as f64 + 0.5;
+
+                                                xp_orbs.write().await.push(XpOrb {
+                                                    entity_id: orb_eid,
+                                                    x: ox, y: oy, z: oz,
+                                                    vy: 0.2,
+                                                    amount: xp,
+                                                    ticks_alive: 0
+                                                });
+                                                channels.xp_orb_spawn_tx.send((orb_eid, ox, oy, oz, xp)).ok();
                                             }
                                         }
                                     }
@@ -1011,7 +1070,7 @@ pub async fn play(
                                     continue;
                                 }
                                 let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
-                                //println!("[CHAT] {}", json);
+
                                 channels.chat_tx.send(json).ok();
                             }
                             continue;
@@ -1313,6 +1372,19 @@ pub async fn play(
                                                 target.username,
                                                 state.name.clone().unwrap_or_default()
                                             ))).ok();
+
+                                            let xp_amount = level_to_xp_drop(1); // TODO: add xp_level, xp_total to coral_server::Player
+                                            if xp_amount > 0 {
+                                                let orb_eid = next_entity_id();
+                                                xp_orbs.write().await.push(XpOrb {
+                                                    entity_id: orb_eid,
+                                                    x: target.x, y: target.y + 0.5, z: target.z,
+                                                    vy: 0.3,
+                                                    amount: xp_amount,
+                                                    ticks_alive: 0,
+                                                });
+                                                channels.xp_orb_spawn_tx.send((orb_eid, target.x, target.y + 0.5, target.z, xp_amount)).ok();
+                                            }
                                         }
 
                                         channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
@@ -1398,6 +1470,7 @@ pub async fn play(
                 food_saturation: state.food_saturation,
                 gamemode: u8::from(state.gamemode),
                 inventory: inventory_data,
+                xp_total: state.xp_total,
             };
             save_player_data(&world_dir, &uuid, &data).await;
             channels.join_tx.send((p, false)).ok();
@@ -1652,6 +1725,16 @@ pub async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &P
         player.boots,
     )
     .await;
+}
+
+fn level_to_xp_drop(level: i32) -> i32 {
+    if level == 0 {
+        return 0;
+    }
+
+    let xp_in_current_level = xp_needed_for_level(level - 1);
+    let drop = (xp_in_current_level * 7).min(100);
+    drop.max(0)
 }
 
 fn send_held_equip(equip_tx: &Arc<Sender<EquipmentUpdate>>, state: &PlayerState) {

@@ -6,7 +6,7 @@ use coral_protocol::{
     encryption::{Encryption, decrypt_rsa, generate_verify_token},
     packets::{
         handshake::{EnumProtocol, PacketHandshake},
-        login::{self, EncryptionRequest, EncryptionResponse, LoginStart},
+        login::{EncryptionRequest, EncryptionResponse, LoginStart},
         status::{Ping, Pong, Request, Response},
     },
 };
@@ -45,6 +45,7 @@ pub struct JoinRequest {
     pub profile: AuthProfile,
     pub client_protocol: i32,
     pub peer_ip: Option<SocketAddr>,
+    pub is_op: bool,
 }
 
 pub async fn pre_play(
@@ -63,7 +64,7 @@ pub async fn pre_play(
         channels,
         bungee_adresses,
         connection_throttle,
-        ..
+        ops,
     } = ctx;
     let verify_token = generate_verify_token();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
@@ -229,7 +230,8 @@ pub async fn pre_play(
                                             uuid,
                                             profile,
                                             client_protocol,
-                                            peer_ip: effective_ip
+                                            peer_ip: effective_ip,
+                                            is_op: ops.read().await.is_op(uuid),
                                         });
                                     }
                                     if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
@@ -266,7 +268,8 @@ pub async fn pre_play(
                                             uuid,
                                             profile,
                                             client_protocol,
-                                            peer_ip
+                                            peer_ip,
+                                            is_op: ops.read().await.is_op(uuid)
                                         });
                                     }
                                 }
