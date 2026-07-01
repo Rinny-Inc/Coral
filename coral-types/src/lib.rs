@@ -47,3 +47,28 @@ impl From<GameMode> for u8 {
         value as u8
     }
 }
+
+#[inline]
+pub fn dist_xz(x1: f64, z1: f64, x2: f64, z2: f64) -> f64 {
+    dist_sq_xz(x1, z1, x2, z2).sqrt()
+}
+
+#[inline]
+pub fn dist_sq_xz(x1: f64, z1: f64, x2: f64, z2: f64) -> f64 {
+    let dx = x1 - x2;
+    let dz = z1 - z2;
+    dx * dx + dz * dz
+}
+
+#[inline]
+pub fn dist3(x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64) -> f64 {
+    dist_sq3(x1, y1, z1, x2, y2, z2).sqrt()
+}
+
+#[inline]
+pub fn dist_sq3(x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64) -> f64 {
+    let dx = x1 - x2;
+    let dy = y1 - y2;
+    let dz = z1 - z2;
+    dx * dx + dy * dy + dz * dz
+}

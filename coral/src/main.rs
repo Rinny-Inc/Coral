@@ -8,7 +8,7 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
-use coral_types::GamemodeUpdate;
+use coral_types::{GamemodeUpdate, dist_sq3, dist3};
 use rsa::RsaPrivateKey;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -517,10 +517,8 @@ fn spawn_projectile_task(
                                 let effects = coral_server::items::potions::potion_effects(meta);
                                 let players = player_registry.get_all().await;
                                 for target in &players {
-                                    let dx = target.x - proj.x;
-                                    let dy = target.y - proj.y;
-                                    let dz = target.z - proj.z;
-                                    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                                    let dist =
+                                        dist3(target.x, target.y, target.z, proj.x, proj.y, proj.z);
 
                                     if dist <= 4.0 {
                                         let potency = 1.0 - (dist / 4.0);
@@ -551,12 +549,8 @@ fn spawn_projectile_task(
                             if target.is_dead {
                                 continue;
                             }
-                            let dx = target.x - proj.x;
-                            let dy = target.y - proj.y;
-                            let dz = target.z - proj.z;
-                            let dist_sq = dx * dx + dy * dy + dz * dz;
-
-                            if dist_sq < 0.64 {
+                            if dist_sq3(target.x, target.y, target.z, proj.x, proj.y, proj.z) < 0.64
+                            {
                                 let speed =
                                     (proj.vx.powi(2) + proj.vy.powi(2) + proj.vz.powi(2)).sqrt();
                                 let damage = (speed * 3.0).clamp(2.0, 10.0) as f32;
@@ -654,12 +648,7 @@ fn spawn_xp_orb_task(
                         if p.is_dead {
                             continue;
                         }
-                        let dx = p.x - orb.x;
-                        let dy = p.y - orb.y;
-                        let dz = p.z - orb.z;
-                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-
-                        if dist < 1.0 {
+                        if dist3(p.x, p.y, p.z, orb.x, orb.y, orb.z) < 1.0 {
                             pickups.push((p.uuid, orb.amount));
                             to_remove.push(orb.entity_id);
                             picked = true;

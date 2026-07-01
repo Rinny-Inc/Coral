@@ -47,7 +47,7 @@ use coral_server::{
     projectile::{Projectile, ProjectileKind},
     registry::{PlayerRegistry, next_entity_id},
 };
-use coral_types::{GameMode, ToolMaterial};
+use coral_types::{GameMode, ToolMaterial, dist_xz, dist3};
 use coral_world::{
     blocks::{Block, WorldBlocks},
     chunk::{ChunkData, UnloadChunk},
@@ -442,10 +442,7 @@ pub async fn play(
                         }).await;
                     }
                     if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
-                        let dx = player.x - me.x;
-                        let dz = player.z - me.z;
-                        let dist = (dx * dx + dz * dz).sqrt();
-                        if dist > config.tracking.player {
+                        if dist_xz(player.x, player.z, me.x, me.z) > config.tracking.player {
                             continue;
                         }
                     }
@@ -1326,12 +1323,7 @@ pub async fn play(
                                         } else {
                                             4.0
                                         };
-                                        let dx = me.x - target.x;
-                                        let dy = me.y - target.y;
-                                        let dz = me.z - target.z;
-                                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-
-                                        if dist > reach {
+                                        if dist3(me.x, me.y, me.z, target.x, target.y, target.z) > reach {
                                             continue;
                                         }
                                         let strength_bonus = state.active_effects.iter()

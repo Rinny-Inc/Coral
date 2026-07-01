@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use coral_types::dist_sq_xz;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -98,9 +99,7 @@ impl EntityTracker {
 
     pub fn is_visible_to(&self, entity_id: i32, viewer_x: f64, viewer_z: f64) -> bool {
         if let Some(e) = self.entities.get(&entity_id) {
-            let dx = e.x - viewer_x;
-            let dz = e.z - viewer_z;
-            let dist_sq = dx * dx + dz * dz;
+            let dist_sq = dist_sq_xz(e.x, e.z, viewer_x, viewer_z);
             dist_sq <= e.tracking_range * e.tracking_range
         } else {
             false
@@ -111,9 +110,7 @@ impl EntityTracker {
         self.entities
             .values()
             .filter(|e| {
-                let dx = e.x - viewer_x;
-                let dz = e.z - viewer_z;
-                let dist_sq = dx * dx + dz * dz;
+                let dist_sq = dist_sq_xz(e.x, e.z, viewer_x, viewer_z);
                 dist_sq <= e.tracking_range * e.tracking_range
             })
             .collect()
