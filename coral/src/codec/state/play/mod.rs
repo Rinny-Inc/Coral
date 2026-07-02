@@ -217,9 +217,9 @@ pub async fn play(
                 state.current_weather = weather.clone();
                 send_weather(framed, weather).await;
             }
-            Ok(eid) = despawn_rx.recv() => {
+            Ok(entity_ids) = despawn_rx.recv() => {
                 send_packet(framed, DestroyEntities {
-                    entity_ids: vec![eid]
+                    entity_ids
                 }).await;
             }
             Ok((eid, status)) = status_rx.recv() => {

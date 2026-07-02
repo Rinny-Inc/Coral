@@ -365,7 +365,7 @@ impl PlayerState {
     async fn try_retract_fishing_hook(
         &mut self,
         projectiles: &RwLock<Vec<Projectile>>,
-        despawn_tx: &Sender<i32>,
+        despawn_tx: &Sender<Vec<i32>>,
     ) -> bool {
         let Some(hook_eid) = self.fishing_hook_eid.take() else {
             return false;
@@ -374,7 +374,7 @@ impl PlayerState {
             .write()
             .await
             .retain(|p| p.entity_id != hook_eid);
-        despawn_tx.send(hook_eid).ok();
+        despawn_tx.send(vec![hook_eid]).ok();
         true
     }
 

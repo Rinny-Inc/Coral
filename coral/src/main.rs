@@ -82,7 +82,7 @@ type AnimationUpdate = (i32, u8);
 type MetadataUpdate = (i32, u8, u8);
 type DamageEvent = (Uuid, f32, i32, f32, i32);
 type ItemDrop = (i32, f64, f64, f64, i16, u8, i16);
-type DespawnEntity = i32;
+type DespawnEntity = Vec<i32>;
 type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
 type ItemPickup = (i32, Uuid, i32);
 type TimeUpdate = (i64, i64);
@@ -142,7 +142,7 @@ impl Channels {
             meta_tx: Arc::new(channel::<MetadataUpdate>(100).0),
             dmg_tx: Arc::new(channel::<DamageEvent>(100).0),
             item_tx: Arc::new(channel::<ItemDrop>(1000).0),
-            despawn_tx: Arc::new(channel::<DespawnEntity>(100).0),
+            despawn_tx: Arc::new(channel::<DespawnEntity>(50).0),
             pickup_tx: Arc::new(channel::<ItemPickup>(100).0),
             time_tx: Arc::new(channel::<TimeUpdate>(1).0),
             weather_tx: Arc::new(channel::<WeatherUpdate>(1).0),
@@ -363,7 +363,7 @@ fn spawn_weather_task(weather_tx: Arc<Sender<WeatherState>>) {
     });
 }
 fn spawn_item_despawn_task(
-    despawn_tx: Arc<Sender<i32>>,
+    despawn_tx: Arc<Sender<DespawnEntity>>,
     item_despawn_secs: u64,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
@@ -387,11 +387,11 @@ fn spawn_item_despawn_task(
             let mut times = item_spawn_times.write().await;
             let mut positions = item_positions.write().await;
 
-            for eid in expired {
-                times.remove(&eid);
-                positions.remove(&eid);
-                despawn_tx.send(eid).ok();
+            for eid in &expired {
+                times.remove(eid);
+                positions.remove(eid);
             }
+            despawn_tx.send(expired).ok();
         }
     });
 }
@@ -596,9 +596,7 @@ fn spawn_projectile_task(
             for mv in moves {
                 channels.projectile_move_tx.send(mv).ok();
             }
-            for eid in to_remove {
-                channels.despawn_tx.send(eid).ok();
-            }
+            channels.despawn_tx.send(to_remove).ok();
             for (uuid, effect_id, amplifier, duration) in splash_effects {
                 channels
                     .splash_effect_tx
@@ -674,9 +672,7 @@ fn spawn_xp_orb_task(
             for mv in moves {
                 channels.xp_orb_move_tx.send(mv).ok();
             }
-            for eid in picked_up_per_player.0 {
-                channels.despawn_tx.send(eid).ok();
-            }
+            channels.despawn_tx.send(picked_up_per_player.0).ok();
             for (uuid, amount) in picked_up_per_player.1 {
                 channels.xp_pickup_tx.send((uuid, amount)).ok();
                 channels
