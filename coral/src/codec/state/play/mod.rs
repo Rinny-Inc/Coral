@@ -569,7 +569,11 @@ pub async fn play(
                         if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
                             let slot = held.slot.clamp(0, 8) as u8;
                             state.held_slot = slot;
-                            state.held_item = state.inventory.slots[slot as usize]
+
+                            let internal_idx = Inventory::packet_to_internal(36 + slot as i16)
+                                .unwrap_or(slot as usize);
+
+                            state.held_item = state.inventory.slots[internal_idx]
                                 .as_ref()
                                 .map(|s| s.item_id)
                                 .unwrap_or(-1);
@@ -808,7 +812,7 @@ pub async fn play(
                                                 entity_id: arrow_eid,
                                                 owner_entity_id: state.entity_id,
                                                 kind: ProjectileKind::Arrow,
-                                                x: p.x, y: p.y, z: p.z,
+                                                x: p.x, y: p.y + 1.5, z: p.z,
                                                 vx: dx * speed,
                                                 vy: dy * speed,
                                                 vz: dz * speed,
@@ -818,7 +822,8 @@ pub async fn play(
                                             projectiles.write().await.push(proj.clone());
                                             channels.projectile_spawn_tx.send((
                                                 arrow_eid, state.entity_id, ProjectileKind::Arrow,
-                                                proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
+                                                proj.x, proj.y, proj.z,
+                                                proj.vx, proj.vy, proj.vz
                                             )).ok();
 
                                             channels.sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();

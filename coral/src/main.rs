@@ -391,7 +391,9 @@ fn spawn_item_despawn_task(
                 times.remove(eid);
                 positions.remove(eid);
             }
-            despawn_tx.send(expired).ok();
+            if !expired.is_empty() {
+                despawn_tx.send(expired).ok();
+            }
         }
     });
 }
@@ -596,7 +598,9 @@ fn spawn_projectile_task(
             for mv in moves {
                 channels.projectile_move_tx.send(mv).ok();
             }
-            channels.despawn_tx.send(to_remove).ok();
+            if !to_remove.is_empty() {
+                channels.despawn_tx.send(to_remove).ok();
+            }
             for (uuid, effect_id, amplifier, duration) in splash_effects {
                 channels
                     .splash_effect_tx
@@ -672,7 +676,9 @@ fn spawn_xp_orb_task(
             for mv in moves {
                 channels.xp_orb_move_tx.send(mv).ok();
             }
-            channels.despawn_tx.send(picked_up_per_player.0).ok();
+            if !picked_up_per_player.0.is_empty() {
+                channels.despawn_tx.send(picked_up_per_player.0).ok();
+            }
             for (uuid, amount) in picked_up_per_player.1 {
                 channels.xp_pickup_tx.send((uuid, amount)).ok();
                 channels

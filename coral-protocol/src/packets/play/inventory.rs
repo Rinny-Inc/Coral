@@ -206,10 +206,9 @@ impl Inventory {
 
     pub fn packet_to_internal(slot: i16) -> Option<usize> {
         match slot {
-            0..=8 => Some(slot as usize),                  // hotbar
-            9..=35 => Some(slot as usize),                 // inventory
-            100..=103 => Some((slot - 100 + 36) as usize), // gear
-            80..=83 => Some((slot - 80 + 40) as usize),    // craft
+            36..=44 => Some((slot - 36) as usize),
+            9..=35 => Some(slot as usize),
+            5..=8 => Some((slot - 5 + 36) as usize),
             _ => None,
         }
     }
