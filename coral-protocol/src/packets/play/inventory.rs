@@ -147,14 +147,14 @@ impl PacketOut for SetSlot {
     }
 }
 
-pub struct Slot {
+pub struct ItemStack {
     pub item_id: i16,
     pub count: u8,
     pub metadata: i16,
     pub durability: i16,
 }
 pub struct Inventory {
-    pub slots: [Option<Slot>; 44],
+    pub slots: [Option<ItemStack>; 44],
 }
 impl Inventory {
     pub fn new() -> Self {
@@ -183,7 +183,7 @@ impl Inventory {
         // empty slot
         for (i, slot) in self.slots.iter_mut().enumerate().take(36) {
             if slot.is_none() {
-                *slot = Some(Slot {
+                *slot = Some(ItemStack {
                     item_id,
                     count,
                     metadata,

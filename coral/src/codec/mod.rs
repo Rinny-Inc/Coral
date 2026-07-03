@@ -29,7 +29,7 @@ use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
 use coral_protocol::packets::play::entity::EntityMetadata;
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
-use coral_protocol::packets::play::inventory::{Inventory, Slot, WindowItems};
+use coral_protocol::packets::play::inventory::{Inventory, ItemStack, WindowItems};
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
 use coral_protocol::packets::{PacketIn, PacketOut};
@@ -629,7 +629,7 @@ async fn make_player_join(
     if let Some(d) = &saved {
         for (packet_slot, item_id, count, metadata) in &d.inventory {
             if let Some(idx) = Inventory::packet_to_internal(*packet_slot) {
-                state.inventory.slots[idx] = Some(Slot {
+                state.inventory.slots[idx] = Some(ItemStack {
                     item_id: *item_id,
                     count: *count,
                     metadata: *metadata,

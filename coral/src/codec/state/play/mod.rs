@@ -25,7 +25,7 @@ use coral_protocol::packets::{
         game::{ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth},
         inventory::{
             ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
-            SetSlot, Slot,
+            ItemStack, SetSlot,
         },
         movement::{
             PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
@@ -751,7 +751,7 @@ pub async fn play(
                                     } else {
                                         if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
                                             slot.count -= 1;
-                                            let dropped = Slot {
+                                            let dropped = ItemStack {
                                                 item_id: slot.item_id,
                                                 count: 1,
                                                 metadata: slot.metadata,
@@ -1216,7 +1216,7 @@ pub async fn play(
                                 if creative.item_id == -1 {
                                     state.inventory.slots[idx] = None;
                                 } else {
-                                    state.inventory.slots[idx] = Some(Slot {
+                                    state.inventory.slots[idx] = Some(ItemStack {
                                         item_id: creative.item_id,
                                         count: creative.item_count,
                                         metadata: creative.item_damage,
