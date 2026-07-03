@@ -29,7 +29,7 @@ use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
 use coral_protocol::packets::play::entity::EntityMetadata;
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
-use coral_protocol::packets::play::inventory::{Inventory, WindowItems};
+use coral_protocol::packets::play::inventory::{Inventory, Slot, WindowItems};
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
 use coral_protocol::packets::{PacketIn, PacketOut};
@@ -599,7 +599,7 @@ async fn make_player_join(
     }
 
     let saved = load_player_data(world_dir, &uuid).await;
-    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = saved {
+    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = &saved {
         (
             d.x,
             d.y,
@@ -625,6 +625,19 @@ async fn make_player_join(
             GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival),
         )
     };
+
+    if let Some(d) = &saved {
+        for (packet_slot, item_id, count, metadata) in &d.inventory {
+            if let Some(idx) = Inventory::packet_to_internal(*packet_slot) {
+                state.inventory.slots[idx] = Some(Slot {
+                    item_id: *item_id,
+                    count: *count,
+                    metadata: *metadata,
+                    durability: 0,
+                });
+            }
+        }
+    }
 
     if client_protocol == 47 {
         send_packet(
@@ -773,6 +786,10 @@ async fn make_player_join(
     state.entity_id = entity_id;
     state.name = Some(profile.username);
     state.gamemode = pgm;
+    state.held_item = state.inventory.slots[state.held_slot as usize]
+        .as_ref()
+        .map(|s| s.item_id)
+        .unwrap_or(-1);
     state.health = phealth;
     state.food = pfood;
     state.food_saturation = psat;

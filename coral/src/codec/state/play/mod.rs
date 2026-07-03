@@ -909,6 +909,7 @@ pub async fn play(
                         }
 
                         if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
+                            // INTERACT
                             if place.face == 255 {
                                 if let Some((_hunger, _saturation)) = item_registry.food_value(state.held_item)
                                     && state.food < 20
@@ -993,6 +994,7 @@ pub async fn play(
                                 channels.bed_tx.send((state.entity_id, place.x, place.y as i32, place.z)).ok();
                                 continue;
                             }
+                            // INTERACT
                             if place.held_item_id == -1 {
                                 continue;
                             }
@@ -1017,6 +1019,11 @@ pub async fn play(
                             if block_id <= 0 || block_id > 255 {
                                 continue;
                             }
+
+                            let block_meta = state.inventory.slots[state.held_slot as usize]
+                                .as_ref()
+                                .map(|s| s.metadata as u8)
+                                .unwrap_or(0);
 
                             if state.gamemode == GameMode::Survival {
                                 let hotbar_slot = state.held_slot as usize;
@@ -1052,8 +1059,8 @@ pub async fn play(
                                 }
                             }
 
-                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, 0), &generator).await;
-                            channels.block_tx.send((tx, ty, tz, block_id, 0)).ok();
+                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta), &generator).await;
+                            channels.block_tx.send((tx, ty, tz, block_id, block_meta)).ok();
                             channels.sound_tx.send((
                                 block_break_sound(block_id as u8).to_string(),
                                 tx as f64 + 0.5, ty as f64 + 0.5, tz as f64 + 0.5,
