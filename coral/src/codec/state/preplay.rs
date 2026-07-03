@@ -11,7 +11,7 @@ use coral_protocol::{
     },
 };
 use coral_server::{
-    banlist::BanList, ops::OpsFile, registry::PlayerRegistry, whitelist::WhitelistFile,
+    banlist::BanList, ops::OpsFile, player::registry::PlayerRegistry, whitelist::WhitelistFile,
 };
 use rsa::RsaPrivateKey;
 use tokio::{net::TcpStream, sync::RwLock};

@@ -1,8 +1,8 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
-use coral_server::registry::PlayerRegistry;
-use coral_types::{GameMode, GamemodeUpdate};
+use coral_server::{ops::OpsFile, player::registry::PlayerRegistry};
+use coral_types::{DamageEvent, GameMode, GamemodeUpdate};
 use tokio::sync::{RwLock, broadcast::Sender};
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
@@ -12,6 +12,7 @@ pub type CommandHandler = Arc<dyn Fn(CommandContext) -> CommandFuture + Send + S
 pub struct CommandContext {
     pub sender: String,
     pub args: Vec<String>,
+    pub is_op: bool,
 }
 impl CommandContext {
     pub fn arg(&self, index: usize) -> Option<&str> {
@@ -97,7 +98,13 @@ pub fn version_command() -> Command {
                         .click_url("https://github.com/Rinny-Inc/Coral")
                         .hover_text("Open Coral Github Page"),
                 )
-                .add(ChatBuilder::new(" for Minecraft Protocol 47 (1.8.x)").color(ChatColor::White))
+                .add(ChatBuilder::new(" version ").color(ChatColor::White))
+                .add(
+                    ChatBuilder::new(format!("git-Coral-{}", env!("GIT_HASH")))
+                        .color(ChatColor::LightPurple)
+                        .hover_text("Git commit hash"),
+                )
+                .add(ChatBuilder::new(" (Implementing API version 1.8.x)").color(ChatColor::White))
                 .build();
             CommandResult::Success(msg)
         }),
@@ -140,8 +147,7 @@ pub fn list_command(player_registry: Arc<PlayerRegistry>) -> Command {
     }
 }
 
-// TODO: check if player is op
-// then in the future check if the player has the permission
+// TODO: in the future check if the player has the permission
 pub fn gamemode_command(
     player_registry: Arc<PlayerRegistry>,
     gm_tx: Arc<Sender<GamemodeUpdate>>,
@@ -154,6 +160,9 @@ pub fn gamemode_command(
             let registry = player_registry.clone();
             let tx = gm_tx.clone();
             async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
                 let Some(mode_arg) = ctx.arg(1) else {
                     return CommandResult::Error("Usage: /gamemode <mode> [player]".to_string());
                 };
@@ -191,6 +200,113 @@ pub fn gamemode_command(
                         .add(ChatBuilder::new(format!("{:?}", gamemode)).color(ChatColor::White))
                         .build(),
                 )
+            }
+        }),
+    }
+}
+pub fn kill_command(
+    player_registry: Arc<PlayerRegistry>,
+    dmg_tx: Arc<Sender<DamageEvent>>,
+) -> Command {
+    Command {
+        name: "kill".to_string(),
+        description: "Kill yourself or another player".to_string(),
+        usage: "/kill [player]".to_string(),
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let tx = dmg_tx.clone();
+            async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
+                let target_name = ctx.arg(1).unwrap_or(&ctx.sender).to_string();
+                let players = registry.get_all().await;
+                let Some(target) = players
+                    .iter()
+                    .find(|p| p.username.to_lowercase() == target_name.to_lowercase())
+                else {
+                    return CommandResult::Error(format!("Player not found: {}", target_name));
+                };
+
+                registry
+                    .update_health(target.uuid, 0.0, target.food, target.food_saturation)
+                    .await;
+                tx.send((
+                    target.uuid,
+                    0.0,
+                    target.food,
+                    target.food_saturation,
+                    target.entity_id,
+                ))
+                .ok();
+
+                CommandResult::Broadcast(format!("{} was killed", target.username))
+            }
+        }),
+    }
+}
+
+pub fn op_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
+    Command {
+        name: "op".to_string(),
+        description: "Grant operator status".to_string(),
+        usage: "/op <player>".to_string(),
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let ops = ops.clone();
+            async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
+                let Some(target_name) = ctx.arg(1) else {
+                    return CommandResult::Error("Usage: /op <player>".to_string());
+                };
+
+                let players = registry.get_all().await;
+                let Some(target) = players
+                    .iter()
+                    .find(|p| p.username.to_lowercase() == target_name.to_lowercase())
+                else {
+                    return CommandResult::Error(format!("Player not found: {}", target_name));
+                };
+
+                ops.write().await.add(target.uuid, &target.username, 4);
+
+                CommandResult::Success(format!("Made {} a server operator", target.username))
+            }
+        }),
+    }
+}
+pub fn deop_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
+    Command {
+        name: "deop".to_string(),
+        description: "Revoke operator status".to_string(),
+        usage: "/deop <player>".to_string(),
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let ops = ops.clone();
+            async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
+                let Some(target_name) = ctx.arg(1) else {
+                    return CommandResult::Error("Usage: /deop <player>".to_string());
+                };
+
+                let players = registry.get_all().await;
+                let Some(target) = players
+                    .iter()
+                    .find(|p| p.username.to_lowercase() == target_name.to_lowercase())
+                else {
+                    return CommandResult::Error(format!("Player not found: {}", target_name));
+                };
+
+                ops.write().await.remove(&target.uuid);
+
+                CommandResult::Success(format!(
+                    "Made {} no longer a server operator",
+                    target.username
+                ))
             }
         }),
     }

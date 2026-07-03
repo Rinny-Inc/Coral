@@ -417,3 +417,22 @@ impl PacketOut for SpawnExperienceOrb {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct UseBed {
+    pub entity_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+impl PacketOut for UseBed {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x0A);
+        writer.write_varint(self.entity_id);
+        let pos = ((self.x as i64 & 0x3FFFFFF) << 38)
+            | ((self.y as i64 & 0xFFF) << 26)
+            | (self.z as i64 & 0x3FFFFFF);
+        writer.write_i64(pos);
+        Ok(())
+    }
+}

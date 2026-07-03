@@ -5,7 +5,8 @@ use coral_protocol::packets::play::{
     chat::builder::ChatBuilder, game::UpdateHealth, inventory::SetSlot,
 };
 use coral_server::{
-    bounding_box::EntityBounds, effects::EffectKind, items::ItemRegistry, registry::PlayerRegistry,
+    bounding_box::EntityBounds, effects::EffectKind, items::ItemRegistry,
+    player::registry::PlayerRegistry,
 };
 use coral_types::GameMode;
 use rand::RngExt;

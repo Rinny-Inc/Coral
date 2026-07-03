@@ -152,6 +152,27 @@ impl PlayerRegistry {
             .unwrap_or_default()
     }
 
+    pub async fn update_sleeping(&self, uuid: Uuid, sleeping: bool) {
+        if let Some(p) = self.players.write().await.get_mut(&uuid) {
+            p.is_sleeping = sleeping;
+        }
+    }
+
+    pub async fn count_sleeping(&self) -> usize {
+        self.players
+            .read()
+            .await
+            .values()
+            .filter(|p| p.is_sleeping)
+            .count()
+    }
+
+    pub async fn clear_all_sleeping(&self) {
+        for p in self.players.write().await.values_mut() {
+            p.is_sleeping = false;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn update_position(
         &self,

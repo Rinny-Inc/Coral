@@ -1,5 +1,7 @@
 use uuid::Uuid;
 
+pub type DamageEvent = (Uuid, f32, i32, f32, i32);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolKind {
     Pickaxe,

@@ -46,7 +46,7 @@ use coral_protocol::{
 use coral_server::{
     entity_tracker::{EntityTracker, TrackedEntity},
     player::Player,
-    registry::{PlayerRegistry, next_entity_id},
+    player::registry::{PlayerRegistry, next_entity_id},
 };
 use coral_world::{blocks::WorldBlocks, weather::WeatherState};
 
@@ -258,6 +258,8 @@ struct PlayerState {
     xp_level: i32,
     xp_total: i32,
     xp_progress: f32, // 0.0 to 1.0
+    is_sleeping: bool,
+    bed_spawn: Option<(i32, i32, i32)>,
 }
 impl PlayerState {
     fn new(default_gamemode: u8) -> Self {
@@ -303,6 +305,8 @@ impl PlayerState {
             xp_level: 0,
             xp_total: 0,
             xp_progress: 0.0,
+            is_sleeping: false,
+            bed_spawn: None,
         }
     }
 

@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering::Relaxed},
     time::{Duration, Instant},
 };
 
@@ -20,7 +20,7 @@ use coral_protocol::packets::{
         entity::{
             ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation,
             EntityEquipment, EntityHeadLook, EntityMetadata, EntityTeleport, EntityVelocity,
-            SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseEntity,
+            SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed, UseEntity,
         },
         game::{ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth},
         inventory::{
@@ -44,8 +44,8 @@ use coral_server::{
     },
     mining::break_time_ticks,
     player::Player,
+    player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind},
-    registry::{PlayerRegistry, next_entity_id},
 };
 use coral_types::{GameMode, ToolMaterial, dist_xz, dist3, look_direction};
 use coral_world::{
@@ -89,6 +89,7 @@ pub async fn play(
         spawn_point,
         world_dir,
         xp_orbs,
+        world_time,
         ..
     } = ctx;
 
@@ -119,6 +120,8 @@ pub async fn play(
     let mut xp_pickup_rx = channels.xp_pickup_tx.subscribe();
     let mut xp_orb_spawn_rx = channels.xp_orb_spawn_tx.subscribe();
     let mut xp_orb_move_rx = channels.xp_orb_move_tx.subscribe();
+    let mut bed_rx = channels.bed_tx.subscribe();
+    let mut wake_rx = channels.wake_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -148,6 +151,25 @@ pub async fn play(
                     &item_positions,
                     &channels,
                 ).await;
+            }
+            Ok((eid, x, y, z)) = bed_rx.recv() => {
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(framed, UseBed {
+                    entity_id: eid,
+                    x, y, z
+                }).await;
+            }
+            Ok(()) = wake_rx.recv() => {
+                if !state.is_sleeping {
+                    continue;
+                }
+                state.is_sleeping = false;
+                send_packet(framed, EntityAnimation {
+                    entity_id: state.entity_id,
+                    animation: 2
+                }).await;
             }
             Ok((sender_eid, id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
                 if state.entity_id == sender_eid {
@@ -229,6 +251,7 @@ pub async fn play(
                 }).await;
             }
             Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
+                // TODO: filter sounds that are sent client side & skip sound maker
                 send_packet(framed, NamedSoundEffect {
                     sound, x, y, z, volume, pitch
                 }).await;
@@ -243,6 +266,7 @@ pub async fn play(
                 }).await;
             }
             Ok((world_age, time_of_day)) = time_rx.recv() => {
+                world_time.store(time_of_day, Relaxed);
                 send_packet(framed, TimeUpdate {
                     world_age,
                     time_of_day
@@ -441,10 +465,10 @@ pub async fn play(
                             ping: player.latency_ms as i16
                         }).await;
                     }
-                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
-                        if dist_xz(player.x, player.z, me.x, me.z) > config.tracking.player {
-                            continue;
-                        }
+                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await
+                        && dist_xz(player.x, player.z, me.x, me.z) > config.tracking.player
+                    {
+                        continue;
                     }
                     send_spawn_player(framed, &player).await;
                 }
@@ -553,14 +577,15 @@ pub async fn play(
                             if let Some((sent_id, sent_time)) = state.last_sent_keep_alive.take()
                                 && ka.id == sent_id
                             {
-                                state.latency_ms.1 = state.latency_ms.0;
+                                let (actual, last) = state.latency_ms;
+                                state.latency_ms.1 = actual;
                                 state.latency_ms.0 = sent_time.elapsed().as_millis() as i32;
                                 if let Some(uuid) = state.uuid {
-                                    player_registry.update_latency(uuid, state.latency_ms.0).await;
-                                    if ping_to_bar(state.latency_ms.0) == ping_to_bar(state.latency_ms.1) {
+                                    player_registry.update_latency(uuid, actual).await;
+                                    if ping_to_bar(actual) == ping_to_bar(last) {
                                         continue;
                                     }
-                                    channels.ping_tx.send((uuid, state.latency_ms.0)).ok();
+                                    channels.ping_tx.send((uuid, actual)).ok();
                                 }
                             }
                             continue;
@@ -944,6 +969,30 @@ pub async fn play(
                                 }
                                 continue;
                             }
+                            let clicked = world_blocks.get(place.x, place.y, place.z, &generator).await;
+                            if clicked.id == 26 {
+                                if !is_night(world_time.load(Relaxed)) {
+                                    send_packet(framed, ChatMessageOut::from_json(
+                                        &ChatBuilder::plain_json("You can only sleep at night")
+                                    )).await;
+                                    continue;
+                                }
+                                state.bed_spawn = Some((place.x, place.y as i32, place.z));
+                                send_packet(framed, ChatBuilder::new("Respawn point set")
+                                    .color(ChatColor::Gray).into_packet()).await;
+
+                                state.is_sleeping = true;
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_sleeping(uuid, true).await;
+                                }
+
+                                send_packet(framed, UseBed {
+                                    entity_id: state.entity_id,
+                                    x: place.x, y: place.y as i32, z: place.z
+                                }).await;
+                                channels.bed_tx.send((state.entity_id, place.x, place.y as i32, place.z)).ok();
+                                continue;
+                            }
                             if place.held_item_id == -1 {
                                 continue;
                             }
@@ -1031,7 +1080,8 @@ pub async fn play(
 
                                 let ctx = CommandContext {
                                     sender: state.name.clone().unwrap_or_default(),
-                                    args
+                                    args,
+                                    is_op: state.is_op
                                 };
 
                                 match dispatcher.dispatch(ctx).await {
@@ -1216,7 +1266,11 @@ pub async fn play(
                                     level_type: "flat".to_string()
                                 }).await;
 
-                                let (sx, sy, sz) = *spawn_point.read().await;
+                                let (sx, sy, sz) = if let Some((bx, by, bz)) = state.bed_spawn {
+                                    (bx as f64 + 0.5, by as f64 + 1.0, bz as f64 + 0.5)
+                                } else {
+                                    *spawn_point.read().await
+                                };
 
                                 if let Some(uuid) = state.uuid {
                                     player_registry.update_position(&uuid, sx, sy, sz, 90.0, 0.0, false).await;
@@ -1259,6 +1313,12 @@ pub async fn play(
 
                         if let Some(action) = packet.as_any().downcast_ref::<EntityAction>() {
                             if let Some(uuid) = state.uuid {
+                                if action.action == 2 { // got off bed
+                                    state.is_sleeping = false;
+                                    player_registry.update_sleeping(uuid, false).await;
+                                    channels.anim_tx.send((state.entity_id, 2)).ok();
+                                    continue;
+                                }
                                 let update = match action.action {
                                     0 => Some((true, true)),   // sneaking on
                                     1 => Some((true, false)),  // sneaking off
@@ -1453,6 +1513,7 @@ pub async fn play(
                 gamemode: u8::from(state.gamemode),
                 inventory: inventory_data,
                 xp_total: state.xp_total,
+                bed_spawn: state.bed_spawn,
             };
             save_player_data(&world_dir, &uuid, &data).await;
             channels.join_tx.send((p, false)).ok();
@@ -1494,6 +1555,10 @@ fn ping_to_bar(ping: i32) -> u8 {
         return 3;
     }
     4
+}
+
+fn is_night(time_of_day: i64) -> bool {
+    (12542..=23459).contains(&time_of_day)
 }
 
 async fn apply_potion_effect(

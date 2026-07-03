@@ -2,13 +2,13 @@ use std::{
     collections::HashMap,
     io::ErrorKind,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicI64},
     time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
-use coral_types::{GamemodeUpdate, dist_sq3, dist3};
+use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
 use rsa::RsaPrivateKey;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -22,8 +22,8 @@ use tokio::{
 use uuid::Uuid;
 
 use coral_command::{
-    CommandContext, CommandDispatcher, CommandResult, gamemode_command, list_command,
-    version_command,
+    CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
+    list_command, op_command, version_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -33,9 +33,8 @@ use coral_server::{
     experience::XpOrb,
     items::ItemRegistry,
     ops::OpsFile,
-    player::Player,
+    player::{Player, registry::PlayerRegistry},
     projectile::{Projectile, ProjectileKind},
-    registry::PlayerRegistry,
     whitelist::WhitelistFile,
 };
 use coral_world::{
@@ -62,6 +61,7 @@ pub struct ServerContext {
     projectiles: Arc<RwLock<Vec<Projectile>>>,
     channels: Channels,
     world_blocks: Arc<WorldBlocks>,
+    world_time: Arc<AtomicI64>,
     generator: Arc<FlatWorldGenerator>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
@@ -80,7 +80,6 @@ type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
 type AnimationUpdate = (i32, u8);
 type MetadataUpdate = (i32, u8, u8);
-type DamageEvent = (Uuid, f32, i32, f32, i32);
 type ItemDrop = (i32, f64, f64, f64, i16, u8, i16);
 type DespawnEntity = Vec<i32>;
 type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
@@ -97,6 +96,7 @@ type SplashEffect = (Uuid, u8, u8, i32);
 type XpOrbSpawn = (i32, f64, f64, f64, i32);
 type XpOrbMove = (i32, f64, f64, f64);
 type XpPickup = (Uuid, i32);
+type BedUpdate = (i32, i32, i32, i32);
 
 #[derive(Clone)]
 pub struct Channels {
@@ -127,6 +127,8 @@ pub struct Channels {
     xp_orb_spawn_tx: Arc<Sender<XpOrbSpawn>>,
     xp_orb_move_tx: Arc<Sender<XpOrbMove>>,
     xp_pickup_tx: Arc<Sender<XpPickup>>,
+    bed_tx: Arc<Sender<BedUpdate>>,
+    wake_tx: Arc<Sender<()>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -158,6 +160,8 @@ impl Channels {
             xp_orb_spawn_tx: Arc::new(channel::<XpOrbSpawn>(100).0),
             xp_orb_move_tx: Arc::new(channel::<XpOrbMove>(200).0),
             xp_pickup_tx: Arc::new(channel::<XpPickup>(100).0),
+            bed_tx: Arc::new(channel::<BedUpdate>(50).0),
+            wake_tx: Arc::new(channel::<()>(4).0),
         }
     }
 }
@@ -190,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let player_registry = Arc::new(PlayerRegistry::new());
     let channels = Channels::new();
+    let ops = Arc::new(RwLock::new(OpsFile::load()));
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
@@ -201,6 +206,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             player_registry.clone(),
             channels.gm_tx.clone(),
         ))
+        .await;
+    dispatcher
+        .register(kill_command(
+            player_registry.clone(),
+            channels.dmg_tx.clone(),
+        ))
+        .await;
+    dispatcher
+        .register(op_command(player_registry.clone(), ops.clone()))
+        .await;
+    dispatcher
+        .register(deop_command(player_registry.clone(), ops.clone()))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -221,11 +238,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         projectiles: Arc::new(RwLock::new(Vec::new())),
         channels,
         world_blocks: Arc::new(WorldBlocks::new()),
+        world_time: Arc::new(AtomicI64::new(0)),
         generator: Arc::new(FlatWorldGenerator::new()),
         player_registry,
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
-        ops: Arc::new(RwLock::new(OpsFile::load())),
+        ops,
         whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
         banlist: Arc::new(RwLock::new(BanList::load())),
         spawn_point: Arc::new(RwLock::new(spawn_point)),
@@ -257,7 +275,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.generator.clone(),
     );
     spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
-    spawn_world_time_task(ctx.channels.time_tx.clone());
+    spawn_world_time_task(
+        ctx.channels.time_tx.clone(),
+        ctx.player_registry.clone(),
+        ctx.channels.wake_tx.clone(),
+    );
 
     if !config.world.disable_weather {
         spawn_weather_task(ctx.channels.weather_tx.clone());
@@ -332,7 +354,11 @@ fn spawn_tick_task(tick_tx: Arc<Sender<()>>, player_registry: Arc<PlayerRegistry
         }
     });
 }
-fn spawn_world_time_task(time_tx: Arc<Sender<(i64, i64)>>) {
+fn spawn_world_time_task(
+    time_tx: Arc<Sender<(i64, i64)>>,
+    player_registry: Arc<PlayerRegistry>,
+    wake_tx: Arc<Sender<()>>,
+) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_millis(50)); // 1 tick
         let mut world_age: i64 = 0;
@@ -341,6 +367,18 @@ fn spawn_world_time_task(time_tx: Arc<Sender<(i64, i64)>>) {
         loop {
             interval.tick().await;
             world_age += 1;
+
+            let online = player_registry.get_online_count().await as usize;
+            let sleeping = player_registry.count_sleeping().await;
+
+            if online > 0 && sleeping >= online && (12542..=23459).contains(&time_of_day) {
+                time_of_day = 0;
+                player_registry.clear_all_sleeping().await;
+                wake_tx.send(()).ok();
+                time_tx.send((world_age, time_of_day)).ok();
+                continue;
+            }
+
             time_of_day = (time_of_day + 1) % 24000;
 
             if world_age % 20 == 0 {
@@ -423,6 +461,7 @@ fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sender<St
             let ctx = CommandContext {
                 sender: "CONSOLE".to_string(),
                 args,
+                is_op: true,
             };
 
             match dispatcher.dispatch(ctx).await {
@@ -475,6 +514,7 @@ fn spawn_projectile_task(
         loop {
             interval.tick().await;
 
+            // TODO: make the projectile invulnerable for 5 ticks otherwise it'll 100% collide with the shooter
             let (to_remove, moves, splash_effects) = {
                 let mut list = projectiles.write().await;
                 let mut to_remove = vec![];
@@ -583,7 +623,7 @@ fn spawn_projectile_task(
                         }
                     }
 
-                    if proj.ticks_alive > 600 {
+                    if proj.ticks_alive > 6000 {
                         to_remove.push(proj.entity_id);
                         continue;
                     }
@@ -690,7 +730,6 @@ fn spawn_xp_orb_task(
     });
 }
 
-// TODO: map error
 fn load_server_icon_file() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let icon_path = cwd.join("server-icon.png");

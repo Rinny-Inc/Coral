@@ -5,6 +5,8 @@ use coral_protocol::auth::ProfileProperty;
 
 use crate::effects::ActiveEffect;
 
+pub mod registry;
+
 #[derive(Debug, Clone)]
 pub struct Player {
     pub entity_id: i32,
@@ -34,6 +36,7 @@ pub struct Player {
     pub leggings: i16,
     pub boots: i16,
     pub active_effects: Vec<ActiveEffect>,
+    pub is_sleeping: bool,
 }
 
 impl Player {
@@ -81,6 +84,7 @@ impl Player {
             leggings: -1,
             boots: -1,
             active_effects: vec![],
+            is_sleeping: false,
         }
     }
 

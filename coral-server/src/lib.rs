@@ -8,5 +8,4 @@ pub mod mining;
 pub mod ops;
 pub mod player;
 pub mod projectile;
-pub mod registry;
 pub mod whitelist;

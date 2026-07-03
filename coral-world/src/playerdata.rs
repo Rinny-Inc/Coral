@@ -21,6 +21,7 @@ pub struct PlayerData {
     pub gamemode: u8,
     pub inventory: Vec<(i16, i16, u8, i16)>,
     pub xp_total: i32,
+    pub bed_spawn: Option<(i32, i32, i32)>,
 }
 impl Default for PlayerData {
     fn default() -> Self {
@@ -36,6 +37,7 @@ impl Default for PlayerData {
             gamemode: 0,
             inventory: vec![],
             xp_total: 0,
+            bed_spawn: None,
         }
     }
 }
@@ -128,6 +130,15 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
 
     let xp_total = root.get("XpTotal").and_then(|t| t.as_i32()).unwrap_or(0);
 
+    let bed_spawn = match (
+        root.get("SpawnX").and_then(|t| t.as_i32()),
+        root.get("SpawnY").and_then(|t| t.as_i32()),
+        root.get("SpawnZ").and_then(|t| t.as_i32()),
+    ) {
+        (Some(x), Some(y), Some(z)) => Some((x, y, z)),
+        _ => None,
+    };
+
     Some(PlayerData {
         x,
         y,
@@ -140,6 +151,7 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         gamemode,
         inventory,
         xp_total,
+        bed_spawn,
     })
 }
 
@@ -296,7 +308,7 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
         ]));
     }
 
-    let root = NbtTag::Compound(vec![
+    let mut root_field = vec![
         (
             "Pos".to_string(),
             NbtTag::List(
@@ -324,7 +336,15 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
         ),
         ("Inventory".to_string(), NbtTag::List(10, inventory_list)),
         ("XpTotal".to_string(), NbtTag::Int(data.xp_total)),
-    ]);
+    ];
+
+    if let Some((x, y, z)) = data.bed_spawn {
+        root_field.push(("SpawnX".to_string(), NbtTag::Int(x)));
+        root_field.push(("SpawnY".to_string(), NbtTag::Int(y)));
+        root_field.push(("SpawnZ".to_string(), NbtTag::Int(z)));
+    }
+
+    let root = NbtTag::Compound(root_field);
 
     let mut nbt_bytes = Vec::new();
     NbtTag::write_named_root("", &root, &mut nbt_bytes);
