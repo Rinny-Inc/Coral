@@ -1,11 +1,37 @@
+use std::io::Error;
+
 use crate::{
     packets::{PacketIn, PacketOut},
     reader::Reader,
 };
 
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
+pub enum DigStatus {
+    StartDig,
+    CancelDig,
+    FinishDig,
+    DropItem(bool),
+    ShootOrFinishEating,
+}
+impl TryFrom<u8> for DigStatus {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::StartDig),
+            1 => Ok(Self::CancelDig),
+            2 => Ok(Self::FinishDig),
+            3 | 4 => Ok(Self::DropItem(value == 3)),
+            5 => Ok(Self::ShootOrFinishEating),
+            _ => Err(value),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PlayerDig {
-    pub status: u8,
+    pub status: DigStatus,
     pub x: i32,
     pub y: u8,
     pub z: i32,
@@ -53,7 +79,12 @@ impl PacketIn for PlayerDig {
         let z = (position << 38 >> 38) as i32;
         let face = reader.read_byte();
         Ok(PlayerDig {
-            status,
+            status: DigStatus::try_from(status).map_err(|e| {
+                Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("PlayerDig hacked packet: {}", e),
+                )
+            })?,
             x,
             y,
             z,

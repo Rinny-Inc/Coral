@@ -10,7 +10,7 @@ use coral_protocol::packets::{
     play::{
         ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage,
         block::{
-            BlockBreakAnimation, BlockChange, HeldItemChange, ItemEntityMetadata,
+            BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
             PlayerBlockPlacement, PlayerDig,
         },
         chat::{
@@ -616,7 +616,7 @@ pub async fn play(
 
                         if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
                             match dig.status {
-                                0 => {
+                                DigStatus::StartDig => {
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
 
                                     if state.gamemode == GameMode::Creative {
@@ -636,12 +636,15 @@ pub async fn play(
                                     state.breaking_required_ticks = required;
                                     channels.break_tx.send((state.entity_id, dig.x, dig.y as i32, dig.z, 0)).ok();
                                 }
-                                1 => {
+                                DigStatus::CancelDig => {
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
                                         channels.break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
                                     }
                                 }
-                                2 if state.gamemode == GameMode::Survival => {
+                                DigStatus::FinishDig => {
+                                    if state.gamemode != GameMode::Survival {
+                                        continue;
+                                    }
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
                                         let block = world_blocks.get(bx, by as u8, bz, &generator).await;
 
@@ -741,14 +744,14 @@ pub async fn play(
                                     let broke = state.damage_item(1, &item_registry);
                                     sync_held_slot(framed, state, &player_registry, &channels.equip_tx, broke).await;
                                 }
-                                3 | 4 => {
+                                DigStatus::DropItem(is_itemstack) => {
                                     let hotbar_slot = state.held_slot as usize;
 
                                     if state.inventory.slots[hotbar_slot].is_none() {
                                         continue;
                                     }
 
-                                    let item = if dig.status == 3 {
+                                    let item = if is_itemstack {
                                         state.inventory.slots[hotbar_slot].take()
                                     } else {
                                         if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
@@ -816,7 +819,7 @@ pub async fn play(
                                         }).await;
                                     }
                                 }
-                                5 => {
+                                DigStatus::ShootOrFinishEating => {
                                     if let Some(charge_start) = state.bow_charging.take()
                                         && state.held_item == 261 // TODO: In the future identify magic numbers!
                                     {
@@ -905,7 +908,6 @@ pub async fn play(
                                         }
                                     }
                                 }
-                                _ => {}
                             }
                             continue;
                         }
