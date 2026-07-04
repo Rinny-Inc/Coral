@@ -22,19 +22,20 @@
 
 Built for performance and modern concurrency, Coral aims to provide a familiar Minecraft server experience without the limitations of the traditional JVM server stack.
 
-[Features](#-features) • [Getting Started](#-getting-started) • [Configuration](#%EF%B8%8F-configuration) • [Contributing](#-contributing)
+[Planned Features](#-planned-features) • [Getting Started](#-getting-started) • [Configuration](#%EF%B8%8F-configuration) • [Contributing](#-contributing)
 
 ---
 
-## ⚡ Features
+## ⚡ Planned Features
 
 - **Memory Safe:** Powered by Rust's strict ownership model, eliminating data races and null pointer crashes.
 - **1.8 First:** Primary target is Minecraft 1.8 (Protocol 47).
-- **Native Multi-Version Support (Planned):** Designed to support multiple Minecraft protocol versions within a single server implementation.
-- **1.7.10 Planned:** Future support for Minecraft 1.7.10 clients and protocol compatibility.
-- **Bukkit-Friendly Plugins (Planned):** Planned Java plugin loader with a Bukkit-inspired API for seamless plugin development.
-- **Java Plugin Support (Planned):** Dedicated Java plugin loader and runtime integrated directly into Coral.
+- **Native Multi-Version Support:** Designed to support multiple Minecraft protocol versions within a single server implementation.
+- **1.7.10:** Future support for Minecraft 1.7.10 clients and protocol compatibility.
+- **Bukkit-Friendly Plugins:** Planned Java plugin loader with a Bukkit-inspired API for seamless plugin development.
+- **Java Plugin Support:** Dedicated Java plugin loader and runtime integrated directly into Coral.
 - **Built From Scratch:** No Spigot, Paper, or CraftBukkit code; a clean-room Rust implementation.
+- **Full Server Authority:** All movement, combat, and inventory actions will be validated server-side; the client is never trusted, closing the door on reach, speed, and packet-manipulation exploits.
 
 ## 🚀 Getting Started
 
