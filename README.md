@@ -112,7 +112,45 @@ addresses = ["127.0.0.1"]
 
 ## 🤝 Contributing
 
-Guidelines will be added once the project stabilizes.
+Coral is in early, fast-moving development. Contributions are welcome, but expect churn.
+
+### Before you start
+
+- Check open [issues](https://github.com/Rinny-Inc/Coral/issues) and the issue templates (Area: Protocol/Packets, World/Chunks, Player/Entity, Commands, Configuration, Performance) before filing a new one — search first to avoid duplicates.
+- For anything non-trivial (new systems, protocol handling changes, architectural changes), open an issue or discuss in [Discord](https://discord.com/invite/B2BgjwDX8m) before writing code. Small fixes and bug reports can go straight to a PR.
+
+### Development setup
+
+```bash
+git clone https://github.com/Rinny-Inc/Coral.git
+cd Coral
+cargo build
+cargo test
+```
+
+Coral is a multi-crate Cargo workspace. Run `cargo check --workspace` before pushing to catch cross-crate breakage.
+
+### Code standards
+
+- **Vanilla accuracy first.** Coral targets Protocol 47 / Minecraft 1.8.x behavior exactly. Approximations, "close enough," or modern-version mechanics are not acceptable — cite vanilla source (decompiled server/client, wiki.vg, or observed vanilla behavior) for anything gameplay-mechanic related (combat, block breaking, movement, etc.).
+- Run `cargo fmt` and `cargo clippy --workspace -- -D warnings` before submitting. PRs with clippy warnings will not be merged as-is.
+- Keep PRs scoped to one feature/fix. Large multi-feature PRs are harder to review and more likely to get rejected outright.
+- No unsafe code without justification in a comment directly above the block.
+- Match existing patterns in the codebase (e.g. `PlayerRegistry` for per-player state, `broadcast::Sender` for entity lifecycle events, `Item`/`ItemStack` split for definitions vs. runtime instances) rather than introducing parallel abstractions.
+
+### Commit messages
+
+Use clear, imperative-mood commit messages (`Fix hotbar slot mapping`, not `fixed stuff`). Reference the issue number where applicable (`Fixes #42`).
+
+### Pull requests
+
+- Fork, branch off `main`, PR back into `main`.
+- CI (`build.yml`) must pass.
+- PRs must follow the [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
+
+### License note
+
+By contributing, you agree your contributions are licensed under the same [custom restrictive license](./LICENSE.md) as the rest of the project.
 
 ## 📄 License
 
