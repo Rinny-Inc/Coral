@@ -423,3 +423,83 @@ impl WorldBlocks {
         );
     }
 }
+
+pub fn placement_metadata(block_id: u8, item_meta: u8, face: u8, yaw: f32, cursor_y: f32) -> u8 {
+    match block_id {
+        // logs
+        17 => {
+            let wood_type = item_meta & 0x3;
+            let axis = match face {
+                0 | 1 => 0x00,
+                2 | 3 => 0x8,
+                4 | 5 => 0x4,
+                _ => 0x0,
+            };
+            wood_type | axis
+        }
+        // stairs
+        53 | 67 | 108 | 109 | 114 | 128 | 134 | 135 | 136 | 156 | 163 | 164 | 180 => {
+            let facing = match yaw_to_facing(yaw) {
+                0 => 2,
+                1 => 1,
+                2 => 3,
+                _ => 0,
+            };
+            let upside_down = if face == 0 || (face >= 2 && cursor_y > 0.5) {
+                0x4
+            } else {
+                0x0
+            };
+            facing | upside_down
+        }
+        // torches
+        50 | 75 | 76 => match face {
+            1 => 5,
+            2 => 4,
+            3 => 3,
+            4 => 2,
+            5 => 1,
+            _ => 5,
+        },
+        // ladders, wall signs
+        65 | 68 => match face {
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            _ => 2,
+        },
+        // furnaces, chests, pumpkins, dispenser, enderchest
+        54 | 61 | 62 | 130 | 146 => match yaw_to_facing(yaw) {
+            0 => 2,
+            1 => 5,
+            2 => 3,
+            _ => 4,
+        },
+
+        // pumpkin & jack'o
+        86 | 91 => yaw_to_facing(yaw),
+
+        // slabs
+        44 | 126 => {
+            let variant = item_meta & 0x7;
+            let top = if face == 1 || (face >= 2 && cursor_y > 0.5) {
+                0x8
+            } else {
+                0x0
+            };
+            variant | top
+        }
+        _ => item_meta,
+    }
+}
+fn yaw_to_facing(yaw: f32) -> u8 {
+    // normalize yaw to 0..360
+    let yaw = yaw.rem_euclid(360.0);
+    match ((yaw + 45.0) / 90.0).floor() as i32 & 3 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 3,
+    }
+}

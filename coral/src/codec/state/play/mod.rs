@@ -49,7 +49,7 @@ use coral_server::{
 };
 use coral_types::{GameMode, ToolMaterial, dist_xz, dist3, look_direction};
 use coral_world::{
-    blocks::{Block, WorldBlocks},
+    blocks::{Block, WorldBlocks, placement_metadata},
     chunk::{ChunkData, UnloadChunk},
     generator::FlatWorldGenerator,
     playerdata::{PlayerData, save_player_data},
@@ -65,6 +65,7 @@ use crate::{
     codec::{Codec, PlayerState, is_normal_disconnect, kick, send_packet},
 };
 
+mod interact;
 mod ticking;
 
 pub async fn play(
@@ -656,6 +657,7 @@ pub async fn play(
 
                                         if elapsed < required_ticks {
                                             channels.block_tx.send((bx, by, bz, block.id as i32, block.metadata)).ok();
+                                            state.breaking_block = Some((bx, by, bz));
                                             continue;
                                         }
                                         world_blocks.set(bx, by as u8, bz, Block::air(), &generator).await;
@@ -909,96 +911,11 @@ pub async fn play(
                         }
 
                         if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
-                            // INTERACT
-                            if place.face == 255 {
-                                if let Some((_hunger, _saturation)) = item_registry.food_value(state.held_item)
-                                    && state.food < 20
-                                    && state.eating.is_none()
-                                {
-                                    state.eating = Some(Instant::now());
-                                    channels.anim_tx.send((state.entity_id, 3)).ok();
-                                }
-
-                                match state.held_item {
-                                    261 => {
-                                        state.bow_charging = Some(Instant::now());
-                                        continue;
-                                    }
-                                    346 => {
-                                        if !state.try_retract_fishing_hook(&projectiles, &channels.despawn_tx).await
-                                            && let Some(uuid) = state.uuid
-                                            && let Some(p) = player_registry.get(&uuid).await
-                                        {
-                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
-                                            let speed = 1.5;
-                                            let hook_eid = next_entity_id();
-
-                                            let proj = Projectile {
-                                                entity_id: hook_eid,
-                                                owner_entity_id: state.entity_id,
-                                                kind: ProjectileKind::FishingHook,
-                                                x: p.x, y: p.y + 1.2, z: p.z, // TODO: change 1.2 to head_location
-                                                vx: dx * speed,
-                                                vy: dy * speed + 0.2,
-                                                vz: dz * speed,
-                                                ticks_alive: 0,
-                                            };
-                                            projectiles.write().await.push(proj.clone());
-                                            channels.projectile_spawn_tx.send((
-                                                hook_eid, state.entity_id, ProjectileKind::FishingHook,
-                                                proj.x, proj.y, proj.z, proj.vx, proj.vy, proj.vz
-                                            )).ok();
-
-                                            state.fishing_hook_eid = Some(hook_eid);
-                                        }
-                                        channels.anim_tx.send((state.entity_id, 0)).ok();
-                                        continue;
-                                    }
-                                    373 => {
-                                        let meta = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.metadata).unwrap_or(0);
-                                        let is_splash = (meta & 0x4000) != 0;
-
-                                        if !is_splash {
-                                            if state.eating.is_none() {
-                                                state.eating = Some(Instant::now());
-                                                channels.anim_tx.send((state.entity_id, 3)).ok();
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                continue;
-                            }
-                            let clicked = world_blocks.get(place.x, place.y, place.z, &generator).await;
-                            if clicked.id == 26 {
-                                if !is_night(world_time.load(Relaxed)) {
-                                    send_packet(framed, ChatMessageOut::from_json(
-                                        &ChatBuilder::plain_json("You can only sleep at night")
-                                    )).await;
-                                    continue;
-                                }
-                                state.bed_spawn = Some((place.x, place.y as i32, place.z));
-                                send_packet(framed, ChatBuilder::new("Respawn point set")
-                                    .color(ChatColor::Gray).into_packet()).await;
-
-                                state.is_sleeping = true;
-                                if let Some(uuid) = state.uuid {
-                                    player_registry.update_sleeping(uuid, true).await;
-                                }
-
-                                send_packet(framed, UseBed {
-                                    entity_id: state.entity_id,
-                                    x: place.x, y: place.y as i32, z: place.z
-                                }).await;
-                                channels.bed_tx.send((state.entity_id, place.x, place.y as i32, place.z)).ok();
-                                continue;
-                            }
-                            // INTERACT
-                            if place.held_item_id == -1 {
-                                continue;
-                            }
-                            if state.gamemode >= GameMode::Adventure {
+                            if interact::try_with_item(place, state, &item_registry, &player_registry, &projectiles, &channels).await
+                                || interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &channels).await
+                                || place.held_item_id == -1
+                                || state.gamemode >= GameMode::Adventure
+                            {
                                 continue;
                             }
                             let (tx, ty, tz): (i32, i32, i32) = match place.face {
@@ -1020,10 +937,21 @@ pub async fn play(
                                 continue;
                             }
 
-                            let block_meta = state.inventory.slots[state.held_slot as usize]
-                                .as_ref()
-                                .map(|s| s.metadata as u8)
-                                .unwrap_or(0);
+                            let block_meta = {
+                                let item_meta = state.inventory.slots[state.held_slot as usize]
+                                    .as_ref()
+                                    .map(|s| s.metadata as u8)
+                                    .unwrap_or(0);
+
+                                let yaw = player_registry.get(&state.uuid.unwrap_or_default())
+                                    .await
+                                    .map(|p| p.yaw)
+                                    .unwrap_or(0.0);
+
+                                let cursor_y = place.cursor_y as f32 / 16.0; // 0-15 -> 0.0-1.0
+
+                                placement_metadata(block_id as u8, item_meta, place.face, yaw, cursor_y)
+                            };
 
                             if state.gamemode == GameMode::Survival {
                                 let hotbar_slot = state.held_slot as usize;
@@ -1562,10 +1490,6 @@ fn ping_to_bar(ping: i32) -> u8 {
         return 3;
     }
     4
-}
-
-fn is_night(time_of_day: i64) -> bool {
-    (12542..=23459).contains(&time_of_day)
 }
 
 async fn apply_potion_effect(

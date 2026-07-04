@@ -78,9 +78,11 @@ max_players = 20
 online_mode = true
 player_sample_size = 12
 default_gamemode = 0
+enforce_default_gamemode = true
 whitelisted = false
 view_distance = 10
 compression_threshold = 256
+connection_throttle_ms = 4000
 
 [chat]
 format = "<{username}> {message}"

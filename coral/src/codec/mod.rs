@@ -262,11 +262,11 @@ struct PlayerState {
     bed_spawn: Option<(i32, i32, i32)>,
 }
 impl PlayerState {
-    fn new(default_gamemode: u8) -> Self {
+    fn new() -> Self {
         Self {
             uuid: None,
             entity_id: 0,
-            gamemode: GameMode::try_from(default_gamemode).unwrap_or(GameMode::Survival),
+            gamemode: GameMode::Survival,
             held_item: -1,
             held_slot: 0,
             health: 20.0,
@@ -427,7 +427,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
-    let mut state = PlayerState::new(ctx.config.server.default_gamemode);
+    let mut state = PlayerState::new();
     let mut framed = Framed::new(socket, codec);
 
     let Some(req) = state::preplay::pre_play(
@@ -535,11 +535,46 @@ async fn make_player_join(
 
     framed.codec_mut().state = handshake::EnumProtocol::Play;
 
+    let saved = load_player_data(world_dir, &uuid).await;
+    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = &saved {
+        (
+            d.x,
+            d.y,
+            d.z,
+            d.yaw,
+            d.pitch,
+            d.health,
+            d.food,
+            d.food_saturation,
+            GameMode::try_from(d.gamemode).unwrap_or(GameMode::Survival),
+        )
+    } else {
+        let (sx, sy, sz) = *spawn_point.read().await;
+        (
+            sx,
+            sy,
+            sz,
+            90.0,
+            0.0,
+            20.0,
+            20,
+            5.0,
+            GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival),
+        )
+    };
+
+    let gamemode = if config.server.enforce_default_gamemode {
+        GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival)
+    } else {
+        pgm
+    };
+    let gamemodeu8 = u8::from(gamemode);
+
     send_packet(
         framed,
         JoinGame {
             entity_id,
-            gamemode: config.server.default_gamemode,
+            gamemode: gamemodeu8,
             dimension: 0,
             difficulty: config.world.difficulty,
             max_player: config.server.max_players as u8,
@@ -549,11 +584,7 @@ async fn make_player_join(
     )
     .await;
 
-    send_packet(
-        framed,
-        ChangeGameState::set_gamemode(config.server.default_gamemode),
-    )
-    .await;
+    send_packet(framed, ChangeGameState::set_gamemode(u8::from(gamemode))).await;
 
     if client_protocol == 47 {
         send_packet(
@@ -562,7 +593,7 @@ async fn make_player_join(
                 uuid,
                 username: profile.username.clone(),
                 properties: profile.properties.clone(),
-                gamemode: config.server.default_gamemode as i32,
+                gamemode: gamemodeu8 as i32,
                 ping: state.latency_ms.0,
             },
         )
@@ -597,34 +628,6 @@ async fn make_player_join(
         )
         .await;
     }
-
-    let saved = load_player_data(world_dir, &uuid).await;
-    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = &saved {
-        (
-            d.x,
-            d.y,
-            d.z,
-            d.yaw,
-            d.pitch,
-            d.health,
-            d.food,
-            d.food_saturation,
-            GameMode::try_from(d.gamemode).unwrap_or(GameMode::Survival),
-        )
-    } else {
-        let (sx, sy, sz) = *spawn_point.read().await;
-        (
-            sx,
-            sy,
-            sz,
-            90.0,
-            0.0,
-            20.0,
-            20,
-            5.0,
-            GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival),
-        )
-    };
 
     if let Some(d) = &saved {
         for (packet_slot, item_id, count, metadata) in &d.inventory {
@@ -661,9 +664,9 @@ async fn make_player_join(
         .await;
     }
 
-    let (ability_flags, fly_speed, walk_speed) = match config.server.default_gamemode {
-        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
-        3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
+    let (ability_flags, fly_speed, walk_speed) = match gamemode {
+        GameMode::Creative => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
+        GameMode::Spectator => (0x01 | 0x02 | 0x04, 0.05, 0.1),
         _ => (0x00, 0.05, 0.1),
     };
 

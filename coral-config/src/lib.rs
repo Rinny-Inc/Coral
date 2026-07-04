@@ -29,6 +29,7 @@ pub struct ServerConfig {
     pub online_mode: bool,
     pub player_sample_size: i8,
     pub default_gamemode: u8,
+    pub enforce_default_gamemode: bool,
     pub whitelisted: bool,
     pub view_distance: i32,
     pub compression_threshold: i32,
@@ -69,6 +70,7 @@ impl Default for ServerConfig {
             online_mode: true,
             player_sample_size: 12,
             default_gamemode: 0,
+            enforce_default_gamemode: true,
             whitelisted: false,
             view_distance: 10,
             compression_threshold: 256,
@@ -156,6 +158,7 @@ max_players = 20
 online_mode = true
 player_sample_size = 12
 default_gamemode = 0
+enforce_default_gamemode = true
 whitelisted = false
 view_distance = 10
 compression_threshold = 256
