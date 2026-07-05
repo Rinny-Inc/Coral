@@ -1,3 +1,5 @@
+use std::io::Error;
+
 use crate::{
     packets::{PacketIn, PacketOut, play::chat::builder::ChatBuilder},
     reader::Reader,
@@ -295,5 +297,67 @@ impl PacketOut for Title {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ResourcePackSend {
+    pub url: String,
+    pub hash: String,
+}
+impl PacketOut for ResourcePackSend {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x48);
+        writer.write_string(&self.url);
+        writer.write_string(&self.hash);
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
+pub enum ResourcePackResult {
+    Loaded,
+    Decline,
+    Failed,
+    Accepted,
+}
+impl TryFrom<u8> for ResourcePackResult {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Loaded),
+            1 => Ok(Self::Decline),
+            2 => Ok(Self::Failed),
+            3 => Ok(Self::Accepted),
+            _ => Err(value),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ResourcePackStatus {
+    pub hash: String,
+    pub result: ResourcePackResult,
+}
+impl PacketIn for ResourcePackStatus {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let hash = reader.read_string();
+        let result = ResourcePackResult::try_from(reader.read_varint() as u8).map_err(|e| {
+            Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("RessourcePackStatus packet hacked: {}", e),
+            )
+        })?;
+        Ok(ResourcePackStatus { hash, result })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

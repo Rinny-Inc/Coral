@@ -12,11 +12,13 @@ pub struct Config {
     #[serde(default)]
     pub tracking: TrackingConfig,
     #[serde(default)]
-    pub bungee: Bungeecord,
+    pub bungee: BungeecordConfig,
+    #[serde(default)]
+    pub resource_pack: ResourcePackConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Bungeecord {
+pub struct BungeecordConfig {
     pub enabled: bool,
     pub addresses: Vec<String>,
 }
@@ -59,6 +61,13 @@ pub struct TrackingConfig {
     pub mob: f64,
     pub item: f64,
     pub experience_orb: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ResourcePackConfig {
+    pub url: String,
+    pub hash: String,
+    pub forced: bool,
 }
 
 impl Default for ServerConfig {
@@ -109,11 +118,20 @@ impl Default for TrackingConfig {
         }
     }
 }
-impl Default for Bungeecord {
+impl Default for BungeecordConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             addresses: vec!["127.0.0.1".to_string()],
+        }
+    }
+}
+impl Default for ResourcePackConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            hash: String::new(),
+            forced: false,
         }
     }
 }
@@ -187,4 +205,9 @@ experience_orb = 64
 [bungee]
 enabled = false
 addresses = ["127.0.0.1"]
+
+[resource_pack]
+url = ""
+hash = "" # optional: sha1sum of the zip for client caching
+forced = false
 "#;

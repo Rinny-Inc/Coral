@@ -108,6 +108,11 @@ experience_orb = 64
 [bungee]
 enabled = false
 addresses = ["127.0.0.1"]
+
+[resource_pack]
+url = ""
+hash = "" # optional: sha1sum of the zip for client caching
+forced = false
 ```
 
 ## 🤝 Contributing

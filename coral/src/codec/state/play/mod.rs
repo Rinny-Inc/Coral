@@ -8,7 +8,8 @@ use coral_command::{CommandContext, CommandResult};
 use coral_protocol::packets::{
     handshake::keepalive::KeepAlive,
     play::{
-        ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage,
+        ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
+        ResourcePackStatus,
         block::{
             BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
             PlayerBlockPlacement, PlayerDig,
@@ -629,7 +630,14 @@ pub async fn play(
                                         )).ok();
                                         continue;
                                     }
-                                    let required = break_time_ticks(&item_registry, &block_registry, state.held_item, block.id, false, true);
+                                    let required = break_time_ticks(
+                                        &item_registry,
+                                        &block_registry,
+                                        state.held_item,
+                                        block.id,
+                                        false,
+                                        state.was_on_ground,
+                                    );
 
                                     state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
                                     state.breaking_started_tick = state.tick_count;
@@ -654,7 +662,7 @@ pub async fn play(
                                             state.held_item,
                                             block.id,
                                             false,
-                                            true,
+                                            state.was_on_ground,
                                         );
                                         let elapsed = (state.tick_count - state.breaking_started_tick).max(0) as u32;
 
@@ -957,36 +965,35 @@ pub async fn play(
 
                             if state.gamemode == GameMode::Survival {
                                 let hotbar_slot = state.held_slot as usize;
-                                if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
-                                    slot.count -= 1;
-                                    let remaining_count = slot.count;
-                                    let item_id = slot.item_id;
-                                    let metadata = slot.metadata;
-
-                                    if remaining_count == 0 {
-                                        state.inventory.slots[hotbar_slot] = None;
-                                    }
-
-                                    let packed_slot = (36 + hotbar_slot) as i16;
-                                    send_packet(framed, SetSlot {
-                                        window_id: 0,
-                                        slot: packed_slot,
-                                        item_id: if remaining_count > 0 { item_id } else { -1 },
-                                        count: remaining_count,
-                                        metadata
-                                    }).await;
-
-                                    state.held_item = state.inventory.slots[hotbar_slot]
-                                        .as_ref()
-                                        .map(|s| s.item_id)
-                                        .unwrap_or(-1);
-                                    if let Some(uuid) = state.uuid {
-                                        player_registry.update_held_item(uuid, state.held_item).await;
-                                    }
-                                    send_held_equip(&channels.equip_tx, state);
-                                } else {
+                                let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() else {
                                     continue;
+                                };
+                                slot.count -= 1;
+                                let remaining_count = slot.count;
+                                let item_id = slot.item_id;
+                                let metadata = slot.metadata;
+
+                                if remaining_count == 0 {
+                                    state.inventory.slots[hotbar_slot] = None;
                                 }
+
+                                let packed_slot = (36 + hotbar_slot) as i16;
+                                send_packet(framed, SetSlot {
+                                    window_id: 0,
+                                    slot: packed_slot,
+                                    item_id: if remaining_count > 0 { item_id } else { -1 },
+                                    count: remaining_count,
+                                    metadata
+                                }).await;
+
+                                state.held_item = state.inventory.slots[hotbar_slot]
+                                    .as_ref()
+                                    .map(|s| s.item_id)
+                                    .unwrap_or(-1);
+                                if let Some(uuid) = state.uuid {
+                                    player_registry.update_held_item(uuid, state.held_item).await;
+                                }
+                                send_held_equip(&channels.equip_tx, state);
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta), &generator).await;
@@ -1133,6 +1140,27 @@ pub async fn play(
 
                         if packet.as_any().downcast_ref::<ConfirmTransaction>().is_some() {
                             // client acknowledged our confirmation
+                            continue;
+                        }
+
+                        if let Some(status) = packet.as_any().downcast_ref::<ResourcePackStatus>() {
+                            match status.result {
+                                ResourcePackResult::Loaded | ResourcePackResult::Accepted => {}
+                                ResourcePackResult::Decline => {
+                                    if !config.resource_pack.forced {
+                                        continue;
+                                    }
+                                    kick(framed, "You must accept the ressource pack to play!").await;
+                                    break;
+                                }
+                                ResourcePackResult::Failed => {
+                                    if !config.resource_pack.forced {
+                                        continue;
+                                    }
+                                    kick(framed, "Resource pack download failed!").await;
+                                    break;
+                                }
+                            }
                             continue;
                         }
 

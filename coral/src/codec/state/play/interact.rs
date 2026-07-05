@@ -119,6 +119,7 @@ pub async fn try_with_item(
 }
 
 /// Return true if the block interaction went well
+#[allow(clippy::too_many_arguments)]
 pub async fn try_with_block(
     framed: &mut Framed<TcpStream, Codec>,
     place: &PlayerBlockPlacement,
@@ -129,9 +130,7 @@ pub async fn try_with_block(
     generator: &Arc<FlatWorldGenerator>,
     channels: &Channels,
 ) -> bool {
-    let clicked = world_blocks
-        .get(place.x, place.y, place.z, &generator)
-        .await;
+    let clicked = world_blocks.get(place.x, place.y, place.z, generator).await;
     if clicked.id == 26 {
         if !is_night(world_time.load(Relaxed)) {
             send_packet(

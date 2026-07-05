@@ -5,6 +5,7 @@ use std::time::Instant;
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral_protocol::packets::play::ResourcePackSend;
 use coral_server::effects::ActiveEffect;
 use coral_server::items::ItemRegistry;
 use coral_server::projectile::Projectile;
@@ -827,6 +828,17 @@ async fn make_player_join(
     )
     .await;
     send_weather(framed, state.current_weather.clone()).await;
+
+    if !config.resource_pack.url.is_empty() {
+        send_packet(
+            framed,
+            ResourcePackSend {
+                url: config.resource_pack.url.clone(),
+                hash: config.resource_pack.hash.clone(),
+            },
+        )
+        .await;
+    }
 }
 
 fn is_normal_disconnect(e: &std::io::Error) -> bool {

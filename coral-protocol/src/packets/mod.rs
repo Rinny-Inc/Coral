@@ -34,7 +34,7 @@ pub struct PacketRegistry {
 
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(25); // TODO: add 1 for every new packets
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(26); // TODO: add 1 for every new packets
 
         handlers.insert(
             PacketKey {
@@ -198,6 +198,13 @@ impl PacketRegistry {
                 id: 0x17,
             },
             |buf| play::PluginMessage::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
+        );
+        handlers.insert(
+            PacketKey {
+                state: EnumProtocol::Play,
+                id: 0x19,
+            },
+            |buf| play::ResourcePackStatus::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
         );
         handlers.insert(
             PacketKey {
