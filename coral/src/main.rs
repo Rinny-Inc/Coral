@@ -514,7 +514,6 @@ fn spawn_projectile_task(
         loop {
             interval.tick().await;
 
-            // TODO: make the projectile invulnerable for 5 ticks otherwise it'll 100% collide with the shooter
             let (to_remove, moves, splash_effects) = {
                 let mut list = projectiles.write().await;
                 let mut to_remove = vec![];
@@ -591,6 +590,16 @@ fn spawn_projectile_task(
                             if target.is_dead {
                                 continue;
                             }
+
+                            if target.entity_id == proj.owner_entity_id && !proj.left_owner {
+                                if dist_sq3(target.x, target.y, target.z, proj.x, proj.y, proj.z)
+                                    >= 1.0
+                                {
+                                    proj.left_owner = true;
+                                }
+                                continue;
+                            }
+
                             if dist_sq3(target.x, target.y, target.z, proj.x, proj.y, proj.z) < 0.64
                             {
                                 let speed =

@@ -10,6 +10,7 @@ pub struct Projectile {
     pub vy: f64,
     pub vz: f64,
     pub ticks_alive: u32,
+    pub left_owner: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

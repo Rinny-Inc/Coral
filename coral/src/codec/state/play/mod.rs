@@ -854,7 +854,8 @@ pub async fn play(
                                                 vx: dx * speed,
                                                 vy: dy * speed,
                                                 vz: dz * speed,
-                                                ticks_alive: 0
+                                                ticks_alive: 0,
+                                                left_owner: false,
                                             };
 
                                             projectiles.write().await.push(proj.clone());
@@ -891,7 +892,8 @@ pub async fn play(
                                                 vx: dx * speed,
                                                 vy: dy * speed + 0.1,
                                                 vz: dz * speed,
-                                                ticks_alive: 0
+                                                ticks_alive: 0,
+                                                left_owner: false,
                                             };
 
                                             projectiles.write().await.push(proj.clone());

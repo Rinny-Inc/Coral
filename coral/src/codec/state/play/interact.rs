@@ -76,6 +76,7 @@ pub async fn try_with_item(
                     vy: dy * speed + 0.2,
                     vz: dz * speed,
                     ticks_alive: 0,
+                    left_owner: false,
                 };
                 projectiles.write().await.push(proj.clone());
                 channels
