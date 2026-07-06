@@ -10,6 +10,8 @@ pub mod login;
 pub mod play;
 pub mod status;
 
+// TODO: PacketError????
+
 pub trait PacketIn: std::fmt::Debug + Send {
     fn decode(buf: &mut Bytes) -> std::io::Result<Self>
     where
@@ -32,229 +34,56 @@ pub struct PacketRegistry {
     pub handlers: HashMap<PacketKey, DecoderFn>,
 }
 
+macro_rules! register_packet_handers { // GOD DAMN THIS SHIT IS STILL ALIEN AHAHAH
+    ($($state:expr, $id:expr => $ty:path;)+) => {{
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(26); // TODO: add 1 for every new packets
+        $(
+            handlers.insert(
+                PacketKey {
+                    state: $state,
+                    id: $id
+                },
+                |buf| <$ty>::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
+            );
+        )+
+        handlers
+    }};
+}
+
 impl PacketRegistry {
     pub fn new() -> Self {
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(26); // TODO: add 1 for every new packets
+        let handlers = register_packet_handers! {
+            EnumProtocol::Handshaking, 0x00 => handshake::PacketHandshake;
 
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Handshaking,
-                id: 0x00,
-            },
-            |buf| handshake::PacketHandshake::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
+            EnumProtocol::Status, 0x00 => status::Request;
+            EnumProtocol::Status, 0x01 => status::Ping;
 
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Status,
-                id: 0x00,
-            },
-            |buf| status::Request::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Status,
-                id: 0x01,
-            },
-            |buf| status::Ping::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
+            EnumProtocol::Login, 0x00 => login::LoginStart;
+            EnumProtocol::Login, 0x01 => login::EncryptionResponse;
 
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Login,
-                id: 0x00,
-            },
-            |buf| login::LoginStart::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Login,
-                id: 0x01,
-            },
-            |buf| login::EncryptionResponse::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x00,
-            },
-            |buf| {
-                handshake::keepalive::KeepAlive::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x01,
-            },
-            |buf| play::chat::ChatMessage::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x03,
-            },
-            |buf| {
-                play::movement::PlayerOnGround::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x04,
-            },
-            |buf| {
-                play::movement::PlayerPosition::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x05,
-            },
-            |buf| play::movement::PlayerLook::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x06,
-            },
-            |buf| {
-                play::movement::PlayerPositionAndLook::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x07,
-            },
-            |buf| play::block::PlayerDig::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x08,
-            },
-            |buf| {
-                play::block::PlayerBlockPlacement::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x09,
-            },
-            |buf| {
-                play::block::HeldItemChange::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x10,
-            },
-            |buf| {
-                play::inventory::CreativeInventoryAction::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x13,
-            },
-            |buf| play::PlayerAbilities::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x14,
-            },
-            |buf| play::chat::TabComplete::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x15,
-            },
-            |buf| play::ClientSettings::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x16,
-            },
-            |buf| play::game::ClientStatus::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x17,
-            },
-            |buf| play::PluginMessage::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x19,
-            },
-            |buf| play::ResourcePackStatus::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x0A,
-            },
-            |buf| play::entity::ArmAnimation::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x02,
-            },
-            |buf| play::entity::UseEntity::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x0B,
-            },
-            |buf| play::entity::EntityAction::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>),
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x0D,
-            },
-            |buf| {
-                play::inventory::CloseWindow::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x0E,
-            },
-            |buf| {
-                play::inventory::ClickWindow::decode(buf).map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
-        handlers.insert(
-            PacketKey {
-                state: EnumProtocol::Play,
-                id: 0x0F,
-            },
-            |buf| {
-                play::inventory::ConfirmTransaction::decode(buf)
-                    .map(|p| Box::new(p) as Box<dyn PacketIn>)
-            },
-        );
+            EnumProtocol::Play, 0x00 => play::keepalive::KeepAlive;
+            EnumProtocol::Play, 0x01 => play::chat::ChatMessage;
+            EnumProtocol::Play, 0x03 => play::movement::PlayerOnGround;
+            EnumProtocol::Play, 0x04 => play::movement::PlayerPosition;
+            EnumProtocol::Play, 0x05 => play::movement::PlayerLook;
+            EnumProtocol::Play, 0x06 => play::movement::PlayerPositionAndLook;
+            EnumProtocol::Play, 0x07 => play::block::PlayerDig;
+            EnumProtocol::Play, 0x08 => play::block::PlayerBlockPlacement;
+            EnumProtocol::Play, 0x09 => play::block::HeldItemChange;
+            EnumProtocol::Play, 0x10 => play::inventory::CreativeInventoryAction;
+            EnumProtocol::Play, 0x13 => play::PlayerAbilities;
+            EnumProtocol::Play, 0x14 => play::chat::TabComplete;
+            EnumProtocol::Play, 0x15 => play::ClientSettings;
+            EnumProtocol::Play, 0x16 => play::game::ClientStatus;
+            EnumProtocol::Play, 0x17 => play::PluginMessage;
+            EnumProtocol::Play, 0x19 => play::ResourcePackStatus;
+            EnumProtocol::Play, 0x0A => play::entity::ArmAnimation;
+            EnumProtocol::Play, 0x02 => play::entity::UseEntity;
+            EnumProtocol::Play, 0x0B => play::entity::EntityAction;
+            EnumProtocol::Play, 0x0D => play::inventory::CloseWindow;
+            EnumProtocol::Play, 0x0E => play::inventory::ClickWindow;
+            EnumProtocol::Play, 0x0F => play::inventory::ConfirmTransaction;
+        };
 
         Self { handlers }
     }

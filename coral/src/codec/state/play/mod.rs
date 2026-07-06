@@ -5,34 +5,36 @@ use std::{
 };
 
 use coral_command::{CommandContext, CommandResult};
-use coral_protocol::packets::{
-    handshake::keepalive::KeepAlive,
-    play::{
-        ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
-        ResourcePackStatus,
-        block::{
-            BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
-            PlayerBlockPlacement, PlayerDig,
-        },
-        chat::{
-            ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
-            builder::{ChatBuilder, ChatColor},
-        },
-        entity::{
-            ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation,
-            EntityEquipment, EntityHeadLook, EntityMetadata, EntityTeleport, EntityVelocity,
-            SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed, UseEntity,
-        },
-        game::{ChangeGameState, ClientStatus, EntityStatus, Respawn, SetExperience, UpdateHealth},
-        inventory::{
-            ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
-            ItemStack, SetSlot,
-        },
-        movement::{
-            PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
-        },
-        player_list::{PlayerListItem17, PlayerListItemAdd, PlayerListItemRemove, UpdateLatency},
+use coral_protocol::packets::play::{
+    ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
+    ResourcePackStatus,
+    block::{
+        BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
+        PlayerBlockPlacement, PlayerDig,
     },
+    chat::{
+        ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
+        builder::{ChatBuilder, ChatColor},
+    },
+    entity::{
+        ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
+        EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityMetadata,
+        EntityTeleport, EntityVelocity, SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed,
+        UseEntity, UseEntityType, degrees_to_byte,
+    },
+    game::{
+        ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, Respawn, SetExperience,
+        UpdateHealth,
+    },
+    inventory::{
+        ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
+        ItemStack, SetSlot,
+    },
+    keepalive::KeepAlive,
+    movement::{
+        PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
+    },
+    player_list::{PlayerListItem17, PlayerListItemAdd, PlayerListItemRemove, UpdateLatency},
 };
 use coral_server::{
     effects::{ActiveEffect, EffectKind},
@@ -170,7 +172,7 @@ pub async fn play(
                 state.is_sleeping = false;
                 send_packet(framed, EntityAnimation {
                     entity_id: state.entity_id,
-                    animation: 2
+                    animation: EntityAnimationType::LeaveBed,
                 }).await;
             }
             Ok((sender_eid, id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
@@ -305,8 +307,8 @@ pub async fn play(
                 if !visible {
                     continue;
                 }
-                let yaw_byte = ((yaw / 360.0 * 256.0) as i32).rem_euclid(256) as u8;
-                let pitch_byte = ((pitch / 360.0 * 256.0) as i32).rem_euclid(256) as u8;
+                let yaw_byte = degrees_to_byte(yaw);
+                let pitch_byte = degrees_to_byte(pitch);
 
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
@@ -1009,7 +1011,7 @@ pub async fn play(
                         }
 
                         if packet.as_any().downcast_ref::<ArmAnimation>().is_some() {
-                            channels.anim_tx.send((state.entity_id, 0)).ok();
+                            channels.anim_tx.send((state.entity_id, EntityAnimationType::SwingArm)).ok();
                             continue;
                         }
 
@@ -1216,7 +1218,9 @@ pub async fn play(
                         }
 
                         if let Some(status) = packet.as_any().downcast_ref::<ClientStatus>() {
-                            if status.action == 0 && state.is_dead {
+                            if let ClientStatusAction::PerformRespawn = status.action
+                                && state.is_dead
+                            {
                                 state.health = 20.0;
                                 state.food = 20;
                                 state.food_saturation = 5.0;
@@ -1280,16 +1284,16 @@ pub async fn play(
 
                         if let Some(action) = packet.as_any().downcast_ref::<EntityAction>() {
                             if let Some(uuid) = state.uuid {
-                                if action.action == 2 { // got off bed
-                                    state.is_sleeping = false;
-                                    player_registry.update_sleeping(uuid, false).await;
-                                    channels.anim_tx.send((state.entity_id, 2)).ok();
-                                    continue;
-                                }
                                 let update = match action.action {
-                                    0 => Some((true, true)),   // sneaking on
-                                    1 => Some((true, false)),  // sneaking off
-                                    3 => {
+                                    EntityActionType::LeaveBed => {
+                                        state.is_sleeping = false;
+                                        player_registry.update_sleeping(uuid, false).await;
+                                        channels.anim_tx.send((state.entity_id, EntityAnimationType::LeaveBed)).ok();
+                                        continue;
+                                    }
+                                    EntityActionType::StartSneaking => Some((true, true)),
+                                    EntityActionType::StopSneaking => Some((true, false)),
+                                    EntityActionType::StartSprinting => {
                                         // server authority dont allow sprint if food < 6
                                         if state.food > 6 {
                                             Some((false, true))  // sprinting on
@@ -1303,7 +1307,7 @@ pub async fn play(
                                             None
                                         }
                                     }
-                                    4 => Some((false, false)), // sprinting off
+                                    EntityActionType::StopSprinting => Some((false, false)),
                                     _ => None,
                                 };
 
@@ -1325,96 +1329,102 @@ pub async fn play(
                         }
 
                         if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
-                            if use_entity.action == 1 && state.gamemode != GameMode::Spectator {
-                                let players = player_registry.get_all().await;
-                                if let Some(target) = players.iter()
-                                    .find(|p| p.entity_id == use_entity.target_entity_id)
-                                {
-                                    if target.is_dead || target.no_damage_ticks > 0 {
+                            match use_entity.action {
+                                UseEntityType::Attack => {
+                                    if state.gamemode == GameMode::Spectator {
                                         continue;
                                     }
-                                    player_registry.update_no_damage_ticks(target.uuid, 10).await;
-                                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
-                                        let reach = if state.gamemode == GameMode::Creative {
-                                            5.0
-                                        } else {
-                                            4.0
-                                        };
-                                        if dist3(me.x, me.y, me.z, target.x, target.y, target.z) > reach {
+                                    let players = player_registry.get_all().await;
+                                    if let Some(target) = players.iter()
+                                        .find(|p| p.entity_id == use_entity.target_entity_id)
+                                    {
+                                        if target.is_dead || target.no_damage_ticks > 0 {
                                             continue;
                                         }
-                                        let strength_bonus = state.active_effects.iter()
-                                            .find(|e| e.kind == EffectKind::Strength)
-                                            .map(|e| 1.3 * (e.amplifier + 1) as f32)
-                                            .unwrap_or(0.0);
-                                        let weakness_penalty = state.active_effects.iter()
-                                            .find(|e| e.kind == EffectKind::Weakness)
-                                            .map(|e| 0.5 * (e.amplifier + 1) as f32)
-                                            .unwrap_or(0.0);
-
-                                        let base_damage = item_registry.attack_damage(state.held_item)
-                                            + strength_bonus - weakness_penalty;
-                                        let is_critical = !me.on_ground && state.fall_distance > 0.0;
-                                        let raw_damage = (base_damage.max(0.0)) * if is_critical { 1.5 } else { 1.0 };
-
-                                        let target_inventory_armor = player_registry.get_armor(&target.uuid).await;
-                                        let total_armor = total_defense(
-                                            &item_registry,
-                                            target_inventory_armor.0,
-                                            target_inventory_armor.1,
-                                            target_inventory_armor.2,
-                                            target_inventory_armor.3,
-                                        );
-                                        let resistance = player_registry.get_effects(&target.uuid).await.iter()
-                                            .find(|e| e.kind == EffectKind::Resistance)
-                                            .map(|e| 0.2 * (e.amplifier + 1) as f32)
-                                            .unwrap_or(0.0);
-
-                                        let damage = apply_armor_reduction(raw_damage, total_armor) * (1.0 - resistance);
-                                        let new_health = (target.health - damage).max(0.0);
-
-                                        player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
-
-                                        if new_health <= 0.0 {
-                                            channels.chat_tx.send(ChatBuilder::plain_json(&format!(
-                                                "{} was slain by {}",
-                                                target.username,
-                                                state.name.clone().unwrap_or_default()
-                                            ))).ok();
-
-                                            let xp_amount = level_to_xp_drop(1); // TODO: add xp_level, xp_total to coral_server::Player
-                                            if xp_amount > 0 {
-                                                let orb_eid = next_entity_id();
-                                                xp_orbs.write().await.push(XpOrb {
-                                                    entity_id: orb_eid,
-                                                    x: target.x, y: target.y + 0.5, z: target.z,
-                                                    vy: 0.3,
-                                                    amount: xp_amount,
-                                                    ticks_alive: 0,
-                                                });
-                                                channels.xp_orb_spawn_tx.send((orb_eid, target.x, target.y + 0.5, target.z, xp_amount)).ok();
+                                        player_registry.update_no_damage_ticks(target.uuid, 10).await;
+                                        if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                                            let reach = if state.gamemode == GameMode::Creative {
+                                                5.0
+                                            } else {
+                                                4.0
+                                            };
+                                            if dist3(me.x, me.y, me.z, target.x, target.y, target.z) > reach {
+                                                continue;
                                             }
-                                        }
+                                            let strength_bonus = state.active_effects.iter()
+                                                .find(|e| e.kind == EffectKind::Strength)
+                                                .map(|e| 1.3 * (e.amplifier + 1) as f32)
+                                                .unwrap_or(0.0);
+                                            let weakness_penalty = state.active_effects.iter()
+                                                .find(|e| e.kind == EffectKind::Weakness)
+                                                .map(|e| 0.5 * (e.amplifier + 1) as f32)
+                                                .unwrap_or(0.0);
 
-                                        channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+                                            let base_damage = item_registry.attack_damage(state.held_item)
+                                                + strength_bonus - weakness_penalty;
+                                            let is_critical = !me.on_ground && state.fall_distance > 0.0;
+                                            let raw_damage = (base_damage.max(0.0)) * if is_critical { 1.5 } else { 1.0 };
 
-                                        let broke = state.damage_item(2, &item_registry);
-                                        sync_held_slot(framed, state, &player_registry, &channels.equip_tx, broke).await;
+                                            let target_inventory_armor = player_registry.get_armor(&target.uuid).await;
+                                            let total_armor = total_defense(
+                                                &item_registry,
+                                                target_inventory_armor.0,
+                                                target_inventory_armor.1,
+                                                target_inventory_armor.2,
+                                                target_inventory_armor.3,
+                                            );
+                                            let resistance = player_registry.get_effects(&target.uuid).await.iter()
+                                                .find(|e| e.kind == EffectKind::Resistance)
+                                                .map(|e| 0.2 * (e.amplifier + 1) as f32)
+                                                .unwrap_or(0.0);
 
-                                        channels.sound_tx.send((
-                                            "game.player.hurt".to_string(),
-                                            target.x, target.y, target.z,
-                                            1.0, 63
-                                        )).ok();
-                                        channels.status_tx.send((use_entity.target_entity_id, 2)).ok();
-                                        channels.anim_tx.send((use_entity.target_entity_id, 1)).ok();
+                                            let damage = apply_armor_reduction(raw_damage, total_armor) * (1.0 - resistance);
+                                            let new_health = (target.health - damage).max(0.0);
 
-                                        if is_critical {
-                                            channels.anim_tx.send((state.entity_id, 4)).ok();
-                                            channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
+                                            player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
+
+                                            if new_health <= 0.0 {
+                                                channels.chat_tx.send(ChatBuilder::plain_json(&format!(
+                                                    "{} was slain by {}",
+                                                    target.username,
+                                                    state.name.clone().unwrap_or_default()
+                                                ))).ok();
+
+                                                let xp_amount = level_to_xp_drop(1); // TODO: add xp_level, xp_total to coral_server::Player
+                                                if xp_amount > 0 {
+                                                    let orb_eid = next_entity_id();
+                                                    xp_orbs.write().await.push(XpOrb {
+                                                        entity_id: orb_eid,
+                                                        x: target.x, y: target.y + 0.5, z: target.z,
+                                                        vy: 0.3,
+                                                        amount: xp_amount,
+                                                        ticks_alive: 0,
+                                                    });
+                                                    channels.xp_orb_spawn_tx.send((orb_eid, target.x, target.y + 0.5, target.z, xp_amount)).ok();
+                                                }
+                                            }
+
+                                            channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
+
+                                            let broke = state.damage_item(2, &item_registry);
+                                            sync_held_slot(framed, state, &player_registry, &channels.equip_tx, broke).await;
+
+                                            channels.sound_tx.send((
+                                                "game.player.hurt".to_string(),
+                                                target.x, target.y, target.z,
+                                                1.0, 63
+                                            )).ok();
+                                            channels.status_tx.send((use_entity.target_entity_id, 2)).ok();
+                                            channels.anim_tx.send((use_entity.target_entity_id, EntityAnimationType::TakeDamage)).ok();
+
+                                            if is_critical {
+                                                channels.anim_tx.send((state.entity_id, EntityAnimationType::CriticalEffect(false))).ok();
+                                                channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
+                                            }
                                         }
                                     }
                                 }
+                                _ => {}
                             }
                             continue;
                         }

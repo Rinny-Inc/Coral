@@ -63,7 +63,7 @@ pub struct TrackingConfig {
     pub experience_orb: f64,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct ResourcePackConfig {
     pub url: String,
     pub hash: String,
@@ -123,15 +123,6 @@ impl Default for BungeecordConfig {
         Self {
             enabled: false,
             addresses: vec!["127.0.0.1".to_string()],
-        }
-    }
-}
-impl Default for ResourcePackConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            hash: String::new(),
-            forced: false,
         }
     }
 }

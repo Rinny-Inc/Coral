@@ -12,7 +12,7 @@ use coral_protocol::packets::play::{
         ChatMessageOut,
         builder::{ChatBuilder, ChatColor},
     },
-    entity::UseBed,
+    entity::{EntityAnimationType, UseBed},
 };
 use coral_server::{
     items::ItemRegistry,
@@ -46,7 +46,10 @@ pub async fn try_with_item(
         && state.eating.is_none()
     {
         state.eating = Some(Instant::now());
-        channels.anim_tx.send((state.entity_id, 3)).ok();
+        channels
+            .anim_tx
+            .send((state.entity_id, EntityAnimationType::Eat))
+            .ok();
     }
 
     match state.held_item {
@@ -96,7 +99,10 @@ pub async fn try_with_item(
 
                 state.fishing_hook_eid = Some(hook_eid);
             }
-            channels.anim_tx.send((state.entity_id, 0)).ok();
+            channels
+                .anim_tx
+                .send((state.entity_id, EntityAnimationType::SwingArm))
+                .ok();
             return true;
         }
         373 => {
@@ -109,7 +115,10 @@ pub async fn try_with_item(
             if !is_splash {
                 if state.eating.is_none() {
                     state.eating = Some(Instant::now());
-                    channels.anim_tx.send((state.entity_id, 3)).ok();
+                    channels
+                        .anim_tx
+                        .send((state.entity_id, EntityAnimationType::Eat))
+                        .ok();
                 }
                 return true;
             }

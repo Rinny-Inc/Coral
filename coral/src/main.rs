@@ -7,7 +7,10 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coral_protocol::packets::{PacketRegistry, play::chat::builder::ChatBuilder};
+use coral_protocol::packets::{
+    PacketRegistry,
+    play::{chat::builder::ChatBuilder, entity::EntityAnimationType},
+};
 use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -78,7 +81,7 @@ type JoinLeave = (Player, bool);
 type PingUpdate = (Uuid, i32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
 type BreakAnimation = (i32, i32, i32, i32, u8);
-type AnimationUpdate = (i32, u8);
+type AnimationUpdate = (i32, EntityAnimationType);
 type MetadataUpdate = (i32, u8, u8);
 type ItemDrop = (i32, f64, f64, f64, i16, u8, i16);
 type DespawnEntity = Vec<i32>;

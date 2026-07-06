@@ -1,3 +1,5 @@
+use std::io::Error;
+
 use crate::{
     packets::{PacketIn, PacketOut},
     reader::Reader,
@@ -51,11 +53,28 @@ pub struct Respawn {
 }
 
 #[derive(Debug)]
+#[repr(u8)]
+pub enum ClientStatusAction {
+    PerformRespawn,
+    RequestStats,
+    OpenCreativeInventory,
+}
+impl TryFrom<u8> for ClientStatusAction {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::PerformRespawn),
+            1 => Ok(Self::RequestStats),
+            2 => Ok(Self::OpenCreativeInventory),
+            _ => Err(value),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ClientStatus {
-    // 0 = perform respawn
-    // 1 = request stats
-    // 2 = open inventory (creative)
-    pub action: u8,
+    pub action: ClientStatusAction,
 }
 
 impl PacketOut for UpdateHealth {
@@ -83,7 +102,12 @@ impl PacketIn for ClientStatus {
         Self: Sized,
     {
         let mut reader = Reader::new(buf);
-        let action = reader.read_byte();
+        let action = ClientStatusAction::try_from(reader.read_byte()).map_err(|e| {
+            Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("ClientStatus packet hacked: {}", e),
+            )
+        })?;
         Ok(ClientStatus { action })
     }
 

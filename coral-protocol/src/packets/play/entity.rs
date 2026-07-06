@@ -1,3 +1,5 @@
+use std::io::Error;
+
 use crate::{
     auth::ProfileProperty,
     packets::{PacketIn, PacketOut},
@@ -68,8 +70,8 @@ pub struct EntityHeadLook {
     pub head_yaw: u8,
 }
 
-fn degrees_to_byte(degrees: f32) -> u8 {
-    ((degrees / 360.0 * 256.0) as i32).rem_euclid(256) as u8
+pub fn degrees_to_byte(degrees: f32) -> u8 {
+    ((degrees * 256.0 / 360.0) as i32).rem_euclid(256) as u8
 }
 
 impl PacketOut for SpawnPlayer {
@@ -96,9 +98,9 @@ impl PacketOut for SpawnPlayer {
         }
         */
 
-        writer.write_varint((self.x * 32.0) as i32);
-        writer.write_varint((self.y * 32.0) as i32);
-        writer.write_varint((self.z * 32.0) as i32);
+        writer.write_varint((self.x * 32.0).floor() as i32);
+        writer.write_varint((self.y * 32.0).floor() as i32);
+        writer.write_varint((self.z * 32.0).floor() as i32);
         writer.write_byte(degrees_to_byte(self.yaw));
         writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_i16(self.current_item);
@@ -114,11 +116,11 @@ impl PacketOut for EntityTeleport {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x18);
         writer.write_varint(self.entity_id);
-        writer.write_i32((self.x * 32.0) as i32);
-        writer.write_i32((self.y * 32.0) as i32);
-        writer.write_i32((self.z * 32.0) as i32);
-        writer.write_byte(self.yaw);
-        writer.write_byte(self.pitch);
+        writer.write_i32((self.x * 32.0).floor() as i32);
+        writer.write_i32((self.y * 32.0).floor() as i32);
+        writer.write_i32((self.z * 32.0).floor() as i32);
+        writer.write_byte(degrees_to_byte(self.yaw as f32));
+        writer.write_byte(degrees_to_byte(self.pitch as f32));
         writer.write_bool(self.on_ground);
         Ok(())
     }
@@ -184,16 +186,20 @@ impl PacketOut for EntityHeadLook {
 #[derive(Debug)]
 pub struct ArmAnimation;
 
+#[derive(Debug, Clone)]
+#[repr(u8)]
+pub enum EntityAnimationType {
+    SwingArm,
+    TakeDamage,
+    LeaveBed,
+    Eat,
+    CriticalEffect(bool),
+}
+
 #[derive(Debug)]
 pub struct EntityAnimation {
     pub entity_id: i32,
-    // 0 = swing arm
-    // 1 = take damage
-    // 2 = leave bed
-    // 3 = eat food
-    // 4 = critical effect
-    // 5 = magic critical effect
-    pub animation: u8,
+    pub animation: EntityAnimationType,
 }
 
 impl PacketIn for ArmAnimation {
@@ -212,32 +218,83 @@ impl PacketOut for EntityAnimation {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x0B);
         writer.write_varint(self.entity_id);
-        writer.write_byte(self.animation);
+        let animation: u8 = match self.animation {
+            EntityAnimationType::SwingArm => 0,
+            EntityAnimationType::TakeDamage => 1,
+            EntityAnimationType::LeaveBed => 2,
+            EntityAnimationType::Eat => 3,
+            EntityAnimationType::CriticalEffect(is_magic) => {
+                if is_magic {
+                    5
+                } else {
+                    4
+                }
+            }
+        };
+        writer.write_byte(animation);
         Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
+pub enum EntityActionType {
+    StartSneaking,
+    StopSneaking,
+    LeaveBed,
+    StartSprinting,
+    StopSprinting,
+    HorseJump,
+    OpenRiddenHorseInventory,
+}
+impl TryFrom<u8> for EntityActionType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::StartSneaking),
+            1 => Ok(Self::StopSneaking),
+            2 => Ok(Self::LeaveBed),
+            3 => Ok(Self::StartSprinting),
+            4 => Ok(Self::StopSprinting),
+            5 => Ok(Self::HorseJump),
+            6 => Ok(Self::OpenRiddenHorseInventory),
+            _ => Err(value),
+        }
     }
 }
 
 #[derive(Debug)]
 pub struct EntityAction {
     pub entity_id: i32,
-    // 0 = start sneaking
-    // 1 = stop sneaking
-    // 2 = leave bed
-    // 3 = start sprinting
-    // 4 = stop sprinting
-    // 5 = jump with horse
-    // 6 = open ridden horse inventory
-    pub action: i32,
-    pub jump_boost: i32, // HORSE ONLY
+    pub action: EntityActionType,
+    pub jump_boost: i32, // Horse Only
+}
+
+#[derive(Debug)]
+#[repr(u8)]
+pub enum UseEntityType {
+    Interact,
+    Attack,
+    InteractAt,
+}
+impl TryFrom<u8> for UseEntityType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Interact),
+            1 => Ok(Self::Attack),
+            2 => Ok(Self::InteractAt),
+            _ => Err(value),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct UseEntity {
     pub target_entity_id: i32,
-    // 0 = interact
-    // 1 = attack
-    // 2 = interact at
-    pub action: i32,
+    pub action: UseEntityType,
 }
 
 #[derive(Debug)]
@@ -262,7 +319,12 @@ impl PacketIn for EntityAction {
     {
         let mut reader = Reader::new(buf);
         let entity_id = reader.read_varint();
-        let action = reader.read_varint();
+        let action = EntityActionType::try_from(reader.read_varint() as u8).map_err(|e| {
+            Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("EntityAction packet hacked: {}", e),
+            )
+        })?;
         let jump_boost = reader.read_varint();
         Ok(EntityAction {
             entity_id,
@@ -282,7 +344,12 @@ impl PacketIn for UseEntity {
     {
         let mut reader = Reader::new(buf);
         let target_entity_id = reader.read_varint();
-        let action = reader.read_varint();
+        let action = UseEntityType::try_from(reader.read_varint() as u8).map_err(|e| {
+            Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("UseEntity packet hacked: {}", e),
+            )
+        })?;
         Ok(UseEntity {
             target_entity_id,
             action,

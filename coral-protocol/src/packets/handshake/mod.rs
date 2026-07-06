@@ -6,8 +6,6 @@ use crate::{
     writer::Writer,
 };
 
-pub mod keepalive;
-
 #[derive(Debug)]
 pub struct PacketHandshake {
     pub protocol_version: i32,
