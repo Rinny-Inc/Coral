@@ -9,7 +9,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{
     PacketRegistry,
-    play::{chat::builder::ChatBuilder, entity::EntityAnimationType},
+    play::{chat::builder::ChatBuilder, entity::EntityAnimationType, game::EntityStatusType},
 };
 use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
 use rsa::RsaPrivateKey;
@@ -89,7 +89,7 @@ type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
 type ItemPickup = (i32, Uuid, i32);
 type TimeUpdate = (i64, i64);
 type WeatherUpdate = WeatherState;
-type EntityStatusUpdate = (i32, u8);
+type EntityStatusUpdate = (i32, EntityStatusType);
 type EquipmentUpdate = (i32, i16, i16, u8, i16);
 type SoundEffect = (String, f64, f64, f64, f32, u8);
 type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);

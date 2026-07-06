@@ -273,12 +273,12 @@ pub struct EntityAction {
 
 #[derive(Debug)]
 #[repr(u8)]
-pub enum UseEntityType {
+pub enum UseEntityAction {
     Interact,
     Attack,
     InteractAt,
 }
-impl TryFrom<u8> for UseEntityType {
+impl TryFrom<u8> for UseEntityAction {
     type Error = u8;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
@@ -294,7 +294,7 @@ impl TryFrom<u8> for UseEntityType {
 #[derive(Debug)]
 pub struct UseEntity {
     pub target_entity_id: i32,
-    pub action: UseEntityType,
+    pub action: UseEntityAction,
 }
 
 #[derive(Debug)]
@@ -344,7 +344,7 @@ impl PacketIn for UseEntity {
     {
         let mut reader = Reader::new(buf);
         let target_entity_id = reader.read_varint();
-        let action = UseEntityType::try_from(reader.read_varint() as u8).map_err(|e| {
+        let action = UseEntityAction::try_from(reader.read_varint() as u8).map_err(|e| {
             Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("UseEntity packet hacked: {}", e),

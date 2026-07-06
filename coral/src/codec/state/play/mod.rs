@@ -20,11 +20,11 @@ use coral_protocol::packets::play::{
         ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
         EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityMetadata,
         EntityTeleport, EntityVelocity, SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed,
-        UseEntity, UseEntityType, degrees_to_byte,
+        UseEntity, UseEntityAction, degrees_to_byte,
     },
     game::{
-        ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, Respawn, SetExperience,
-        UpdateHealth,
+        ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
+        GameStateChangeReason, Respawn, SetExperience, UpdateHealth,
     },
     inventory::{
         ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
@@ -493,9 +493,9 @@ pub async fn play(
                 }).await;
 
                 let status = if state.is_dead {
-                    3
+                    EntityStatusType::DeadAnimation
                 } else {
-                    2
+                    EntityStatusType::HurtAnimation
                 };
                 send_packet(framed, EntityStatus {
                     entity_id: state.entity_id,
@@ -1330,7 +1330,7 @@ pub async fn play(
 
                         if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
                             match use_entity.action {
-                                UseEntityType::Attack => {
+                                UseEntityAction::Attack => {
                                     if state.gamemode == GameMode::Spectator {
                                         continue;
                                     }
@@ -1414,7 +1414,7 @@ pub async fn play(
                                                 target.x, target.y, target.z,
                                                 1.0, 63
                                             )).ok();
-                                            channels.status_tx.send((use_entity.target_entity_id, 2)).ok();
+                                            channels.status_tx.send((use_entity.target_entity_id, EntityStatusType::HurtAnimation)).ok();
                                             channels.anim_tx.send((use_entity.target_entity_id, EntityAnimationType::TakeDamage)).ok();
 
                                             if is_critical {
@@ -1647,7 +1647,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 1,
+                    reason: GameStateChangeReason::EndRaining,
                     value: 0.0,
                 },
             )
@@ -1657,7 +1657,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 2,
+                    reason: GameStateChangeReason::BeginRaining,
                     value: 0.0,
                 },
             )
@@ -1665,7 +1665,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 7,
+                    reason: GameStateChangeReason::FadeValue,
                     value: 1.0,
                 },
             )
@@ -1673,7 +1673,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 8,
+                    reason: GameStateChangeReason::FadeTime,
                     value: 0.0,
                 },
             )
@@ -1683,7 +1683,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 2,
+                    reason: GameStateChangeReason::BeginRaining,
                     value: 0.0,
                 },
             )
@@ -1691,7 +1691,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 7,
+                    reason: GameStateChangeReason::FadeValue,
                     value: 1.0,
                 },
             )
@@ -1699,7 +1699,7 @@ pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: Weathe
             send_packet(
                 framed,
                 ChangeGameState {
-                    reason: 8,
+                    reason: GameStateChangeReason::FadeTime,
                     value: 1.0,
                 },
             )

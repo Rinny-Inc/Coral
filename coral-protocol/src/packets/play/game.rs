@@ -5,25 +5,30 @@ use crate::{
     reader::Reader,
 };
 
+#[derive(Debug, Clone)]
+#[repr(u8)]
+pub enum GameStateChangeReason {
+    InvalidBed,
+    EndRaining,
+    BeginRaining,
+    ChangeGameMode,
+    EnterCredits,
+    DemoMessage,
+    ArrowHitPlayer,
+    FadeValue,
+    FadeTime,
+    PlayerMobAppearance = 10,
+}
+
 #[derive(Debug)]
 pub struct ChangeGameState {
-    // 0 = invalid bed
-    // 1 = end raining
-    // 2 = begin raining
-    // 3 = change gamemode
-    // 4 = enter credits
-    // 5 = demo message
-    // 6 = arrow hit player
-    // 7 = fade value
-    // 8 = fade time
-    // 10 = play mob appearance
-    pub reason: u8,
+    pub reason: GameStateChangeReason,
     pub value: f32,
 }
 impl ChangeGameState {
     pub fn set_gamemode(gamemode: u8) -> Self {
         Self {
-            reason: 3,
+            reason: GameStateChangeReason::ChangeGameMode,
             value: gamemode as f32,
         }
     }
@@ -31,7 +36,7 @@ impl ChangeGameState {
 impl PacketOut for ChangeGameState {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x2B);
-        writer.write_byte(self.reason);
+        writer.write_byte(self.reason.clone() as u8);
         writer.write_f32(self.value);
         Ok(())
     }
@@ -123,14 +128,19 @@ pub struct SetExperience {
     pub total_experience: i32,
 }
 
+#[derive(Debug, Clone)]
+#[repr(u8)]
+pub enum EntityStatusType {
+    HurtAnimation = 2,
+    DeadAnimation = 3,
+    TameFailed = 6,
+    TameSuccess = 7,
+}
+
 #[derive(Debug)]
 pub struct EntityStatus {
     pub entity_id: i32,
-    // 2 = hurt animation + red flash
-    // 3 = dead
-    // 6 = tame failed (smoke particles)
-    // 7 = tame succeeded (hearts)
-    pub status: u8,
+    pub status: EntityStatusType,
 }
 
 impl PacketOut for SetExperience {
@@ -146,7 +156,7 @@ impl PacketOut for EntityStatus {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x1A);
         writer.write_i32(self.entity_id);
-        writer.write_byte(self.status);
+        writer.write_byte(self.status.clone() as u8);
         Ok(())
     }
 }
