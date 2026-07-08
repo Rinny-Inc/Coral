@@ -18,7 +18,7 @@ cfb8 = "0.9.1"
 cipher = "0.5.2"
 flate2 = "1.1.9"
 futures = "0.3.32"
-num-bigint = "0.5.0"
+num-bigint = "0.5.1"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", features = ["json"] }
 rsa = "=0.10.0-rc.18"
