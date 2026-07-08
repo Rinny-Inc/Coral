@@ -64,4 +64,18 @@ impl WhitelistFile {
             false
         }
     }
+
+    pub fn remove_by_name(&mut self, name: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| !e.name.eq_ignore_ascii_case(name));
+        let removed = self.entries.len() != before;
+        if removed {
+            self.save();
+        }
+        removed
+    }
+
+    pub fn usernames(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.name.clone()).collect()
+    }
 }

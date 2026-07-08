@@ -8,3 +8,4 @@ coral-server = { path = "../coral-server" }
 coral-protocol = { path = "../coral-protocol" }
 coral-types = { path = "../coral-types" }
 tokio.workspace = true
+uuid.workspace = true

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering::Relaxed},
@@ -13,6 +14,7 @@ use coral_protocol::packets::play::{
         builder::{ChatBuilder, ChatColor},
     },
     entity::{EntityAnimationType, UseBed},
+    inventory::{ItemStack, OpenWindow, WindowItems},
 };
 use coral_server::{
     items::ItemRegistry,
@@ -26,21 +28,17 @@ use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, send_packet},
+    codec::{Codec, OpenChest, PlayerState, send_packet},
 };
 
 /// Return true if the itme interaction went well
 pub async fn try_with_item(
-    place: &PlayerBlockPlacement,
     state: &mut PlayerState,
     item_registry: &Arc<ItemRegistry>,
     player_registry: &Arc<PlayerRegistry>,
     projectiles: &Arc<RwLock<Vec<Projectile>>>,
     channels: &Channels,
 ) -> bool {
-    if place.face != 255 {
-        return false;
-    }
     if let Some((_hunger, _saturation)) = item_registry.food_value(state.held_item)
         && state.food < 20
         && state.eating.is_none()
@@ -55,7 +53,7 @@ pub async fn try_with_item(
     match state.held_item {
         261 => {
             state.bow_charging = Some(Instant::now());
-            return true;
+            true
         }
         346 => {
             if !state
@@ -103,7 +101,7 @@ pub async fn try_with_item(
                 .anim_tx
                 .send((state.entity_id, EntityAnimationType::SwingArm))
                 .ok();
-            return true;
+            true
         }
         373 => {
             let meta = state.inventory.slots[state.held_slot as usize]
@@ -122,10 +120,10 @@ pub async fn try_with_item(
                 }
                 return true;
             }
+            false
         }
-        _ => {}
+        _ => false,
     }
-    false
 }
 
 /// Return true if the block interaction went well
@@ -138,51 +136,127 @@ pub async fn try_with_block(
     world_blocks: &Arc<WorldBlocks>,
     world_time: &Arc<AtomicI64>,
     generator: &Arc<FlatWorldGenerator>,
+    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
     channels: &Channels,
 ) -> bool {
     let clicked = world_blocks.get(place.x, place.y, place.z, generator).await;
-    if clicked.id == 26 {
-        if !is_night(world_time.load(Relaxed)) {
+    match clicked.id {
+        54 | 146 => {
+            if !(state.is_sneaking && place.held_item_id > 0) {
+                open_chest(
+                    framed,
+                    state,
+                    (place.x, place.y as i32, place.z),
+                    &chest_storage,
+                )
+                .await;
+                return true;
+            }
+            false
+        }
+        26 => {
+            if !is_night(world_time.load(Relaxed)) {
+                send_packet(
+                    framed,
+                    ChatMessageOut::from_json(&ChatBuilder::plain_json(
+                        "You can only sleep at night",
+                    )),
+                )
+                .await;
+                return false;
+            }
+            state.bed_spawn = Some((place.x, place.y as i32, place.z));
             send_packet(
                 framed,
-                ChatMessageOut::from_json(&ChatBuilder::plain_json("You can only sleep at night")),
+                ChatBuilder::new("Respawn point set")
+                    .color(ChatColor::Gray)
+                    .into_packet(),
             )
             .await;
-            return false;
-        }
-        state.bed_spawn = Some((place.x, place.y as i32, place.z));
-        send_packet(
-            framed,
-            ChatBuilder::new("Respawn point set")
-                .color(ChatColor::Gray)
-                .into_packet(),
-        )
-        .await;
 
-        state.is_sleeping = true;
-        if let Some(uuid) = state.uuid {
-            player_registry.update_sleeping(uuid, true).await;
-        }
+            state.is_sleeping = true;
+            if let Some(uuid) = state.uuid {
+                player_registry.update_sleeping(uuid, true).await;
+            }
 
-        send_packet(
-            framed,
-            UseBed {
-                entity_id: state.entity_id,
-                x: place.x,
-                y: place.y as i32,
-                z: place.z,
-            },
-        )
-        .await;
-        channels
-            .bed_tx
-            .send((state.entity_id, place.x, place.y as i32, place.z))
-            .ok();
-        return true;
+            send_packet(
+                framed,
+                UseBed {
+                    entity_id: state.entity_id,
+                    x: place.x,
+                    y: place.y as i32,
+                    z: place.z,
+                },
+            )
+            .await;
+            channels
+                .bed_tx
+                .send((state.entity_id, place.x, place.y as i32, place.z))
+                .ok();
+            true
+        }
+        _ => false,
     }
-    false
 }
 
 fn is_night(time_of_day: i64) -> bool {
     (12542..=23459).contains(&time_of_day)
+}
+
+async fn open_chest(
+    framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
+    pos: (i32, i32, i32),
+    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+) {
+    state.window_id_counter = state.window_id_counter.wrapping_add(1);
+    if state.window_id_counter == 0 {
+        state.window_id_counter = 1;
+    }
+    let window_id = state.window_id_counter;
+
+    let contents = {
+        let mut storage = chest_storage.write().await;
+        storage.entry(pos).or_insert_with(|| vec![None; 27]).clone()
+    };
+
+    send_packet(
+        framed,
+        OpenWindow {
+            window_id,
+            window_type: "minecraft:chest".to_string(),
+            title: r#"{"text":"Chest"}"#.to_string(),
+            slot_count: 27,
+        },
+    )
+    .await;
+
+    let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(27 + 36);
+
+    for i in 0..27 {
+        match &contents[i] {
+            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
+            None => slots.push((-1, 0, 0)),
+        }
+    }
+
+    for internal in 9..36 {
+        match &state.inventory.slots[internal] {
+            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
+            None => slots.push((-1, 0, 0)),
+        }
+    }
+    for internal in 0..9 {
+        match &state.inventory.slots[internal] {
+            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
+            None => slots.push((-1, 0, 0)),
+        }
+    }
+
+    send_packet(framed, WindowItems { window_id, slots }).await;
+
+    state.open_window = Some(OpenChest { window_id, pos });
+
+    // TODO: play chest sound + animation
+    // (0x24 BlockAction)
 }

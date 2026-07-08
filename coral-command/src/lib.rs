@@ -1,9 +1,10 @@
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 
 use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
-use coral_server::{ops::OpsFile, player::registry::PlayerRegistry};
+use coral_server::{ops::OpsFile, player::registry::PlayerRegistry, whitelist::WhitelistFile};
 use coral_types::{DamageEvent, GameMode, GamemodeUpdate};
 use tokio::sync::{RwLock, broadcast::Sender};
+use uuid::Uuid;
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
 pub type CommandHandler = Arc<dyn Fn(CommandContext) -> CommandFuture + Send + Sync>;
@@ -307,6 +308,80 @@ pub fn deop_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFil
                     "Made {} no longer a server operator",
                     target.username
                 ))
+            }
+        }),
+    }
+}
+
+pub fn whitelist_command(
+    player_registry: Arc<PlayerRegistry>,
+    whitelist: Arc<RwLock<WhitelistFile>>,
+) -> Command {
+    Command {
+        name: "whitelist".to_string(),
+        description: "Manage the whitelist".to_string(),
+        usage: "/whitelist <add|remove|list> [player]".to_string(),
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let whitelist = whitelist.clone();
+            async move {
+                let Some(sub) = ctx.arg(1) else {
+                    return CommandResult::Error(
+                        "Usage: /whitelist <add|remove|list> [player]".to_string(),
+                    );
+                };
+
+                match sub.to_lowercase().as_str() {
+                    "list" => {
+                        let names = whitelist.read().await.usernames();
+                        if names.is_empty() {
+                            CommandResult::Success("There are no whitelisted players.".to_string())
+                        } else {
+                            CommandResult::Success(format!(
+                                "There are {} whitelisted players: {}",
+                                names.len(),
+                                names.join(", ")
+                            ))
+                        }
+                    }
+                    "add" => {
+                        let Some(name) = ctx.arg(2) else {
+                            return CommandResult::Error(
+                                "Usage: /whitelist <add|remove|list> [player]".to_string(),
+                            );
+                        };
+                        let uuid = registry
+                            .get_all()
+                            .await
+                            .iter()
+                            .find(|p| p.username.eq_ignore_ascii_case(name))
+                            .map(|p| p.uuid)
+                            .unwrap_or_else(|| {
+                                Uuid::new_v3(
+                                    &Uuid::NAMESPACE_DNS,
+                                    format!("OfflinePlayer:{}", name).as_bytes(),
+                                )
+                            });
+                        whitelist.write().await.add(uuid, name.to_string());
+                        CommandResult::Success(format!("Added {} to the whitelist", name))
+                    }
+                    "remove" => {
+                        let Some(name) = ctx.arg(2) else {
+                            return CommandResult::Error(
+                                "Usage: /whitelist <add|remove|list> [player]".to_string(),
+                            );
+                        };
+
+                        if whitelist.write().await.remove_by_name(name) {
+                            CommandResult::Success(format!("Removed {} from the whitelist", name))
+                        } else {
+                            CommandResult::Error(format!("{} is not whitelisted", name))
+                        }
+                    }
+                    _ => CommandResult::Error(
+                        "Usage: /whitelist <add|remove|list> [player]".to_string(),
+                    ),
+                }
             }
         }),
     }

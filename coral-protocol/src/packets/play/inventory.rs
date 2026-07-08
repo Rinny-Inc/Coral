@@ -147,6 +147,7 @@ impl PacketOut for SetSlot {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ItemStack {
     pub item_id: i16,
     pub count: u8,

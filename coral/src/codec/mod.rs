@@ -261,6 +261,14 @@ struct PlayerState {
     xp_progress: f32, // 0.0 to 1.0
     is_sleeping: bool,
     bed_spawn: Option<(i32, i32, i32)>,
+    open_window: Option<OpenChest>,
+    window_id_counter: u8,
+    cursor_item: Option<ItemStack>,
+}
+#[derive(Clone)]
+struct OpenChest {
+    window_id: u8,
+    pos: (i32, i32, i32),
 }
 impl PlayerState {
     fn new() -> Self {
@@ -308,6 +316,9 @@ impl PlayerState {
             xp_progress: 0.0,
             is_sleeping: false,
             bed_spawn: None,
+            open_window: None,
+            window_id_counter: 1,
+            cursor_item: None,
         }
     }
 

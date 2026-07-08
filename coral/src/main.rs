@@ -9,7 +9,10 @@ use std::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{
     PacketRegistry,
-    play::{chat::builder::ChatBuilder, entity::EntityAnimationType, game::EntityStatusType},
+    play::{
+        chat::builder::ChatBuilder, entity::EntityAnimationType, game::EntityStatusType,
+        inventory::ItemStack,
+    },
 };
 use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
 use rsa::RsaPrivateKey;
@@ -26,7 +29,7 @@ use uuid::Uuid;
 
 use coral_command::{
     CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
-    list_command, op_command, version_command,
+    list_command, op_command, version_command, whitelist_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -74,6 +77,7 @@ pub struct ServerContext {
     spawn_point: Arc<RwLock<(f64, f64, f64)>>,
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
+    chest_storage: Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
 }
 
 type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
@@ -198,6 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let player_registry = Arc::new(PlayerRegistry::new());
     let channels = Channels::new();
     let ops = Arc::new(RwLock::new(OpsFile::load()));
+    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
@@ -221,6 +226,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     dispatcher
         .register(deop_command(player_registry.clone(), ops.clone()))
+        .await;
+    dispatcher
+        .register(whitelist_command(
+            player_registry.clone(),
+            whitelist.clone(),
+        ))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -247,11 +258,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
         ops,
-        whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
+        whitelist,
         banlist: Arc::new(RwLock::new(BanList::load())),
         spawn_point: Arc::new(RwLock::new(spawn_point)),
         world_dir: Arc::new(world_dir.to_path_buf()),
         xp_orbs: Arc::new(RwLock::new(Vec::new())),
+        chest_storage: Arc::new(RwLock::new(HashMap::new())),
     };
 
     ctx.world_blocks.load(world_dir, &ctx.generator).await;
