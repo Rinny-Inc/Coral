@@ -29,13 +29,39 @@ impl TryFrom<u8> for DigStatus {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+#[repr(u8)]
+pub enum BlockFace {
+    Down,
+    Up,
+    North,
+    South,
+    West,
+    East,
+}
+impl TryFrom<u8> for BlockFace {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Down),
+            1 => Ok(Self::Up),
+            2 => Ok(Self::North),
+            3 => Ok(Self::South),
+            4 => Ok(Self::West),
+            5 => Ok(Self::East),
+            _ => Err(value),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PlayerDig {
     pub status: DigStatus,
     pub x: i32,
     pub y: u8,
     pub z: i32,
-    pub face: u8,
+    pub face: Option<BlockFace>,
 }
 
 #[derive(Debug)]
@@ -43,7 +69,7 @@ pub struct PlayerBlockPlacement {
     pub x: i32,
     pub y: u8,
     pub z: i32,
-    pub face: u8,
+    pub face: Option<BlockFace>,
     pub held_item_id: i16,
     pub held_item_count: u8,
     pub held_item_damage: i16,
@@ -77,7 +103,10 @@ impl PacketIn for PlayerDig {
         let x = (position >> 38) as i32;
         let y = ((position >> 26) & 0xFFF) as u8;
         let z = (position << 38 >> 38) as i32;
-        let face = reader.read_byte();
+        let face = match BlockFace::try_from(reader.read_byte()) {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        };
         Ok(PlayerDig {
             status: DigStatus::try_from(status).map_err(|e| {
                 Error::new(
@@ -106,7 +135,10 @@ impl PacketIn for PlayerBlockPlacement {
         let x = (position >> 38) as i32;
         let y = ((position >> 26) & 0xFFF) as u8;
         let z = (position << 38 >> 38) as i32;
-        let face = reader.read_byte();
+        let face = match BlockFace::try_from(reader.read_byte()) {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        };
         let held_item_id = reader.read_i16();
         let (held_item_count, held_item_damage, cursor_x, cursor_y, cursor_z) = {
             if held_item_id != -1 {

@@ -28,7 +28,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, OpenChest, PlayerState, send_packet},
+    codec::{Codec, PlayerState, WindowType, send_packet},
 };
 
 /// Return true if the itme interaction went well
@@ -147,7 +147,7 @@ pub async fn try_with_block(
                     framed,
                     state,
                     (place.x, place.y as i32, place.z),
-                    &chest_storage,
+                    chest_storage,
                 )
                 .await;
                 return true;
@@ -220,12 +220,14 @@ async fn open_chest(
         storage.entry(pos).or_insert_with(|| vec![None; 27]).clone()
     };
 
+    let window_type = WindowType::Chest { window_id, pos };
+
     send_packet(
         framed,
         OpenWindow {
             window_id,
-            window_type: "minecraft:chest".to_string(),
-            title: r#"{"text":"Chest"}"#.to_string(),
+            window_type: window_type.clone(),
+            title: ChatBuilder::new("Chest"),
             slot_count: 27,
         },
     )
@@ -233,8 +235,8 @@ async fn open_chest(
 
     let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(27 + 36);
 
-    for i in 0..27 {
-        match &contents[i] {
+    for item in contents.iter().take(27) {
+        match item {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }
@@ -255,7 +257,7 @@ async fn open_chest(
 
     send_packet(framed, WindowItems { window_id, slots }).await;
 
-    state.open_window = Some(OpenChest { window_id, pos });
+    state.open_window = Some(window_type);
 
     // TODO: play chest sound + animation
     // (0x24 BlockAction)

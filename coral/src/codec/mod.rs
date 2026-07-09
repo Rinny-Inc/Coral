@@ -30,7 +30,7 @@ use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
 use coral_protocol::packets::play::entity::EntityMetadata;
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
-use coral_protocol::packets::play::inventory::{Inventory, ItemStack, WindowItems};
+use coral_protocol::packets::play::inventory::{Inventory, ItemStack, WindowItems, WindowType};
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
 use coral_protocol::packets::{PacketIn, PacketOut};
@@ -261,14 +261,10 @@ struct PlayerState {
     xp_progress: f32, // 0.0 to 1.0
     is_sleeping: bool,
     bed_spawn: Option<(i32, i32, i32)>,
-    open_window: Option<OpenChest>,
+    open_window: Option<WindowType>,
     window_id_counter: u8,
     cursor_item: Option<ItemStack>,
-}
-#[derive(Clone)]
-struct OpenChest {
-    window_id: u8,
-    pos: (i32, i32, i32),
+    crafting_grid: Vec<Option<ItemStack>>,
 }
 impl PlayerState {
     fn new() -> Self {
@@ -319,6 +315,7 @@ impl PlayerState {
             open_window: None,
             window_id_counter: 1,
             cursor_item: None,
+            crafting_grid: vec![],
         }
     }
 

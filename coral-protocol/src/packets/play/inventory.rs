@@ -1,5 +1,5 @@
 use crate::{
-    packets::{PacketIn, PacketOut},
+    packets::{PacketIn, PacketOut, play::chat::builder::ChatBuilder},
     reader::Reader,
 };
 
@@ -21,9 +21,10 @@ pub struct ClickWindow {
 #[derive(Debug)]
 pub struct OpenWindow {
     pub window_id: u8,
-    pub window_type: String,
-    pub title: String,
+    pub window_type: WindowType,
+    pub title: ChatBuilder,
     pub slot_count: u8,
+    // todo i32 entity_id (only when riding horse)
 }
 
 #[derive(Debug)]
@@ -86,10 +87,10 @@ impl PacketOut for OpenWindow {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x2D);
         writer.write_byte(self.window_id);
-        writer.write_string(&self.window_type);
-        writer.write_string(&self.title);
+        writer.write_string(self.window_type.id());
+        writer.write_string(&self.title.to_json());
         writer.write_byte(self.slot_count);
-        writer.write_bool(false);
+        // writer.write_bool(false); // only when riding a horse
         Ok(())
     }
 }
@@ -267,5 +268,73 @@ impl PacketIn for CreativeInventoryAction {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WindowType {
+    Chest {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+    Furnace {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+    // 2x2 is inventory; 3x3 is table
+    Crafting {
+        window_id: u8,
+    },
+    Enchanting {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+    Anvil {
+        window_id: u8,
+    },
+    Brewing {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+    Dispenser {
+        window_id: u8,
+        pos: (i32, i32, i32),
+        drop: bool,
+    },
+    Hopper {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+    Beacon {
+        window_id: u8,
+        pos: (i32, i32, i32),
+    },
+}
+impl WindowType {
+    pub fn window_id(&self) -> u8 {
+        match self {
+            WindowType::Chest { window_id, .. } => *window_id,
+            WindowType::Furnace { window_id, .. } => *window_id,
+            WindowType::Crafting { window_id } => *window_id,
+            WindowType::Enchanting { window_id, .. } => *window_id,
+            WindowType::Anvil { window_id } => *window_id,
+            WindowType::Brewing { window_id, .. } => *window_id,
+            WindowType::Dispenser { window_id, .. } => *window_id,
+            WindowType::Hopper { window_id, .. } => *window_id,
+            WindowType::Beacon { window_id, .. } => *window_id,
+        }
+    }
+    pub fn id(&self) -> &'static str {
+        match self {
+            WindowType::Chest { .. } => "minecraft:chest",
+            WindowType::Furnace { .. } => "minecraft:furnace",
+            WindowType::Crafting { .. } => "minecraft:crafting_table",
+            WindowType::Enchanting { .. } => "minecraft:enchanting_table",
+            WindowType::Anvil { .. } => "minecraft:anvil",
+            WindowType::Brewing { .. } => "minecraft:brewing_stand",
+            WindowType::Dispenser { .. } => "minecraft:dispenser",
+            WindowType::Hopper { .. } => "minecraft:hopper",
+            WindowType::Beacon { .. } => "minecraft:beacon",
+        }
     }
 }

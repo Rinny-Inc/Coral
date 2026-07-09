@@ -9,7 +9,7 @@ use coral_protocol::packets::play::{
     ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
     ResourcePackStatus,
     block::{
-        BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
+        BlockBreakAnimation, BlockChange, BlockFace, DigStatus, HeldItemChange, ItemEntityMetadata,
         PlayerBlockPlacement, PlayerDig,
     },
     chat::{
@@ -59,18 +59,17 @@ use coral_world::{
     time::TimeUpdate,
     weather::WeatherState,
 };
-use rsa::pkcs8::der::IsConstructed;
 use tokio::{
     net::TcpStream,
     sync::{RwLock, broadcast::Sender},
     time::interval,
 };
 use tokio_stream::StreamExt;
-use tokio_util::{codec::Framed, sync::ReusableBoxFuture};
+use tokio_util::codec::Framed;
 
 use crate::{
-    Channels, EquipmentUpdate, ServerContext, SoundEffect,
-    codec::{Codec, OpenChest, PlayerState, is_normal_disconnect, kick, send_packet},
+    EquipmentUpdate, ServerContext, SoundEffect,
+    codec::{Codec, PlayerState, WindowType, is_normal_disconnect, kick, send_packet},
 };
 
 mod interact;
@@ -931,26 +930,25 @@ pub async fn play(
                         }
 
                         if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
-                            if place.face == 255 {
+                            let Some(face) = place.face.clone() else {
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
                                 continue;
-                            }
+                            };
                             if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &chest_storage, &channels).await
                                 || place.held_item_id == -1
                                 || state.gamemode >= GameMode::Adventure
                             {
                                 continue;
                             }
-                            let (tx, ty, tz): (i32, i32, i32) = match place.face {
-                                0 => (place.x, place.y as i32 - 1, place.z),
-                                1 => (place.x, place.y as i32 + 1, place.z),
-                                2 => (place.x, place.y as i32, place.z - 1),
-                                3 => (place.x, place.y as i32, place.z + 1),
-                                4 => (place.x - 1, place.y as i32, place.z),
-                                5 => (place.x + 1, place.y as i32, place.z),
-                                _ => continue
+                            let (tx, ty, tz): (i32, i32, i32) = match face {
+                                BlockFace::Down => (place.x, place.y as i32 - 1, place.z),
+                                BlockFace::Up => (place.x, place.y as i32 + 1, place.z),
+                                BlockFace::North => (place.x, place.y as i32, place.z - 1),
+                                BlockFace::South => (place.x, place.y as i32, place.z + 1),
+                                BlockFace::West => (place.x - 1, place.y as i32, place.z),
+                                BlockFace::East => (place.x + 1, place.y as i32, place.z),
                             };
 
                             if !(0..=255).contains(&ty) {
@@ -975,7 +973,7 @@ pub async fn play(
 
                                 let cursor_y = place.cursor_y as f32 / 16.0; // 0-15 -> 0.0-1.0
 
-                                placement_metadata(block_id as u8, item_meta, place.face, yaw, cursor_y)
+                                placement_metadata(block_id as u8, item_meta, face, yaw, cursor_y)
                             };
 
                             if state.gamemode == GameMode::Survival {
@@ -1152,6 +1150,7 @@ pub async fn play(
                             if let Some(cursor) = state.cursor_item.take() {
                                 let leftover = insert_into_inventory(&mut state.inventory, cursor);
                                 if let Some(dropped) = leftover {
+                                    // TODO
                                     // drop in world if inventory full - spawn item entoty at player pos
                                     // reuse existing drop logic
                                 }
@@ -1227,19 +1226,23 @@ pub async fn play(
                                 accepted: true
                             }).await;
 
-                            if let Some(open) = state.open_window.clone() {
-                                if click.window_id == open.window_id {
-                                    handle_chest_click(
-                                        framed,
-                                        state,
-                                        &open,
-                                        click,
-                                        &chest_storage,
-                                        &player_registry,
-                                        &channels,
-                                    ).await;
-                                    continue;
+                            if let Some(open) = state.open_window.clone()
+                                && click.window_id == open.window_id()
+                            {
+                                match open {
+                                    WindowType::Chest { window_id, pos } => {
+                                        handle_chest_click(
+                                            framed,
+                                            state,
+                                            pos,
+                                            window_id,
+                                            click,
+                                            &chest_storage,
+                                        ).await;
+                                    }
+                                    _ => {}
                                 }
+                                continue;
                             }
 
                             if let Some(idx) = Inventory::packet_to_internal(click.slot)
@@ -1998,11 +2001,10 @@ async fn send_player_equipment(
 async fn handle_chest_click(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
-    open: &OpenChest,
+    pos: (i32, i32, i32),
+    window_id: u8,
     click: &ClickWindow,
     chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
-    player_registry: &Arc<PlayerRegistry>,
-    channels: &Channels,
 ) {
     let slot = click.slot;
 
@@ -2017,9 +2019,10 @@ async fn handle_chest_click(
         }
     }
 
+    // TODO: a function so theres no block and the lock is dropped when needed
     {
         let mut storage = chest_storage.write().await;
-        let chest = storage.entry(open.pos).or_insert_with(|| vec![None; 27]);
+        let chest = storage.entry(pos).or_insert_with(|| vec![None; 27]);
         match click.mode {
             0 => {
                 let Some((is_chest, idx)) = resolve(slot) else {
@@ -2064,24 +2067,22 @@ async fn handle_chest_click(
         }
     }
 
-    resend_chest_window(framed, state, open, chest_storage).await;
+    resend_chest_window(framed, state, pos, window_id, chest_storage).await;
 }
 
 fn insert_into_inventory(inv: &mut Inventory, mut stack: ItemStack) -> Option<ItemStack> {
     // first merge into existing matching stacks
-    for slot in inv.slots.iter_mut().take(36) {
-        if let Some(existing) = slot {
-            if existing.item_id == stack.item_id
-                && existing.metadata == stack.metadata
-                && existing.count < 64
-            {
-                let space = 64 - existing.count;
-                let move_n = space.min(stack.count);
-                existing.count += move_n;
-                stack.count -= move_n;
-                if stack.count == 0 {
-                    return None;
-                }
+    for existing in inv.slots.iter_mut().take(36).flatten() {
+        if existing.item_id == stack.item_id
+            && existing.metadata == stack.metadata
+            && existing.count < 64
+        {
+            let space = 64 - existing.count;
+            let move_n = space.min(stack.count);
+            existing.count += move_n;
+            stack.count -= move_n;
+            if stack.count == 0 {
+                return None;
             }
         }
     }
@@ -2095,16 +2096,17 @@ fn insert_into_inventory(inv: &mut Inventory, mut stack: ItemStack) -> Option<It
     Some(stack) // didnt fit
 }
 fn insert_into_chest(chest: &mut [Option<ItemStack>], mut stack: ItemStack) -> Option<ItemStack> {
-    for existing in chest.iter_mut() {
-        if let Some(e) = existing {
-            if e.item_id == stack.item_id && e.metadata == stack.metadata && e.count < 64 {
-                let space = 64 - e.count;
-                let move_n = space.min(stack.count);
-                e.count += move_n;
-                stack.count -= move_n;
-                if stack.count == 0 {
-                    return None;
-                }
+    for existing in chest.iter_mut().flatten() {
+        if existing.item_id == stack.item_id
+            && existing.metadata == stack.metadata
+            && existing.count < 64
+        {
+            let space = 64 - existing.count;
+            let move_n = space.min(stack.count);
+            existing.count += move_n;
+            stack.count -= move_n;
+            if stack.count == 0 {
+                return None;
             }
         }
     }
@@ -2119,16 +2121,17 @@ fn insert_into_chest(chest: &mut [Option<ItemStack>], mut stack: ItemStack) -> O
 async fn resend_chest_window(
     framed: &mut Framed<TcpStream, Codec>,
     state: &PlayerState,
-    open: &OpenChest,
+    pos: (i32, i32, i32),
+    window_id: u8,
     chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
 ) {
     let storage = chest_storage.read().await;
     let empty = vec![None; 27];
-    let chest = storage.get(&open.pos).unwrap_or(&empty);
+    let chest = storage.get(&pos).unwrap_or(&empty);
 
     let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(63);
-    for i in 0..27 {
-        match &chest[i] {
+    for item in chest.iter().take(27) {
+        match item {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }
@@ -2146,14 +2149,7 @@ async fn resend_chest_window(
         }
     }
 
-    send_packet(
-        framed,
-        WindowItems {
-            window_id: open.window_id,
-            slots,
-        },
-    )
-    .await;
+    send_packet(framed, WindowItems { window_id, slots }).await;
 
     send_packet(
         framed,

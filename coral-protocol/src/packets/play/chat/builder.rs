@@ -231,8 +231,12 @@ impl ChatBuilder {
         obj
     }
 
-    pub fn build(self) -> String {
+    pub fn to_json(&self) -> String {
         self.build_value().to_string()
+    }
+
+    pub fn build(self) -> String {
+        self.to_json()
     }
 
     pub fn into_packet(self) -> ChatMessageOut {
