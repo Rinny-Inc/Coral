@@ -34,6 +34,7 @@ pub enum CommandResult {
 
 pub struct Command {
     pub name: String,
+    pub aliases: Vec<String>,
     pub description: String,
     pub usage: String,
     pub handler: CommandHandler,
@@ -50,10 +51,22 @@ impl CommandDispatcher {
     }
 
     pub async fn register(&self, command: Command) {
-        self.commands
-            .write()
-            .await
-            .insert(command.name.clone(), command);
+        let mut commands = self.commands.write().await;
+
+        for alias in &command.aliases {
+            commands.insert(
+                alias.clone(),
+                Command {
+                    name: command.name.clone(),
+                    aliases: vec![],
+                    description: command.description.clone(),
+                    usage: command.usage.clone(),
+                    handler: command.handler.clone(),
+                },
+            );
+        }
+
+        commands.insert(command.name.clone(), command);
     }
 
     pub async fn dispatch(&self, ctx: CommandContext) -> CommandResult {
@@ -87,6 +100,7 @@ where
 pub fn version_command() -> Command {
     Command {
         name: "version".to_string(),
+        aliases: vec!["ver".to_string()],
         description: "Show Coral version".to_string(),
         usage: "/version".to_string(),
         handler: make_handler(|_| async move {
@@ -115,6 +129,7 @@ pub fn version_command() -> Command {
 pub fn list_command(player_registry: Arc<PlayerRegistry>) -> Command {
     Command {
         name: "list".to_string(),
+        aliases: vec![],
         description: "Show online players list".to_string(),
         usage: "/list".to_string(),
         handler: make_handler(move |_| {
@@ -155,6 +170,7 @@ pub fn gamemode_command(
 ) -> Command {
     Command {
         name: "gamemode".to_string(),
+        aliases: vec!["gm".to_string()],
         description: "Change a player's gamemode".to_string(),
         usage: "/gamemode <mode> [player]".to_string(),
         handler: make_handler(move |ctx| {
@@ -211,6 +227,7 @@ pub fn kill_command(
 ) -> Command {
     Command {
         name: "kill".to_string(),
+        aliases: vec![],
         description: "Kill yourself or another player".to_string(),
         usage: "/kill [player]".to_string(),
         handler: make_handler(move |ctx| {
@@ -250,6 +267,7 @@ pub fn kill_command(
 pub fn op_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
     Command {
         name: "op".to_string(),
+        aliases: vec![],
         description: "Grant operator status".to_string(),
         usage: "/op <player>".to_string(),
         handler: make_handler(move |ctx| {
@@ -281,6 +299,7 @@ pub fn op_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>
 pub fn deop_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
     Command {
         name: "deop".to_string(),
+        aliases: vec![],
         description: "Revoke operator status".to_string(),
         usage: "/deop <player>".to_string(),
         handler: make_handler(move |ctx| {
@@ -319,6 +338,7 @@ pub fn whitelist_command(
 ) -> Command {
     Command {
         name: "whitelist".to_string(),
+        aliases: vec!["wl".to_string()],
         description: "Manage the whitelist".to_string(),
         usage: "/whitelist <add|remove|list> [player]".to_string(),
         handler: make_handler(move |ctx| {
@@ -383,6 +403,27 @@ pub fn whitelist_command(
                     ),
                 }
             }
+        }),
+    }
+}
+
+pub fn say_command() -> Command {
+    Command {
+        name: "say".to_string(),
+        aliases: vec![],
+        description: "Broadcast a message to all players".to_string(),
+        usage: "/say <message>".to_string(),
+        handler: make_handler(move |ctx| async move {
+            if ctx.args.len() < 2 {
+                return CommandResult::Error("Usage: /say <message>".to_string());
+            }
+            let message = ctx.args_from(1);
+            let json = ChatAppender::new()
+                .add(ChatBuilder::new(format!("[{}]", ctx.sender)).color(ChatColor::LightPurple))
+                .add(ChatBuilder::new(message).color(ChatColor::White))
+                .build();
+
+            CommandResult::Broadcast(json)
         }),
     }
 }
