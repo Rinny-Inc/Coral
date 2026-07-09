@@ -1099,6 +1099,8 @@ pub async fn play(
                         {
                             let (x, y, z) = mv.position.unwrap_or((p.x, p.y, p.z));
                             let (yaw, pitch) = mv.rotation.unwrap_or((p.yaw, p.pitch));
+                            let yaw = normalize_yaw(yaw);
+                            let pitch = pitch.clamp(-90.0, 90.0);
 
                             if mv.position.is_some() {
                                 if !mv.on_ground && y < p.y {
@@ -1131,8 +1133,8 @@ pub async fn play(
                                         state.chunk_z = new_chunk_z;
                                         update_chunks(framed, client_protocol, &world_blocks, &generator, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                     }
-                                    let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
 
+                                    let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
                                     if state.is_sprinting {
                                         state.food_exhaustion += 0.1 * distance as f32;
                                     } else {
@@ -1140,6 +1142,7 @@ pub async fn play(
                                     }
                                 }
                             }
+
                             handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
                             player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
                             channels.pos_tx.send((uuid, state.entity_id, x, y, z, yaw, pitch, mv.on_ground)).ok();
@@ -1304,7 +1307,7 @@ pub async fn play(
                                     x: sx,
                                     y: sy,
                                     z: sz,
-                                    yaw: 90.0,
+                                    yaw: 0.0,
                                     pitch: 0.0,
                                     on_ground: false
                                 }).await;
@@ -1781,6 +1784,16 @@ pub async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &P
         player.boots,
     )
     .await;
+}
+
+fn normalize_yaw(yaw: f32) -> f32 {
+    let mut y = yaw % 360.0;
+    if y >= 180.0 {
+        y -= 360.0;
+    } else if y < -180.0 {
+        y += 360.0;
+    }
+    y
 }
 
 fn level_to_xp_drop(level: i32) -> i32 {

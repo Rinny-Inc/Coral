@@ -29,7 +29,7 @@ impl Default for PlayerData {
             x: 0.5,
             y: 4.5,
             z: 0.5,
-            yaw: 90.0,
+            yaw: 0.0,
             pitch: 0.0,
             health: 20.0,
             food: 20,
