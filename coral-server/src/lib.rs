@@ -1,5 +1,6 @@
 pub mod banlist;
 pub mod bounding_box;
+pub mod bungee;
 pub mod effects;
 pub mod entity_tracker;
 pub mod experience;

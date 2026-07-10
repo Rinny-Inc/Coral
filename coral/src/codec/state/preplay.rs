@@ -11,7 +11,8 @@ use coral_protocol::{
     },
 };
 use coral_server::{
-    banlist::BanList, ops::OpsFile, player::registry::PlayerRegistry, whitelist::WhitelistFile,
+    banlist::BanList, bungee::BungeeForwardedData, ops::OpsFile, player::registry::PlayerRegistry,
+    whitelist::WhitelistFile,
 };
 use rsa::RsaPrivateKey;
 use tokio::{net::TcpStream, sync::RwLock};
@@ -105,28 +106,15 @@ pub async fn pre_play(
                                         };
 
                                         if is_proxied {
-                                            let mut parts: Vec<&str> = handshake.host_name.split('\0').collect();
-
-                                            // FML/Forge
-                                            if parts.len() == 6 && parts[1] == "FML" {
-                                                parts = vec![parts[0], parts[3], parts[4], parts[5]];
-                                            }
-
-                                            if parts.len() == 3 || parts.len() == 4 {
-                                                // 0 = hostname (discard)
-                                                // 1 = real client ip
-                                                // 2 = uuid
-                                                // 3 = properties json (skin..)
-                                                if let Ok(real_ip) = parts[1].parse::<std::net::IpAddr>() {
-                                                    forwarded_ip = Some(real_ip);
+                                            match BungeeForwardedData::try_from(handshake.host_name.as_str()) {
+                                                Ok(data) => {
+                                                    forwarded_ip = Some(data.ip);
+                                                    forwarded_uuid = Some(data.uuid);
+                                                    forwarded_properties = data.properties;
                                                 }
-                                                if let Ok(uuid) = Uuid::parse_str(parts[2]) {
-                                                    forwarded_uuid = Some(uuid);
-                                                }
-                                                if let Some(props_json) = parts.get(3)
-                                                    && let Ok(props) = serde_json::from_str::<Vec<ProfileProperty>>(props_json)
-                                                {
-                                                    forwarded_properties = props;
+                                                Err(e) => {
+                                                    eprintln!("Invalid bungee forwarding data, rejecting connection! {:?}", e);
+                                                    return None;
                                                 }
                                             }
                                         }
