@@ -11,7 +11,7 @@ use coral_protocol::packets::{
     PacketRegistry,
     play::{
         chat::builder::ChatBuilder, entity::EntityAnimationType, game::EntityStatusType,
-        inventory::ItemStack,
+        inventory::ItemStack, movement::MovementBroadcast,
     },
 };
 use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
@@ -29,7 +29,7 @@ use uuid::Uuid;
 
 use coral_command::{
     CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
-    list_command, op_command, version_command, whitelist_command,
+    list_command, op_command, say_command, version_command, whitelist_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -80,7 +80,6 @@ pub struct ServerContext {
     chest_storage: Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
 }
 
-type PositionUpdate = (Uuid, i32, f64, f64, f64, f32, f32, bool);
 type JoinLeave = (Player, bool);
 type PingUpdate = (Uuid, i32);
 type BlockUpdate = (i32, i32, i32, i32, u8);
@@ -109,7 +108,7 @@ type BedUpdate = (i32, i32, i32, i32);
 pub struct Channels {
     chat_tx: Arc<Sender<String>>,
     join_tx: Arc<Sender<JoinLeave>>,
-    pos_tx: Arc<Sender<PositionUpdate>>,
+    pos_tx: Arc<Sender<MovementBroadcast>>,
     gm_tx: Arc<Sender<GamemodeUpdate>>,
     ping_tx: Arc<Sender<PingUpdate>>,
     block_tx: Arc<Sender<BlockUpdate>>,
@@ -142,7 +141,7 @@ impl Channels {
         Self {
             chat_tx: Arc::new(channel::<String>(50).0),
             join_tx: Arc::new(channel::<JoinLeave>(16).0),
-            pos_tx: Arc::new(channel::<PositionUpdate>(100).0),
+            pos_tx: Arc::new(channel::<MovementBroadcast>(100).0),
             gm_tx: Arc::new(channel::<GamemodeUpdate>(16).0),
             ping_tx: Arc::new(channel::<PingUpdate>(16).0),
             block_tx: Arc::new(channel::<BlockUpdate>(100).0),
@@ -233,6 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             whitelist.clone(),
         ))
         .await;
+    dispatcher.register(say_command()).await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 

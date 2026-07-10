@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 use crate::{
     packets::{PacketIn, PacketOut},
     reader::Reader,
@@ -127,7 +129,7 @@ impl PacketIn for PlayerOnGround {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlayerMovements {
     pub position: Option<(f64, f64, f64)>,
     pub rotation: Option<(f32, f32)>,
@@ -168,4 +170,43 @@ impl From<&PlayerOnGround> for PlayerMovements {
             on_ground: p.on_ground,
         }
     }
+}
+
+#[derive(Clone)]
+pub struct MovementBroadcast {
+    pub uuid: Uuid,
+    pub entity_id: i32,
+    pub kind: MoveKind,
+    pub head_yaw: Option<f32>,
+}
+
+#[derive(Clone)]
+pub enum MoveKind {
+    Relative {
+        dx: i8,
+        dy: i8,
+        dz: i8,
+        on_ground: bool,
+    },
+    Look {
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+    },
+    LookAndRelative {
+        dx: i8,
+        dy: i8,
+        dz: i8,
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+    },
+    Teleport {
+        x: f64,
+        y: f64,
+        z: f64,
+        yaw: f32,
+        pitch: f32,
+        on_ground: bool,
+    },
 }

@@ -545,7 +545,7 @@ async fn make_player_join(
     framed.codec_mut().state = handshake::EnumProtocol::Play;
 
     let saved = load_player_data(world_dir, &uuid).await;
-    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm) = if let Some(d) = &saved {
+    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm, xp_total) = if let Some(d) = &saved {
         (
             d.x,
             d.y,
@@ -556,6 +556,7 @@ async fn make_player_join(
             d.food,
             d.food_saturation,
             GameMode::try_from(d.gamemode).unwrap_or(GameMode::Survival),
+            d.xp_total,
         )
     } else {
         let (sx, sy, sz) = *spawn_point.read().await;
@@ -569,6 +570,7 @@ async fn make_player_join(
             20,
             5.0,
             GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival),
+            0,
         )
     };
 
@@ -787,7 +789,7 @@ async fn make_player_join(
             // TODO: complete save and load to player world files
             experience_bar: 0.0,
             level: 0,
-            total_experience: 0,
+            total_experience: xp_total,
         },
     )
     .await;
@@ -857,5 +859,6 @@ fn is_normal_disconnect(e: &std::io::Error) -> bool {
             | std::io::ErrorKind::ConnectionAborted
             | std::io::ErrorKind::BrokenPipe
             | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::InvalidData
     )
 }

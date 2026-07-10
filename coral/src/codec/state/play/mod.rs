@@ -18,9 +18,10 @@ use coral_protocol::packets::play::{
     },
     entity::{
         ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
-        EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityMetadata,
-        EntityTeleport, EntityVelocity, SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed,
-        UseEntity, UseEntityAction, degrees_to_byte,
+        EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook,
+        EntityLookAndMove, EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity,
+        SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed, UseEntity, UseEntityAction,
+        degrees_to_byte,
     },
     game::{
         ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
@@ -32,7 +33,8 @@ use coral_protocol::packets::play::{
     },
     keepalive::KeepAlive,
     movement::{
-        PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition, PlayerPositionAndLook,
+        MoveKind, MovementBroadcast, PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition,
+        PlayerPositionAndLook,
     },
     player_list::{PlayerListItem17, PlayerListItemAdd, PlayerListItemRemove, UpdateLatency},
 };
@@ -294,17 +296,12 @@ pub async fn play(
                 }).await;
             }
 
-            Ok((uuid, eid, x, y, z, yaw, pitch, on_ground)) = pos_rx.recv() => {
-                if Some(uuid) == state.uuid {
+            Ok(mv) = pos_rx.recv() => {
+                if mv.entity_id == state.entity_id {
                     continue;
                 }
-
-                let was_on_ground = player_registry.get(&uuid).await
-                    .map(|p| p.on_ground)
-                    .unwrap_or(true);
-
                 let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
-                    entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
+                    entity_tracker.read().await.is_visible_to(mv.entity_id, me.x, me.z)
                 } else {
                     false
                 };
@@ -312,72 +309,103 @@ pub async fn play(
                 if !visible {
                     continue;
                 }
-                let yaw_byte = degrees_to_byte(yaw);
-                let pitch_byte = degrees_to_byte(pitch);
 
-                send_packet(framed, EntityTeleport {
-                    entity_id: eid,
-                    x, y, z,
-                    yaw: yaw_byte, pitch: pitch_byte,
-                    on_ground
-                }).await;
-                send_packet(framed, EntityHeadLook {
-                    entity_id: eid,
-                    head_yaw: yaw_byte
-                }).await;
+                // particles
+                /*let was_on_ground = player_registry.get(&uuid).await
+                    .map(|p| p.on_ground)
+                    .unwrap_or(true);
 
-                if on_ground && !was_on_ground {
-                    let land_block = world_blocks.get(
-                        x.floor() as i32,
-                        (y.floor() as i32 - 1).max(0) as u8,
-                        z.floor() as i32,
-                        &generator
-                    ).await;
+                    if on_ground && !was_on_ground {
+                        let land_block = world_blocks.get(
+                            x.floor() as i32,
+                            (y.floor() as i32 - 1).max(0) as u8,
+                            z.floor() as i32,
+                            &generator
+                        ).await;
 
-                    if !land_block.is_air() {
-                        channels.particle_tx.send((
-                            state.entity_id,
-                            37,
-                            x as f32,
-                            y as f32,
-                            z as f32,
-                            0.3, 0.0, 0.3,
-                            land_block.id as f32,
-                            6
-                        )).ok();
+                        if !land_block.is_air() {
+                            channels.particle_tx.send((
+                                state.entity_id,
+                                37,
+                                x as f32,
+                                y as f32,
+                                z as f32,
+                                0.3, 0.0, 0.3,
+                                land_block.id as f32,
+                                6
+                            )).ok();
+                        }
+                    }
+
+                    let is_sprinting = player_registry.get(&uuid).await
+                        .map(|p| p.is_sprinting)
+                        .unwrap_or(false);
+
+                    if is_sprinting && on_ground {
+                        let block_below = world_blocks.get(
+                            x.floor() as i32,
+                            (y.floor() as i32 - 1).max(0) as u8,
+                            z.floor() as i32,
+                            &generator
+                        ).await;
+
+                        if !block_below.is_air() {
+                            let yaw_rad = (yaw * std::f32::consts::PI / 180.0) as f64;
+                            let behind_x = x + yaw_rad.sin() * 0.2;
+                            let behind_z = z - yaw_rad.cos() * 0.2;
+
+                            channels.particle_tx.send((
+                                state.entity_id,
+                                37,
+                                behind_x as f32,
+                                y as f32,
+                                behind_z as f32,
+                                0.0, 0.0, 0.0,
+                                block_below.id as f32,
+                                3
+                            )).ok();
+                        }
+                    }*/
+                match mv.kind {
+                    MoveKind::Relative { dx, dy, dz, on_ground } => {
+                        send_packet(framed, EntityRelativeMove {
+                            entity_id: mv.entity_id, dx, dy, dz, on_ground,
+                        }).await; // 0x15
+                    }
+                    MoveKind::Look { yaw, pitch, on_ground } => {
+                        send_packet(framed, EntityLook {
+                            entity_id: mv.entity_id,
+                            yaw: degrees_to_byte(yaw),
+                            pitch: degrees_to_byte(pitch),
+                            on_ground,
+                        }).await; // 0x16
+                    }
+                    MoveKind::LookAndRelative { dx, dy, dz, yaw, pitch, on_ground } => {
+                        send_packet(framed, EntityLookAndMove {
+                            entity_id: mv.entity_id, dx, dy, dz,
+                            yaw: degrees_to_byte(yaw),
+                            pitch: degrees_to_byte(pitch),
+                            on_ground,
+                        }).await; // 0x17
+                    }
+                    MoveKind::Teleport { x, y, z, yaw, pitch, on_ground } => {
+                        send_packet(framed, EntityTeleport {
+                            entity_id: mv.entity_id, x, y, z,
+                            yaw: degrees_to_byte(yaw),
+                            pitch: degrees_to_byte(pitch),
+                            on_ground,
+                        }).await; // 0x18
                     }
                 }
 
-                let is_sprinting = player_registry.get(&uuid).await
-                    .map(|p| p.is_sprinting)
-                    .unwrap_or(false);
-
-                if is_sprinting && on_ground {
-                    let block_below = world_blocks.get(
-                        x.floor() as i32,
-                        (y.floor() as i32 - 1).max(0) as u8,
-                        z.floor() as i32,
-                        &generator
-                    ).await;
-
-                    if !block_below.is_air() {
-                        let yaw_rad = (yaw * std::f32::consts::PI / 180.0) as f64;
-                        let behind_x = x + yaw_rad.sin() * 0.2;
-                        let behind_z = z - yaw_rad.cos() * 0.2;
-
-                        channels.particle_tx.send((
-                            state.entity_id,
-                            37,
-                            behind_x as f32,
-                            y as f32,
-                            behind_z as f32,
-                            0.0, 0.0, 0.0,
-                            block_below.id as f32,
-                            3
-                        )).ok();
-                    }
+                if let Some(yaw) = mv.head_yaw {
+                    send_packet(framed, EntityHeadLook {
+                        entity_id: mv.entity_id,
+                        head_yaw: degrees_to_byte(yaw),
+                    }).await; // 0x19
                 }
             }
+
             Ok((uuid, amount)) = xp_pickup_rx.recv() => {
                 if Some(uuid) != state.uuid {
                     continue;
@@ -531,6 +559,15 @@ pub async fn play(
                 }
             }
             Ok((eid, x, y, z, item_id, count, metadata)) = item_rx.recv() => {
+                let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                    entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
+                } else {
+                    false
+                };
+
+                if !visible {
+                    continue;
+                }
                 send_packet(framed, SpawnObject {
                     entity_id: eid,
                     object_type: 2, // itemstack
@@ -1102,6 +1139,12 @@ pub async fn play(
                             let yaw = normalize_yaw(yaw);
                             let pitch = pitch.clamp(-90.0, 90.0);
 
+                            let dx = ((x - p.x) * 32.0).round() as i64;
+                            let dy = ((y - p.y) * 32.0).round() as i64;
+                            let dz = ((z - p.z) * 32.0).round() as i64;
+
+                            let position_changed = dx != 0 || dy != 0 || dz != 0;
+
                             if mv.position.is_some() {
                                 if !mv.on_ground && y < p.y {
                                     state.fall_distance += (p.y - y) as f32;
@@ -1109,11 +1152,7 @@ pub async fn play(
                                     state.fall_distance = 0.0;
                                 }
 
-                                let moved = (x - p.x).abs() > 0.01
-                                    || (y - p.y).abs() > 0.01
-                                    || (z - p.z).abs() > 0.01;
-
-                                if moved {
+                                if position_changed {
                                     entity_tracker.write().await.update_position(
                                         state.entity_id,
                                         x, y, z
@@ -1125,7 +1164,15 @@ pub async fn play(
                                         if !state.first_position_received {
                                             state.first_position_received = true;
                                             player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
-                                            channels.pos_tx.send((uuid, state.entity_id, x, y, z, yaw, pitch, mv.on_ground)).ok();
+                                            channels.pos_tx.send(MovementBroadcast {
+                                                uuid,
+                                                entity_id: state.entity_id,
+                                                kind: MoveKind::Teleport {
+                                                    x, y, z, yaw, pitch,
+                                                    on_ground: mv.on_ground
+                                                },
+                                                head_yaw: Some(yaw)
+                                            }).ok();
                                             handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
                                             continue;
                                         }
@@ -1143,9 +1190,47 @@ pub async fn play(
                                 }
                             }
 
-                            handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
-                            player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
-                            channels.pos_tx.send((uuid, state.entity_id, x, y, z, yaw, pitch, mv.on_ground)).ok();
+                            let rotation_changed = (yaw - p.yaw).abs() > 0.5 || (pitch - p.pitch).abs() > 0.5;
+                            let needs_teleport = dx.abs() > 127 || dy.abs() > 127 || dz.abs() > 127;
+
+                            if position_changed || rotation_changed {
+                                handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
+                                player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
+                            }
+
+                            let kind = if needs_teleport {
+                                MoveKind::Teleport {
+                                    x, y, z, yaw, pitch, on_ground: mv.on_ground,
+                                }
+                            } else if position_changed && rotation_changed {
+                                MoveKind::LookAndRelative {
+                                    dx: dx as i8, dy: dy as i8, dz: dz as i8,
+                                    yaw, pitch, on_ground: mv.on_ground,
+                                }
+                            } else if position_changed {
+                                MoveKind::Relative {
+                                    dx: dx as i8, dy: dy as i8, dz: dz as i8,
+                                    on_ground: mv.on_ground,
+                                }
+                            } else if rotation_changed {
+                                MoveKind::Look {
+                                    yaw, pitch,
+                                    on_ground: mv.on_ground,
+                                }
+                            } else {
+                                continue;
+                            };
+
+                            channels.pos_tx.send(MovementBroadcast {
+                                uuid,
+                                entity_id: state.entity_id,
+                                kind,
+                                head_yaw: if rotation_changed {
+                                    Some(yaw)
+                                } else {
+                                    None
+                                }
+                            }).ok();
                             continue;
                         }
 
