@@ -14,7 +14,7 @@ use coral_protocol::packets::play::{
     },
     chat::{
         ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
-        builder::{ChatBuilder, ChatColor},
+        builder::{ChatAppender, ChatBuilder, ChatColor},
     },
     entity::{
         ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
@@ -133,6 +133,7 @@ pub async fn play(
     let mut xp_orb_move_rx = channels.xp_orb_move_tx.subscribe();
     let mut bed_rx = channels.bed_tx.subscribe();
     let mut wake_rx = channels.wake_tx.subscribe();
+    let mut private_msg_rx = channels.private_msg_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -197,6 +198,20 @@ pub async fn play(
                     particle_data: data,
                     count
                 }).await;*/
+            }
+            Ok((from, to, message)) = private_msg_rx.recv() => {
+                if state.name.as_deref() != Some(&to) {
+                    continue;
+                }
+
+                state.last_message_from = Some(from.clone());
+
+                let json = ChatAppender::new()
+                    .add(ChatBuilder::new(format!("{} -> You: ", from))
+                        .color(ChatColor::Gray).italic())
+                    .add(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
+                    .build();
+                send_packet(framed, ChatMessageOut::from_json(&json)).await;
             }
             Ok((target_uuid, effect_id, amplifier, duration)) = splash_effect_rx.recv() => {
                 if Some(target_uuid) != state.uuid {
@@ -1075,6 +1090,7 @@ pub async fn play(
                                 let ctx = CommandContext {
                                     sender: state.name.clone().unwrap_or_default(),
                                     args,
+                                    reply_target: state.last_message_from.clone(),
                                     is_op: state.is_op
                                 };
 

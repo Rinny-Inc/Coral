@@ -103,10 +103,7 @@ impl PacketIn for PlayerDig {
         let x = (position >> 38) as i32;
         let y = ((position >> 26) & 0xFFF) as u8;
         let z = (position << 38 >> 38) as i32;
-        let face = match BlockFace::try_from(reader.read_byte()) {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
+        let face = BlockFace::try_from(reader.read_byte()).ok();
         Ok(PlayerDig {
             status: DigStatus::try_from(status).map_err(|e| {
                 Error::new(
@@ -135,10 +132,7 @@ impl PacketIn for PlayerBlockPlacement {
         let x = (position >> 38) as i32;
         let y = ((position >> 26) & 0xFFF) as u8;
         let z = (position << 38 >> 38) as i32;
-        let face = match BlockFace::try_from(reader.read_byte()) {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
+        let face = BlockFace::try_from(reader.read_byte()).ok();
         let held_item_id = reader.read_i16();
         let (held_item_count, held_item_damage, cursor_x, cursor_y, cursor_z) = {
             if held_item_id != -1 {

@@ -204,7 +204,7 @@ impl ChatBuilder {
         })
     }
 
-    pub fn build_value(&self) -> Value {
+    fn build_value(&self) -> Value {
         let mut obj = json!({ "text": self.text });
         let map = obj.as_object_mut().unwrap();
         if let Some(color) = &self.color {

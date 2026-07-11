@@ -265,6 +265,7 @@ struct PlayerState {
     window_id_counter: u8,
     cursor_item: Option<ItemStack>,
     crafting_grid: Vec<Option<ItemStack>>,
+    last_message_from: Option<String>,
 }
 impl PlayerState {
     fn new() -> Self {
@@ -316,6 +317,7 @@ impl PlayerState {
             window_id_counter: 1,
             cursor_item: None,
             crafting_grid: vec![],
+            last_message_from: None,
         }
     }
 

@@ -1,10 +1,12 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, pin::Pin, sync::Arc, vec};
 
 use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, ChatColor};
 use coral_server::{ops::OpsFile, player::registry::PlayerRegistry, whitelist::WhitelistFile};
-use coral_types::{DamageEvent, GameMode, GamemodeUpdate};
+use coral_types::{DamageEvent, GameMode, GamemodeUpdate, PrivateMessage};
 use tokio::sync::{RwLock, broadcast::Sender};
 use uuid::Uuid;
+
+pub mod list;
 
 pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
 pub type CommandHandler = Arc<dyn Fn(CommandContext) -> CommandFuture + Send + Sync>;
@@ -13,6 +15,7 @@ pub type CommandHandler = Arc<dyn Fn(CommandContext) -> CommandFuture + Send + S
 pub struct CommandContext {
     pub sender: String,
     pub args: Vec<String>,
+    pub reply_target: Option<String>,
     pub is_op: bool,
 }
 impl CommandContext {
@@ -33,10 +36,10 @@ pub enum CommandResult {
 }
 
 pub struct Command {
-    pub name: String,
-    pub aliases: Vec<String>,
-    pub description: String,
-    pub usage: String,
+    pub name: &'static str,
+    pub aliases: Vec<&'static str>,
+    pub description: &'static str,
+    pub usage: &'static str,
     pub handler: CommandHandler,
 }
 
@@ -55,18 +58,18 @@ impl CommandDispatcher {
 
         for alias in &command.aliases {
             commands.insert(
-                alias.clone(),
+                alias.to_string(),
                 Command {
-                    name: command.name.clone(),
+                    name: command.name,
                     aliases: vec![],
-                    description: command.description.clone(),
-                    usage: command.usage.clone(),
+                    description: command.description,
+                    usage: command.usage,
                     handler: command.handler.clone(),
                 },
             );
         }
 
-        commands.insert(command.name.clone(), command);
+        commands.insert(command.name.to_string(), command);
     }
 
     pub async fn dispatch(&self, ctx: CommandContext) -> CommandResult {
@@ -99,10 +102,10 @@ where
 
 pub fn version_command() -> Command {
     Command {
-        name: "version".to_string(),
-        aliases: vec!["ver".to_string()],
-        description: "Show Coral version".to_string(),
-        usage: "/version".to_string(),
+        name: "version",
+        aliases: vec!["ver"],
+        description: "Show Coral version",
+        usage: "/version",
         handler: make_handler(|_| async move {
             let msg = ChatAppender::new()
                 .add(ChatBuilder::new("This server is running ").color(ChatColor::White))
@@ -128,10 +131,10 @@ pub fn version_command() -> Command {
 
 pub fn list_command(player_registry: Arc<PlayerRegistry>) -> Command {
     Command {
-        name: "list".to_string(),
+        name: "list",
         aliases: vec![],
-        description: "Show online players list".to_string(),
-        usage: "/list".to_string(),
+        description: "Show online players list",
+        usage: "/list",
         handler: make_handler(move |_| {
             let registry = player_registry.clone();
             async move {
@@ -169,10 +172,10 @@ pub fn gamemode_command(
     gm_tx: Arc<Sender<GamemodeUpdate>>,
 ) -> Command {
     Command {
-        name: "gamemode".to_string(),
-        aliases: vec!["gm".to_string()],
-        description: "Change a player's gamemode".to_string(),
-        usage: "/gamemode <mode> [player]".to_string(),
+        name: "gamemode",
+        aliases: vec!["gm"],
+        description: "Change a player's gamemode",
+        usage: "/gamemode <mode> [player]",
         handler: make_handler(move |ctx| {
             let registry = player_registry.clone();
             let tx = gm_tx.clone();
@@ -193,7 +196,7 @@ pub fn gamemode_command(
                 };
 
                 // if player arg provided, target that player — else target sender
-                let target_name = ctx.arg(2).unwrap_or(&ctx.sender).to_string();
+                let target_name = ctx.arg(2).unwrap_or(&ctx.sender);
 
                 let players = registry.get_all().await;
                 let Some(target) = players
@@ -226,10 +229,10 @@ pub fn kill_command(
     dmg_tx: Arc<Sender<DamageEvent>>,
 ) -> Command {
     Command {
-        name: "kill".to_string(),
+        name: "kill",
         aliases: vec![],
-        description: "Kill yourself or another player".to_string(),
-        usage: "/kill [player]".to_string(),
+        description: "Kill yourself or another player",
+        usage: "/kill [player]",
         handler: make_handler(move |ctx| {
             let registry = player_registry.clone();
             let tx = dmg_tx.clone();
@@ -237,7 +240,7 @@ pub fn kill_command(
                 if !ctx.is_op {
                     return CommandResult::Error("No permission.".to_string());
                 }
-                let target_name = ctx.arg(1).unwrap_or(&ctx.sender).to_string();
+                let target_name = ctx.arg(1).unwrap_or(&ctx.sender);
                 let players = registry.get_all().await;
                 let Some(target) = players
                     .iter()
@@ -266,10 +269,10 @@ pub fn kill_command(
 
 pub fn op_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
     Command {
-        name: "op".to_string(),
+        name: "op",
         aliases: vec![],
-        description: "Grant operator status".to_string(),
-        usage: "/op <player>".to_string(),
+        description: "Grant operator status",
+        usage: "/op <player>",
         handler: make_handler(move |ctx| {
             let registry = player_registry.clone();
             let ops = ops.clone();
@@ -298,10 +301,10 @@ pub fn op_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>
 }
 pub fn deop_command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) -> Command {
     Command {
-        name: "deop".to_string(),
+        name: "deop",
         aliases: vec![],
-        description: "Revoke operator status".to_string(),
-        usage: "/deop <player>".to_string(),
+        description: "Revoke operator status",
+        usage: "/deop <player>",
         handler: make_handler(move |ctx| {
             let registry = player_registry.clone();
             let ops = ops.clone();
@@ -337,10 +340,10 @@ pub fn whitelist_command(
     whitelist: Arc<RwLock<WhitelistFile>>,
 ) -> Command {
     Command {
-        name: "whitelist".to_string(),
-        aliases: vec!["wl".to_string()],
-        description: "Manage the whitelist".to_string(),
-        usage: "/whitelist <add|remove|list> [player]".to_string(),
+        name: "whitelist",
+        aliases: vec!["wl"],
+        description: "Manage the whitelist",
+        usage: "/whitelist <add|remove|list> [player]",
         handler: make_handler(move |ctx| {
             let registry = player_registry.clone();
             let whitelist = whitelist.clone();
@@ -409,21 +412,126 @@ pub fn whitelist_command(
 
 pub fn say_command() -> Command {
     Command {
-        name: "say".to_string(),
+        name: "say",
         aliases: vec![],
-        description: "Broadcast a message to all players".to_string(),
-        usage: "/say <message>".to_string(),
+        description: "Broadcast a message to all players",
+        usage: "/say <message>",
         handler: make_handler(move |ctx| async move {
             if ctx.args.len() < 2 {
                 return CommandResult::Error("Usage: /say <message>".to_string());
             }
             let message = ctx.args_from(1);
-            let json = ChatAppender::new()
-                .add(ChatBuilder::new(format!("[{}]", ctx.sender)).color(ChatColor::LightPurple))
-                .add(ChatBuilder::new(message).color(ChatColor::White))
-                .build();
 
-            CommandResult::Broadcast(json)
+            /*let json = ChatAppender::new()
+            .add(ChatBuilder::new(format!("[{}]", ctx.sender)).color(ChatColor::LightPurple))
+            .add(ChatBuilder::new(message).color(ChatColor::White))
+            .build();*/
+
+            let format = format!("[{}] {}", ctx.sender, message);
+
+            CommandResult::Broadcast(format)
+        }),
+    }
+}
+
+pub fn msg_command(
+    player_registry: Arc<PlayerRegistry>,
+    private_msg_tx: Arc<Sender<PrivateMessage>>,
+) -> Command {
+    Command {
+        name: "msg",
+        aliases: vec!["tell", "w", "whisper"],
+        description: "Send a private message",
+        usage: "/msg <player> <message>",
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let tx = private_msg_tx.clone();
+            async move {
+                let Some(target) = ctx.arg(1) else {
+                    return CommandResult::Error("Usage: /msg <player> <message>".to_string());
+                };
+                if ctx.args.len() < 3 {
+                    return CommandResult::Error("Usage: /msg <player> <message>".to_string());
+                }
+                let message = ctx.args_from(2);
+
+                let online = registry.get_all().await;
+                let Some(target_player) = online
+                    .iter()
+                    .find(|p| p.username.eq_ignore_ascii_case(target))
+                else {
+                    return CommandResult::Error(format!("Player not found: {}", target));
+                };
+
+                if target_player.username.eq_ignore_ascii_case(&ctx.sender) {
+                    return CommandResult::Error("You can't message yourself".to_string());
+                }
+                tx.send((
+                    ctx.sender.clone(),
+                    target_player.username.clone(),
+                    message.clone(),
+                ))
+                .ok();
+
+                let echo = ChatAppender::new()
+                    .add(
+                        ChatBuilder::new(format!("You -> {}: ", target_player.username))
+                            .color(ChatColor::Gray)
+                            .italic(),
+                    )
+                    .add(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
+                    .build();
+                CommandResult::Success(echo)
+            }
+        }),
+    }
+}
+pub fn reply_command(
+    player_registry: Arc<PlayerRegistry>,
+    private_msg_tx: Arc<Sender<(String, String, String)>>,
+) -> Command {
+    Command {
+        name: "reply",
+        aliases: vec!["r"],
+        description: "Reply to the last player who messaged you",
+        usage: "/reply <message>",
+        handler: make_handler(move |ctx| {
+            let registry = player_registry.clone();
+            let tx = private_msg_tx.clone();
+            async move {
+                if ctx.args.len() < 2 {
+                    return CommandResult::Error("Usage: /reply <message>".to_string());
+                }
+                let Some(target) = ctx.reply_target.clone() else {
+                    return CommandResult::Error("You have nobody to reply to".to_string());
+                };
+                let message = ctx.args_from(1);
+
+                let online = registry.get_all().await;
+                let Some(target_player) = online
+                    .iter()
+                    .find(|p| p.username.eq_ignore_ascii_case(&target))
+                else {
+                    return CommandResult::Error(format!("{} is no longer online", target));
+                };
+
+                tx.send((
+                    ctx.sender.clone(),
+                    target_player.username.clone(),
+                    message.clone(),
+                ))
+                .ok();
+
+                let echo = ChatAppender::new()
+                    .add(
+                        ChatBuilder::new(format!("You -> {}: ", target_player.username))
+                            .color(ChatColor::Gray)
+                            .italic(),
+                    )
+                    .add(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
+                    .build();
+                CommandResult::Success(echo)
+            }
         }),
     }
 }

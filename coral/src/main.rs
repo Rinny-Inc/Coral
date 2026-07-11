@@ -14,7 +14,12 @@ use coral_protocol::packets::{
         inventory::ItemStack, movement::MovementBroadcast,
     },
 };
-use coral_types::{DamageEvent, GamemodeUpdate, dist_sq3, dist3};
+use coral_types::{
+    BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EquipmentUpdate,
+    GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, MetadataUpdate, ParticleEffect, PingUpdate,
+    PrivateMessage, ProjectileMove, SoundEffect, SplashEffect, TimeUpdate, XpOrbMove, XpOrbSpawn,
+    XpPickup, dist_sq3, dist3,
+};
 use rsa::RsaPrivateKey;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -29,7 +34,9 @@ use uuid::Uuid;
 
 use coral_command::{
     CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
-    list_command, op_command, say_command, version_command, whitelist_command,
+    list::usage::{ResourceMonitor, usage_command},
+    list_command, msg_command, op_command, reply_command, say_command, version_command,
+    whitelist_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -81,28 +88,9 @@ pub struct ServerContext {
 }
 
 type JoinLeave = (Player, bool);
-type PingUpdate = (Uuid, i32);
-type BlockUpdate = (i32, i32, i32, i32, u8);
-type BreakAnimation = (i32, i32, i32, i32, u8);
 type AnimationUpdate = (i32, EntityAnimationType);
-type MetadataUpdate = (i32, u8, u8);
-type ItemDrop = (i32, f64, f64, f64, i16, u8, i16);
-type DespawnEntity = Vec<i32>;
-type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
-type ItemPickup = (i32, Uuid, i32);
-type TimeUpdate = (i64, i64);
-type WeatherUpdate = WeatherState;
 type EntityStatusUpdate = (i32, EntityStatusType);
-type EquipmentUpdate = (i32, i16, i16, u8, i16);
-type SoundEffect = (String, f64, f64, f64, f32, u8);
-type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32);
 type ProjectileSpawn = (i32, i32, ProjectileKind, f64, f64, f64, f64, f64, f64);
-type ProjectileMove = (i32, f64, f64, f64);
-type SplashEffect = (Uuid, u8, u8, i32);
-type XpOrbSpawn = (i32, f64, f64, f64, i32);
-type XpOrbMove = (i32, f64, f64, f64);
-type XpPickup = (Uuid, i32);
-type BedUpdate = (i32, i32, i32, i32);
 
 #[derive(Clone)]
 pub struct Channels {
@@ -120,7 +108,7 @@ pub struct Channels {
     despawn_tx: Arc<Sender<DespawnEntity>>,
     pickup_tx: Arc<Sender<ItemPickup>>,
     time_tx: Arc<Sender<TimeUpdate>>,
-    weather_tx: Arc<Sender<WeatherUpdate>>,
+    weather_tx: Arc<Sender<WeatherState>>,
     tick_tx: Arc<Sender<()>>,
     status_tx: Arc<Sender<EntityStatusUpdate>>,
     equip_tx: Arc<Sender<EquipmentUpdate>>,
@@ -135,6 +123,7 @@ pub struct Channels {
     xp_pickup_tx: Arc<Sender<XpPickup>>,
     bed_tx: Arc<Sender<BedUpdate>>,
     wake_tx: Arc<Sender<()>>,
+    private_msg_tx: Arc<Sender<PrivateMessage>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -153,8 +142,8 @@ impl Channels {
             despawn_tx: Arc::new(channel::<DespawnEntity>(50).0),
             pickup_tx: Arc::new(channel::<ItemPickup>(100).0),
             time_tx: Arc::new(channel::<TimeUpdate>(1).0),
-            weather_tx: Arc::new(channel::<WeatherUpdate>(1).0),
-            tick_tx: Arc::new(channel(4).0),
+            weather_tx: Arc::new(channel::<WeatherState>(1).0),
+            tick_tx: Arc::new(channel(5).0),
             status_tx: Arc::new(channel::<EntityStatusUpdate>(100).0),
             equip_tx: Arc::new(channel::<EquipmentUpdate>(100).0),
             sound_tx: Arc::new(channel::<SoundEffect>(100).0),
@@ -168,6 +157,7 @@ impl Channels {
             xp_pickup_tx: Arc::new(channel::<XpPickup>(100).0),
             bed_tx: Arc::new(channel::<BedUpdate>(50).0),
             wake_tx: Arc::new(channel::<()>(4).0),
+            private_msg_tx: Arc::new(channel::<PrivateMessage>(50).0),
         }
     }
 }
@@ -202,6 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = Channels::new();
     let ops = Arc::new(RwLock::new(OpsFile::load()));
     let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
+    let resource_monitor = Arc::new(ResourceMonitor::new());
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(version_command()).await;
@@ -233,6 +224,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await;
     dispatcher.register(say_command()).await;
+    dispatcher
+        .register(msg_command(
+            player_registry.clone(),
+            channels.private_msg_tx.clone(),
+        ))
+        .await;
+    dispatcher
+        .register(reply_command(
+            player_registry.clone(),
+            channels.private_msg_tx.clone(),
+        ))
+        .await;
+    dispatcher
+        .register(usage_command(resource_monitor.clone()))
+        .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 
@@ -324,6 +330,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.player_registry.clone(),
         ctx.channels.clone(),
     );
+
+    spawn_resource_monitor_task(resource_monitor.clone());
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -476,6 +484,7 @@ fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sender<St
             let ctx = CommandContext {
                 sender: "CONSOLE".to_string(),
                 args,
+                reply_target: None,
                 is_op: true,
             };
 
@@ -750,6 +759,15 @@ fn spawn_xp_orb_task(
                     .send(("random.orb".to_string(), 0.0, 0.0, 0.0, 0.5, 63))
                     .ok();
             }
+        }
+    });
+}
+fn spawn_resource_monitor_task(monitor: Arc<ResourceMonitor>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            monitor.sample().await;
         }
     });
 }
