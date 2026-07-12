@@ -17,7 +17,6 @@ jobs:
           filters: |
             rust:
               - '**/*.rs'
-
   update-badge:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
@@ -32,7 +31,17 @@ jobs:
       - name: Calculate LOC
         run: |
           set -euo pipefail
-          cloc --csv --include-ext=rs --not-match-d='(^|/)target($|/)' . > loc_report.csv
+          mkdir -p /tmp/loc-src
+          find . -path ./target -prune -o -name '*.rs' -print | while read -r f; do
+            rel="${f#./}"
+            mkdir -p "/tmp/loc-src/$(dirname "$rel")"
+            awk '
+              /^[[:space:]]*use[[:space:]]/ { skip=1 }
+              skip { if ($0 ~ /;/) skip=0; next }
+              { print }
+            ' "$f" > "/tmp/loc-src/$rel"
+          done
+          cloc --csv --include-ext=rs /tmp/loc-src > loc_report.csv
           echo "TOTAL_LOC=$(tail -n 1 loc_report.csv | cut -d',' -f5)" >> "$GITHUB_ENV"
       - name: Publish badge data to badges branch
         env:
