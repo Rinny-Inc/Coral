@@ -34,9 +34,8 @@ use uuid::Uuid;
 
 use coral_command::{
     CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
-    list::usage::{ResourceMonitor, usage_command},
-    list_command, msg_command, op_command, reply_command, say_command, version_command,
-    whitelist_command,
+    list::{self, usage::ResourceMonitor},
+    list_command, msg_command, op_command, reply_command, whitelist_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -195,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resource_monitor = Arc::new(ResourceMonitor::new());
 
     let dispatcher = Arc::new(CommandDispatcher::new());
-    dispatcher.register(version_command()).await;
+    dispatcher.register(list::version::command()).await;
     dispatcher
         .register(list_command(player_registry.clone()))
         .await;
@@ -223,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             whitelist.clone(),
         ))
         .await;
-    dispatcher.register(say_command()).await;
+    dispatcher.register(list::say::command()).await;
     dispatcher
         .register(msg_command(
             player_registry.clone(),
@@ -237,7 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .await;
     dispatcher
-        .register(usage_command(resource_monitor.clone()))
+        .register(list::usage::command(resource_monitor.clone()))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();

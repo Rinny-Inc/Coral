@@ -89,7 +89,7 @@ impl ResourceMonitor {
     }
 }
 
-pub fn usage_command(monitor: Arc<ResourceMonitor>) -> Command {
+pub fn command(monitor: Arc<ResourceMonitor>) -> Command {
     Command {
         name: "usage",
         aliases: vec!["mem", "cpu", "perf"],

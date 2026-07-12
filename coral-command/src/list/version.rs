@@ -2,7 +2,7 @@ use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder, Ch
 
 use crate::{Command, CommandResult, make_handler};
 
-pub fn version_command() -> Command {
+pub fn command() -> Command {
     Command {
         name: "version",
         aliases: vec!["ver"],
