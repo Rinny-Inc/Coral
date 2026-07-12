@@ -14,6 +14,7 @@ use coral_server::{
     banlist::BanList, bungee::BungeeForwardedData, ops::OpsFile, player::registry::PlayerRegistry,
     whitelist::WhitelistFile,
 };
+use coral_types::offline_uuid;
 use rsa::RsaPrivateKey;
 use tokio::{net::TcpStream, sync::RwLock};
 use tokio_stream::StreamExt;
@@ -274,13 +275,6 @@ pub async fn pre_play(
             }
         }
     }
-}
-
-fn offline_uuid(username: &str) -> Uuid {
-    Uuid::new_v3(
-        &Uuid::NAMESPACE_DNS,
-        format!("OfflinePlayer:{}", username).as_bytes(),
-    )
 }
 
 async fn is_allowed_to_join(

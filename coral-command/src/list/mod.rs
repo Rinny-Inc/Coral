@@ -1,3 +1,11 @@
+pub mod deop;
+pub mod gamemode;
+pub mod kill;
+pub mod msg;
+pub mod op;
+pub mod player_list;
+pub mod reply;
 pub mod say;
 pub mod usage;
 pub mod version;
+pub mod whitelist;

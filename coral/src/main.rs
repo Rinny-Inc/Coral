@@ -33,9 +33,8 @@ use tokio::{
 use uuid::Uuid;
 
 use coral_command::{
-    CommandContext, CommandDispatcher, CommandResult, deop_command, gamemode_command, kill_command,
+    CommandContext, CommandDispatcher, CommandResult,
     list::{self, usage::ResourceMonitor},
-    list_command, msg_command, op_command, reply_command, whitelist_command,
 };
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
@@ -196,41 +195,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(list::version::command()).await;
     dispatcher
-        .register(list_command(player_registry.clone()))
+        .register(list::player_list::command(player_registry.clone()))
         .await;
     dispatcher
-        .register(gamemode_command(
+        .register(list::gamemode::command(
             player_registry.clone(),
             channels.gm_tx.clone(),
         ))
         .await;
     dispatcher
-        .register(kill_command(
+        .register(list::kill::command(
             player_registry.clone(),
             channels.dmg_tx.clone(),
         ))
         .await;
     dispatcher
-        .register(op_command(player_registry.clone(), ops.clone()))
+        .register(list::op::command(player_registry.clone(), ops.clone()))
         .await;
     dispatcher
-        .register(deop_command(player_registry.clone(), ops.clone()))
+        .register(list::deop::command(player_registry.clone(), ops.clone()))
         .await;
     dispatcher
-        .register(whitelist_command(
+        .register(list::whitelist::command(
             player_registry.clone(),
             whitelist.clone(),
         ))
         .await;
     dispatcher.register(list::say::command()).await;
     dispatcher
-        .register(msg_command(
+        .register(list::msg::command(
             player_registry.clone(),
             channels.private_msg_tx.clone(),
         ))
         .await;
     dispatcher
-        .register(reply_command(
+        .register(list::reply::command(
             player_registry.clone(),
             channels.private_msg_tx.clone(),
         ))

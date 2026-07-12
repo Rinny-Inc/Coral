@@ -103,3 +103,10 @@ pub fn look_direction(yaw: f32, pitch: f32) -> (f64, f64, f64) {
     let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
     (dx, dy, dz)
 }
+
+pub fn offline_uuid(username: &str) -> Uuid {
+    Uuid::new_v3(
+        &Uuid::NAMESPACE_DNS,
+        format!("OfflinePlayer:{}", username).as_bytes(),
+    )
+}
