@@ -153,6 +153,12 @@ Use clear, imperative-mood commit messages (`Fix hotbar slot mapping`, not `fixe
 - CI (`build.yml`) must pass.
 - PRs must follow the [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
 
+### No AI-generated contributions
+
+Coral does not accept AI-generated or AI-assisted code, issues, or pull requests. This includes code written by Copilot, ChatGPT, Claude, or any other LLM/code-generation tool, whether used directly or "cleaned up" afterward. Vanilla protocol accuracy requires verified, understood behavior — not plausible-sounding output. PRs suspected of being AI-generated will be closed without review.
+
+If you used an AI tool to help you _understand_ a concept but wrote the code yourself, that's fine. The line is: you must understand and be able to explain every line you submit.
+
 ### License note
 
 By contributing, you agree your contributions are licensed under the same [custom restrictive license](./LICENSE.md) as the rest of the project.
