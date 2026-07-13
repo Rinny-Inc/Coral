@@ -97,7 +97,7 @@ pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64, f32, f
     let data = root.get("Data")?;
 
     let x = data.get("SpawnX").and_then(|t| t.as_i32())? as f64 + 0.5;
-    let y = data.get("SpawnY").and_then(|t| t.as_i32())? as f64 + 5.0; // FIXME: +5 is temp remove when command /setworldspawn is created
+    let y = data.get("SpawnY").and_then(|t| t.as_i32())? as f64;
     let z = data.get("SpawnZ").and_then(|t| t.as_i32())? as f64 + 0.5;
 
     let yaw = data.get("SpawnYaw").and_then(|t| t.as_i32())? as f32;
