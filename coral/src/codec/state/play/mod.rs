@@ -21,7 +21,6 @@ use coral_protocol::packets::play::{
         EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook,
         EntityLookAndMove, EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity,
         SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed, UseEntity, UseEntityAction,
-        degrees_to_byte,
     },
     game::{
         ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
@@ -257,7 +256,7 @@ pub async fn play(
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
                     x, y, z,
-                    yaw: 0, pitch: 0,
+                    yaw: 0.0, pitch: 0.0,
                     on_ground: false
                 }).await;
             }
@@ -390,24 +389,24 @@ pub async fn play(
                     MoveKind::Look { yaw, pitch, on_ground } => {
                         send_packet(framed, EntityLook {
                             entity_id: mv.entity_id,
-                            yaw: degrees_to_byte(yaw),
-                            pitch: degrees_to_byte(pitch),
+                            yaw,
+                            pitch,
                             on_ground,
                         }).await; // 0x16
                     }
                     MoveKind::LookAndRelative { dx, dy, dz, yaw, pitch, on_ground } => {
                         send_packet(framed, EntityLookAndMove {
                             entity_id: mv.entity_id, dx, dy, dz,
-                            yaw: degrees_to_byte(yaw),
-                            pitch: degrees_to_byte(pitch),
+                            yaw,
+                            pitch,
                             on_ground,
                         }).await; // 0x17
                     }
                     MoveKind::Teleport { x, y, z, yaw, pitch, on_ground } => {
                         send_packet(framed, EntityTeleport {
                             entity_id: mv.entity_id, x, y, z,
-                            yaw: degrees_to_byte(yaw),
-                            pitch: degrees_to_byte(pitch),
+                            yaw,
+                            pitch,
                             on_ground,
                         }).await; // 0x18
                     }
@@ -416,7 +415,7 @@ pub async fn play(
                 if let Some(yaw) = mv.head_yaw {
                     send_packet(framed, EntityHeadLook {
                         entity_id: mv.entity_id,
-                        head_yaw: degrees_to_byte(yaw),
+                        head_yaw: yaw,
                     }).await; // 0x19
                 }
             }
@@ -449,7 +448,7 @@ pub async fn play(
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
                     x, y, z,
-                    yaw: 0, pitch: 0,
+                    yaw: 0.0, pitch: 0.0,
                     on_ground: false
                 }).await;
             }
@@ -1377,14 +1376,14 @@ pub async fn play(
                                     level_type: "flat".to_string()
                                 }).await;
 
-                                let (sx, sy, sz) = if let Some((bx, by, bz)) = state.bed_spawn {
-                                    (bx as f64 + 0.5, by as f64 + 1.0, bz as f64 + 0.5)
+                                let (sx, sy, sz, syaw, spitch) = if let Some((bx, by, bz)) = state.bed_spawn {
+                                    (bx as f64 + 0.5, by as f64 + 1.0, bz as f64 + 0.5, 0.0, 0.0)
                                 } else {
                                     *spawn_point.read().await
                                 };
 
                                 if let Some(uuid) = state.uuid {
-                                    player_registry.update_position(&uuid, sx, sy, sz, 90.0, 0.0, false).await;
+                                    player_registry.update_position(&uuid, sx, sy, sz, syaw, spitch, false).await;
                                 }
 
                                 let spawn_cx = (sx as i32) >> 4;

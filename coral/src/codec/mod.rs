@@ -510,7 +510,7 @@ async fn make_player_join(
     generator: &Arc<FlatWorldGenerator>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
-    spawn_point: &Arc<RwLock<(f64, f64, f64)>>,
+    spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: &Path,
 ) {
     if config.server.compression_threshold >= 0 {
@@ -561,13 +561,13 @@ async fn make_player_join(
             d.xp_total,
         )
     } else {
-        let (sx, sy, sz) = *spawn_point.read().await;
+        let (sx, sy, sz, syaw, spitch) = *spawn_point.read().await;
         (
             sx,
             sy,
             sz,
-            90.0,
-            0.0,
+            syaw,
+            spitch,
             20.0,
             20,
             5.0,

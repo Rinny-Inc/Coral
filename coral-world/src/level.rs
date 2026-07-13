@@ -43,7 +43,50 @@ pub fn write_level_dat(world_dir: &Path, world_name: &str) {
     std::fs::write(world_dir.join("level.dat"), compressed).ok();
 }
 
-pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64)> {
+pub async fn write_spawn_point(
+    world_dir: &Path,
+    x: i32,
+    y: i32,
+    z: i32,
+    yaw: f32,
+    pitch: f32,
+) -> std::io::Result<()> {
+    use flate2::Compression;
+    use flate2::read::GzDecoder;
+    use flate2::write::GzEncoder;
+    use std::io::Read;
+    use std::io::Write;
+
+    let path = world_dir.join("level.dat");
+
+    let compressed = tokio::fs::read(&path).await?;
+    let mut decoder = GzDecoder::new(&compressed[..]);
+    let mut nbt_bytes = Vec::new();
+    decoder.read_to_end(&mut nbt_bytes)?;
+
+    let mut reader = crate::nbt::NbtReader::new(&nbt_bytes);
+    let (root_name, mut root) = reader.read_named_root();
+
+    if let Some(data) = root.get_mut("Data") {
+        data.set("SpawnX", NbtTag::Int(x));
+        data.set("SpawnY", NbtTag::Int(y));
+        data.set("SpawnZ", NbtTag::Int(z));
+        data.set("SpawnYaw", NbtTag::Float(yaw));
+        data.set("SpawnPitch", NbtTag::Float(pitch));
+    }
+
+    let mut out = Vec::new();
+    NbtTag::write_named_root(&root_name, &root, &mut out);
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&out)?;
+    let compressed = encoder.finish()?;
+
+    tokio::fs::write(&path, &compressed).await?;
+    Ok(())
+}
+
+pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64, f32, f32)> {
     let compressed = tokio::fs::read(world_dir.join("level.dat")).await.ok()?;
     let mut decoder = GzDecoder::new(&compressed[..]);
     let mut nbt_bytes = Vec::new();
@@ -57,5 +100,8 @@ pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64)> {
     let y = data.get("SpawnY").and_then(|t| t.as_i32())? as f64 + 5.0; // FIXME: +5 is temp remove when command /setworldspawn is created
     let z = data.get("SpawnZ").and_then(|t| t.as_i32())? as f64 + 0.5;
 
-    Some((x, y, z))
+    let yaw = data.get("SpawnYaw").and_then(|t| t.as_i32())? as f32;
+    let pitch = data.get("SpawnPitch").and_then(|t| t.as_i32())? as f32;
+
+    Some((x, y, z, yaw, pitch))
 }

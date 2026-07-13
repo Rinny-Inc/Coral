@@ -79,9 +79,25 @@ impl NbtTag {
         tag.write(out);
     }
 
+    pub fn set(&mut self, key: &str, value: NbtTag) {
+        if let NbtTag::Compound(entries) = self {
+            if let Some(entry) = entries.iter_mut().find(|(k, _)| k == key) {
+                entry.1 = value;
+            } else {
+                entries.push((key.to_string(), value));
+            }
+        }
+    }
     pub fn get(&self, key: &str) -> Option<&NbtTag> {
         if let NbtTag::Compound(entries) = self {
             entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+        } else {
+            None
+        }
+    }
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut NbtTag> {
+        if let NbtTag::Compound(entries) = self {
+            entries.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
         } else {
             None
         }

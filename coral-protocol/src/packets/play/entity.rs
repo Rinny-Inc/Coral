@@ -26,8 +26,8 @@ pub struct EntityTeleport {
     pub x: f64,
     pub y: f64,
     pub z: f64,
-    pub yaw: u8,
-    pub pitch: u8,
+    pub yaw: f32,
+    pub pitch: f32,
     pub on_ground: bool,
 }
 
@@ -46,16 +46,16 @@ pub struct EntityLookAndMove {
     pub dx: i8,
     pub dy: i8,
     pub dz: i8,
-    pub yaw: u8,
-    pub pitch: u8,
+    pub yaw: f32,
+    pub pitch: f32,
     pub on_ground: bool,
 }
 
 #[derive(Debug)]
 pub struct EntityLook {
     pub entity_id: i32,
-    pub yaw: u8,
-    pub pitch: u8,
+    pub yaw: f32,
+    pub pitch: f32,
     pub on_ground: bool,
 }
 
@@ -67,10 +67,10 @@ pub struct DestroyEntities {
 #[derive(Debug)]
 pub struct EntityHeadLook {
     pub entity_id: i32,
-    pub head_yaw: u8,
+    pub head_yaw: f32,
 }
 
-pub fn degrees_to_byte(degrees: f32) -> u8 {
+fn degrees_to_byte(degrees: f32) -> u8 {
     ((degrees * 256.0 / 360.0) as i32).rem_euclid(256) as u8
 }
 
@@ -119,8 +119,8 @@ impl PacketOut for EntityTeleport {
         writer.write_i32((self.x * 32.0).floor() as i32);
         writer.write_i32((self.y * 32.0).floor() as i32);
         writer.write_i32((self.z * 32.0).floor() as i32);
-        writer.write_byte(degrees_to_byte(self.yaw as f32));
-        writer.write_byte(degrees_to_byte(self.pitch as f32));
+        writer.write_byte(degrees_to_byte(self.yaw));
+        writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_bool(self.on_ground);
         Ok(())
     }
@@ -145,8 +145,8 @@ impl PacketOut for EntityLookAndMove {
         writer.write_byte(self.dx as u8);
         writer.write_byte(self.dy as u8);
         writer.write_byte(self.dz as u8);
-        writer.write_byte(self.yaw);
-        writer.write_byte(self.pitch);
+        writer.write_byte(degrees_to_byte(self.yaw));
+        writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_bool(self.on_ground);
         Ok(())
     }
@@ -156,8 +156,8 @@ impl PacketOut for EntityLook {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x16);
         writer.write_varint(self.entity_id);
-        writer.write_byte(self.yaw);
-        writer.write_byte(self.pitch);
+        writer.write_byte(degrees_to_byte(self.yaw));
+        writer.write_byte(degrees_to_byte(self.pitch));
         writer.write_bool(self.on_ground);
         Ok(())
     }
@@ -178,7 +178,7 @@ impl PacketOut for EntityHeadLook {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x19);
         writer.write_varint(self.entity_id);
-        writer.write_byte(self.head_yaw);
+        writer.write_byte(degrees_to_byte(self.head_yaw));
         Ok(())
     }
 }

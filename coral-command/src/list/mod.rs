@@ -6,6 +6,7 @@ pub mod op;
 pub mod player_list;
 pub mod reply;
 pub mod say;
+pub mod setworldspawn;
 pub mod usage;
 pub mod version;
 pub mod whitelist;

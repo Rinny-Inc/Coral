@@ -79,7 +79,7 @@ pub struct ServerContext {
     ops: Arc<RwLock<OpsFile>>,
     whitelist: Arc<RwLock<WhitelistFile>>,
     banlist: Arc<RwLock<BanList>>,
-    spawn_point: Arc<RwLock<(f64, f64, f64)>>,
+    spawn_point: Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     chest_storage: Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
@@ -162,6 +162,7 @@ impl Channels {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let resource_monitor = Arc::new(ResourceMonitor::new());
     let config = Arc::new(coral_config::Config::load());
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = match TcpListener::bind(&addr).await {
@@ -190,7 +191,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = Channels::new();
     let ops = Arc::new(RwLock::new(OpsFile::load()));
     let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
-    let resource_monitor = Arc::new(ResourceMonitor::new());
+    let world_dir = std::path::Path::new(&config.world.world_name);
+    let spawn_point = read_spawn_point(world_dir)
+        .await
+        .unwrap_or((0.5, 5.0, 0.5, 0.0, 0.0));
+
+    let world_blocks = Arc::new(WorldBlocks::new());
+    let generator = Arc::new(FlatWorldGenerator::new());
+
+    world_blocks.load(world_dir, &generator).await;
+
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(world_dir, "world");
+    }
+
+    if config.world.enable_auto_save {
+        spawn_world_save_task(
+            world_blocks.clone(),
+            generator.clone(),
+            world_dir.to_path_buf(),
+            config.world.auto_save_interval,
+        );
+    }
+
+    let spawn_point = Arc::new(RwLock::new(spawn_point));
+    let world_dir = Arc::new(world_dir.to_path_buf());
 
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(list::version::command()).await;
@@ -237,11 +262,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dispatcher
         .register(list::usage::command(resource_monitor.clone()))
         .await;
+    dispatcher
+        .register(
+            list::setworldspawn::command(
+                player_registry.clone(),
+                spawn_point.clone(),
+                world_dir.clone(),
+            )
+            .await,
+        )
+        .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
-
-    let world_dir = std::path::Path::new(&config.world.world_name);
-    let spawn_point = read_spawn_point(world_dir).await.unwrap_or((0.5, 5.0, 0.5));
 
     let ctx = ServerContext {
         packet_registry: Arc::new(PacketRegistry::new()),
@@ -255,35 +287,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         item_positions: Arc::new(RwLock::new(HashMap::new())),
         projectiles: Arc::new(RwLock::new(Vec::new())),
         channels,
-        world_blocks: Arc::new(WorldBlocks::new()),
+        world_blocks,
         world_time: Arc::new(AtomicI64::new(0)),
-        generator: Arc::new(FlatWorldGenerator::new()),
+        generator,
         player_registry,
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
         ops,
         whitelist,
         banlist: Arc::new(RwLock::new(BanList::load())),
-        spawn_point: Arc::new(RwLock::new(spawn_point)),
-        world_dir: Arc::new(world_dir.to_path_buf()),
+        spawn_point,
+        world_dir: world_dir.clone(),
         xp_orbs: Arc::new(RwLock::new(Vec::new())),
         chest_storage: Arc::new(RwLock::new(HashMap::new())),
     };
-
-    ctx.world_blocks.load(world_dir, &ctx.generator).await;
-
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_dir, "world");
-    }
-
-    if config.world.enable_auto_save {
-        spawn_world_save_task(
-            ctx.world_blocks.clone(),
-            ctx.generator.clone(),
-            world_dir.to_path_buf(),
-            config.world.auto_save_interval,
-        );
-    }
 
     spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
     spawn_shutdown_task(
