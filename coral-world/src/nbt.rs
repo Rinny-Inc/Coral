@@ -72,11 +72,31 @@ impl NbtTag {
     }
 
     pub fn write_named_root(name: &str, tag: &NbtTag, out: &mut Vec<u8>) {
+        out.reserve(tag.estimated_size() + name.len() + 3);
         out.push(10);
         let name_bytes = name.as_bytes();
         out.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         out.extend_from_slice(name_bytes);
         tag.write(out);
+    }
+    fn estimated_size(&self) -> usize {
+        match self {
+            Self::Byte(_) => 1,
+            Self::Short(_) => 2,
+            Self::Int(_) => 4,
+            Self::Long(_) | Self::Double(_) => 8,
+            Self::Float(_) => 4,
+            Self::ByteArray(v) => 4 + v.len(),
+            Self::String(s) => 2 + s.len(),
+            Self::List(_, v) => 5 + v.iter().map(|t| t.estimated_size()).sum::<usize>(),
+            Self::Compound(v) => {
+                v.iter()
+                    .map(|(k, t)| 4 + k.len() + t.estimated_size())
+                    .sum::<usize>()
+                    + 1
+            }
+            Self::IntArray(v) => 4 + v.len() * 4,
+        }
     }
 
     pub fn set(&mut self, key: &str, value: NbtTag) {
