@@ -4,6 +4,7 @@ pub mod kick;
 pub mod kill;
 pub mod msg;
 pub mod op;
+pub mod ping;
 pub mod player_list;
 pub mod reply;
 pub mod say;

@@ -288,6 +288,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             channels.kick_rq_tx.clone(),
         ))
         .await;
+    dispatcher
+        .register(list::ping::command(player_registry.clone()))
+        .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 
