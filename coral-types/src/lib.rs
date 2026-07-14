@@ -20,6 +20,8 @@ pub type XpOrbMove = (i32, f64, f64, f64);
 pub type XpPickup = (Uuid, i32);
 pub type BedUpdate = (i32, i32, i32, i32);
 pub type PrivateMessage = (String, String, String);
+pub type TeleportRequest = (Uuid, f64, f64, f64);
+pub type KickRequest = (Uuid, String);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolKind {

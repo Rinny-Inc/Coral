@@ -126,13 +126,14 @@ pub async fn play(
     let mut projectile_spawn_rx = channels.projectile_spawn_tx.subscribe();
     let mut projectile_move_rx = channels.projectile_move_tx.subscribe();
     let mut splash_effect_rx = channels.splash_effect_tx.subscribe();
-    let mut shutdown_rx = channels.shutdown_tx.subscribe();
     let mut xp_pickup_rx = channels.xp_pickup_tx.subscribe();
     let mut xp_orb_spawn_rx = channels.xp_orb_spawn_tx.subscribe();
     let mut xp_orb_move_rx = channels.xp_orb_move_tx.subscribe();
     let mut bed_rx = channels.bed_tx.subscribe();
     let mut wake_rx = channels.wake_tx.subscribe();
     let mut private_msg_rx = channels.private_msg_tx.subscribe();
+    let mut teleport_rq_rx = channels.teleport_rq_tx.subscribe();
+    let mut kick_rq_rx = channels.kick_rq_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -142,10 +143,6 @@ pub async fn play(
                 state.keep_alive_count += 1;
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(framed, KeepAlive { id: state.keep_alive_count }).await;
-            }
-            Ok(()) = shutdown_rx.recv() => {
-                kick(framed, "Server closed.").await;
-                break;
             }
             Ok(()) = tick_rx.recv() => {
                 state.tick_count += 1;
@@ -418,6 +415,43 @@ pub async fn play(
                         head_yaw: yaw,
                     }).await; // 0x19
                 }
+            }
+
+            Ok((target_uuid, x, y, z)) = teleport_rq_rx.recv() => {
+                if Some(target_uuid) != state.uuid {
+                    continue;
+                }
+
+                send_packet(framed, PlayerPositionAndLook {
+                    x, y, z,
+                    yaw: 0.0, pitch: 0.0,
+                    on_ground: false,
+                }).await;
+
+                player_registry.update_position(&target_uuid, x, y, z, 0.0, 0.0, false).await;
+                channels.pos_tx.send(MovementBroadcast {
+                    uuid: target_uuid,
+                    entity_id: state.entity_id,
+                    kind: MoveKind::Teleport { x, y, z, yaw: 0.0, pitch: 0.0, on_ground: false },
+                    head_yaw: Some(0.0),
+                }).ok();
+
+                let new_cx = (x as i32) >> 4;
+                let new_cz = (x as i32) >> 4;
+                if new_cx != state.chunk_x || new_cz != state.chunk_z {
+                    state.chunk_x = new_cx;
+                    state.chunk_z = new_cz;
+                    update_chunks(framed, client_protocol, &world_blocks, &generator, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
+                }
+
+                state.was_on_ground = false;
+            }
+            Ok((target_uuid, reason)) = kick_rq_rx.recv() => {
+                if Some(target_uuid) != state.uuid {
+                    continue;
+                }
+                kick(framed, &format!("§c{}", reason)).await;
+                break;
             }
 
             Ok((uuid, amount)) = xp_pickup_rx.recv() => {
@@ -1993,7 +2027,9 @@ async fn handle_landing(
     on_ground: bool,
 ) {
     if on_ground && !state.was_on_ground {
-        let damage_eligible = state.gamemode == GameMode::Survival && !state.is_flying;
+        let damage_eligible = (state.gamemode == GameMode::Survival
+            || state.gamemode == GameMode::Adventure)
+            && !state.is_flying;
 
         if damage_eligible && state.fall_distance > 3.0 {
             let damage = (state.fall_distance - 3.0).round();

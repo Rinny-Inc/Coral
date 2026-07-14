@@ -1,5 +1,6 @@
 pub mod deop;
 pub mod gamemode;
+pub mod kick;
 pub mod kill;
 pub mod msg;
 pub mod op;
@@ -7,6 +8,7 @@ pub mod player_list;
 pub mod reply;
 pub mod say;
 pub mod setworldspawn;
+pub mod teleport;
 pub mod usage;
 pub mod version;
 pub mod whitelist;

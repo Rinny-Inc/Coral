@@ -16,9 +16,9 @@ use coral_protocol::packets::{
 };
 use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EquipmentUpdate,
-    GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, MetadataUpdate, ParticleEffect, PingUpdate,
-    PrivateMessage, ProjectileMove, SoundEffect, SplashEffect, TimeUpdate, XpOrbMove, XpOrbSpawn,
-    XpPickup, dist_sq3, dist3,
+    GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, KickRequest, MetadataUpdate, ParticleEffect,
+    PingUpdate, PrivateMessage, ProjectileMove, SoundEffect, SplashEffect, TeleportRequest,
+    TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -122,6 +122,8 @@ pub struct Channels {
     bed_tx: Arc<Sender<BedUpdate>>,
     wake_tx: Arc<Sender<()>>,
     private_msg_tx: Arc<Sender<PrivateMessage>>,
+    teleport_rq_tx: Arc<Sender<TeleportRequest>>,
+    kick_rq_tx: Arc<Sender<KickRequest>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -156,6 +158,8 @@ impl Channels {
             bed_tx: Arc::new(channel::<BedUpdate>(50).0),
             wake_tx: Arc::new(channel::<()>(4).0),
             private_msg_tx: Arc::new(channel::<PrivateMessage>(50).0),
+            teleport_rq_tx: Arc::new(channel::<TeleportRequest>(5).0),
+            kick_rq_tx: Arc::new(channel::<KickRequest>(5).0),
         }
     }
 }
@@ -271,6 +275,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await,
         )
+        .await;
+    dispatcher
+        .register(list::teleport::command(
+            player_registry.clone(),
+            channels.teleport_rq_tx.clone(),
+        ))
+        .await;
+    dispatcher
+        .register(list::kick::command(
+            player_registry.clone(),
+            channels.kick_rq_tx.clone(),
+        ))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
