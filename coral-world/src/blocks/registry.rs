@@ -22,6 +22,7 @@ impl BlockRegistry {
         }
 
         use super::definitions::*;
+        use super::fluid::Fluid;
         register!(
             Air,
             Stone,
@@ -66,7 +67,11 @@ impl BlockRegistry {
             NetherBrick,
             EndStone,
             CoalBlock,
-            HardenedClay
+            HardenedClay,
+            Fluid::FLOWING_WATER,
+            Fluid::STATIONARY_WATER,
+            Fluid::FLOWING_LAVA,
+            Fluid::STATIONARY_LAVA,
         );
 
         Self { blocks }

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering::Relaxed},
@@ -14,21 +14,28 @@ use coral_protocol::packets::play::{
         builder::{ChatBuilder, ChatColor},
     },
     entity::{EntityAnimationType, UseBed},
-    inventory::{ItemStack, OpenWindow, WindowItems},
+    inventory::{ItemStack, OpenWindow, SetSlot, WindowItems},
 };
 use coral_server::{
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind},
 };
-use coral_types::look_direction;
-use coral_world::{blocks::WorldBlocks, generator::FlatWorldGenerator};
+use coral_types::{GameMode, look_direction};
+use coral_world::{
+    blocks::{
+        Block, WorldBlocks,
+        fluid::{Fluid, FluidKind, is_replaceable},
+    },
+    generator::FlatWorldGenerator,
+};
 use tokio::{net::TcpStream, sync::RwLock};
 use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, WindowType, send_packet},
+    codec::{Codec, PlayerState, WindowType, send_packet, state::play::send_held_equip},
+    fluid_sim::queue_fluid_update,
 };
 
 /// Return true if the itme interaction went well
@@ -126,6 +133,156 @@ pub async fn try_with_item(
     }
 }
 
+/// Return true if the item on block interaction went well
+pub async fn try_with_item_on_block(
+    framed: &mut Framed<TcpStream, Codec>,
+    place: &PlayerBlockPlacement,
+    state: &mut PlayerState,
+    clicked: &Block,
+    player_registry: &Arc<PlayerRegistry>,
+    world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
+    fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    channels: &Channels,
+) -> bool {
+    let Some(face) = &place.face else {
+        return false;
+    };
+    if place.held_item_id == 325 {
+        let Some(fluid) = Fluid::from_block_id(clicked.id) else {
+            return false;
+        };
+        if !Fluid::is_source(clicked.id, clicked.metadata) {
+            return false;
+        }
+        // remove the source
+        world_blocks
+            .set(place.x, place.y, place.z, Block::air(), generator)
+            .await;
+        channels
+            .block_tx
+            .send((place.x, place.y as i32, place.z, 0, 0))
+            .ok();
+
+        // recalculate neighbor fluids (it may now drain)
+        queue_fluid_update(place.x, place.y as i32, place.z, fluid_queue).await;
+        println!(
+            "[BUCKET] queued, queue len = {}",
+            fluid_queue.read().await.len()
+        );
+
+        // repalce empty bucket with filled one (survival only)
+        if state.gamemode == GameMode::Survival {
+            let hotbar = state.held_slot as usize;
+            let filled = fluid.bucket_item();
+            state.inventory.slots[hotbar] = Some(ItemStack {
+                item_id: filled,
+                count: 1,
+                metadata: 0,
+                durability: 0,
+            });
+            send_packet(
+                framed,
+                SetSlot {
+                    window_id: 0,
+                    slot: (36 + hotbar) as i16,
+                    item_id: filled,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+            state.held_item = filled;
+            if let Some(uuid) = state.uuid {
+                player_registry.update_held_item(uuid, filled).await;
+            }
+            send_held_equip(&channels.equip_tx, state);
+        }
+
+        let sound = match fluid.kind {
+            FluidKind::Water => "liquid.water",
+            FluidKind::Lava => "liquid.lava",
+        };
+        channels
+            .sound_tx
+            .send((
+                sound.to_string(),
+                place.x as f64 + 0.5,
+                place.y as f64 + 0.5,
+                place.z as f64 + 0.5,
+                1.0,
+                63,
+            ))
+            .ok();
+        return true;
+    }
+
+    if let Some(fluid) = Fluid::from_bucket_item(place.held_item_id) {
+        let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
+
+        if !(0..=255).contains(&ty) {
+            return false;
+        }
+
+        let existing = world_blocks.get(tx, ty as u8, tz, generator).await;
+        // only place into air or replaceable blocks
+        if !existing.is_air() && !is_replaceable(existing.id) {
+            return false;
+        }
+
+        let source_id = fluid.block_id();
+        world_blocks
+            .set(tx, ty as u8, tz, Block::new(source_id, 0), generator)
+            .await;
+        channels
+            .block_tx
+            .send((tx, ty, tz, source_id as i32, 0))
+            .ok();
+
+        // start flow simulation
+        queue_fluid_update(tx, ty, tz, fluid_queue).await;
+
+        // empty the bucket only in survival mode
+        if state.gamemode == GameMode::Survival {
+            let hotbar = state.held_slot as usize;
+            state.inventory.slots[hotbar] = Some(ItemStack {
+                item_id: 325,
+                count: 1,
+                metadata: 0,
+                durability: 0,
+            });
+            send_packet(
+                framed,
+                SetSlot {
+                    window_id: 0,
+                    slot: (36 + hotbar) as i16,
+                    item_id: 325,
+                    count: 1,
+                    metadata: 0,
+                },
+            )
+            .await;
+            state.held_item = 325;
+            if let Some(uuid) = state.uuid {
+                player_registry.update_held_item(uuid, 325).await;
+            }
+            send_held_equip(&channels.equip_tx, state);
+        }
+
+        let sound = match fluid.kind {
+            FluidKind::Water => "liquid.water",
+            FluidKind::Lava => "liquid.lava",
+        };
+
+        channels
+            .sound_tx
+            .send((sound.to_string(), tx as f64, ty as f64, tz as f64, 1.0, 63))
+            .ok();
+        return true;
+    }
+    false
+}
+
 /// Return true if the block interaction went well
 #[allow(clippy::too_many_arguments)]
 pub async fn try_with_block(
@@ -137,9 +294,27 @@ pub async fn try_with_block(
     world_time: &Arc<AtomicI64>,
     generator: &Arc<FlatWorldGenerator>,
     chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
 ) -> bool {
     let clicked = world_blocks.get(place.x, place.y, place.z, generator).await;
+
+    if try_with_item_on_block(
+        framed,
+        place,
+        state,
+        &clicked,
+        player_registry,
+        world_blocks,
+        generator,
+        fluid_queue,
+        channels,
+    )
+    .await
+    {
+        return true;
+    }
+
     match clicked.id {
         54 | 146 => {
             if !(state.is_sneaking && place.held_item_id > 0) {

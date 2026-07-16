@@ -39,6 +39,18 @@ pub enum BlockFace {
     West,
     East,
 }
+impl BlockFace {
+    pub fn to_placement(&self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+        match self {
+            Self::Down => (x, y - 1, z),
+            Self::Up => (x, y + 1, z),
+            Self::North => (x, y, z - 1),
+            Self::South => (x, y, z + 1),
+            Self::West => (x - 1, y, z),
+            Self::East => (x + 1, y, z),
+        }
+    }
+}
 impl TryFrom<u8> for BlockFace {
     type Error = u8;
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::ErrorKind,
     path::PathBuf,
     sync::{Arc, atomic::AtomicI64},
@@ -56,6 +56,7 @@ use coral_world::{
 };
 
 mod codec;
+mod fluid_sim;
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -83,6 +84,7 @@ pub struct ServerContext {
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     chest_storage: Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
 }
 
 type JoinLeave = (Player, bool);
@@ -319,6 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         world_dir: world_dir.clone(),
         xp_orbs: Arc::new(RwLock::new(Vec::new())),
         chest_storage: Arc::new(RwLock::new(HashMap::new())),
+        fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
     };
 
     spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
@@ -362,6 +365,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.world_blocks.clone(),
         ctx.generator.clone(),
         ctx.player_registry.clone(),
+        ctx.channels.clone(),
+    );
+
+    fluid_sim::spawn_fluid_task(
+        ctx.fluid_queue.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
         ctx.channels.clone(),
     );
 

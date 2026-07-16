@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::RwLock;
 
 pub mod definitions;
+pub mod fluid;
 pub mod registry;
 
 pub trait BlockBehavior: Send + Sync {
@@ -153,9 +154,21 @@ impl WorldBlocks {
 
         self.get_chunk_nbt(cx, cz).await;
 
-        let gen_block = generator.get(y);
+        let base_block = {
+            if let Some(nbt) = self.get_chunk_nbt(cx, cz).await {
+                let mut chunk_blocks = HashMap::new();
+                nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
+                chunk_blocks
+                    .get(&(x, y, z))
+                    .cloned()
+                    .unwrap_or_else(Block::air)
+            } else {
+                generator.get(y)
+            }
+        };
 
-        self.update_block(x, y, z, block, gen_block).await;
+        self.update_block(x, y, z, block, base_block).await;
+
         self.dirty_chunks.write().await.insert((cx, cz));
     }
 

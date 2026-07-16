@@ -9,7 +9,7 @@ use coral_protocol::packets::play::{
     ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
     ResourcePackStatus,
     block::{
-        BlockBreakAnimation, BlockChange, BlockFace, DigStatus, HeldItemChange, ItemEntityMetadata,
+        BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
         PlayerBlockPlacement, PlayerDig,
     },
     chat::{
@@ -100,6 +100,7 @@ pub async fn play(
         xp_orbs,
         world_time,
         chest_storage,
+        fluid_queue,
         ..
     } = ctx;
 
@@ -1021,20 +1022,17 @@ pub async fn play(
                                 }
                                 continue;
                             };
-                            if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &chest_storage, &channels).await
+                            println!("[PLACE 1] held={} face={:?} pos=({},{},{})",
+                                    place.held_item_id, face, place.x, place.y, place.z);
+                            if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &chest_storage, &fluid_queue, &channels).await
                                 || place.held_item_id == -1
                                 || state.gamemode >= GameMode::Adventure
                             {
                                 continue;
                             }
-                            let (tx, ty, tz): (i32, i32, i32) = match face {
-                                BlockFace::Down => (place.x, place.y as i32 - 1, place.z),
-                                BlockFace::Up => (place.x, place.y as i32 + 1, place.z),
-                                BlockFace::North => (place.x, place.y as i32, place.z - 1),
-                                BlockFace::South => (place.x, place.y as i32, place.z + 1),
-                                BlockFace::West => (place.x - 1, place.y as i32, place.z),
-                                BlockFace::East => (place.x + 1, place.y as i32, place.z),
-                            };
+                            println!("[PLACE 2] held={} face={:?} pos=({},{},{})",
+                                    place.held_item_id, face, place.x, place.y, place.z);
+                            let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
 
                             if !(0..=255).contains(&ty) {
                                 continue;
