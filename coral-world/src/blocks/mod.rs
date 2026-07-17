@@ -62,6 +62,10 @@ pub trait BlockBehavior: Send + Sync {
     fn blast_resistance(&self) -> f32 {
         self.hardness() * 5.0
     }
+
+    fn is_replaceable(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +93,8 @@ pub struct WorldBlocks {
     pub blocks: RwLock<HashMap<(i32, u8, i32), Block>>,
     // chunks loaded from disk into mem
     pub chunk_cache: RwLock<HashMap<(i32, i32), (Arc<Vec<u8>>, Instant)>>,
+    // cache for better peformances
+    pub decoded_cache: RwLock<HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>>,
     // chunks that need to be saved
     pub dirty_chunks: RwLock<HashSet<(i32, i32)>>,
     pub world_dir: RwLock<Option<std::path::PathBuf>>,
@@ -101,6 +107,7 @@ impl WorldBlocks {
         Self {
             blocks: RwLock::new(HashMap::new()),
             chunk_cache: RwLock::new(HashMap::new()),
+            decoded_cache: RwLock::new(HashMap::new()),
             dirty_chunks: RwLock::new(HashSet::new()),
             world_dir: RwLock::new(None),
             generator: RwLock::new(None),
@@ -136,13 +143,22 @@ impl WorldBlocks {
         let cx = x >> 4;
         let cz = z >> 4;
 
+        if let Some((decoded, _)) = self.decoded_cache.read().await.get(&(cx, cz)) {
+            return decoded.get(&(x, y, z)).cloned().unwrap_or_else(Block::air);
+        }
+
         if let Some(nbt) = self.get_chunk_nbt(cx, cz).await {
             let mut chunk_blocks = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
-            return chunk_blocks
+            let result = chunk_blocks
                 .get(&(x, y, z))
                 .cloned()
                 .unwrap_or_else(Block::air);
+            self.decoded_cache
+                .write()
+                .await
+                .insert((cx, cz), (Arc::new(chunk_blocks), Instant::now()));
+            return result;
         }
 
         generator.get(y)
