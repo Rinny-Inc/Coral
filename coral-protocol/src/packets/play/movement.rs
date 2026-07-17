@@ -157,7 +157,7 @@ impl From<&PlayerPositionAndLook> for PlayerMovements {
     fn from(p: &PlayerPositionAndLook) -> Self {
         Self {
             position: Some((p.x, p.y, p.z)),
-            rotation: Some((p.pitch, p.yaw)),
+            rotation: Some((p.yaw, p.pitch)),
             on_ground: p.on_ground,
         }
     }
