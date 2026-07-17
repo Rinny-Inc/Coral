@@ -38,6 +38,7 @@ use coral_protocol::packets::play::{
     player_list::{PlayerListItem17, PlayerListItemAdd, PlayerListItemRemove, UpdateLatency},
 };
 use coral_server::{
+    bounding_box::EntityBounds,
     effects::{ActiveEffect, EffectKind},
     entity_tracker::TrackedEntity,
     experience::{self, XpOrb, xp_needed_for_level},
@@ -47,8 +48,10 @@ use coral_server::{
         potions::PotionEffect,
     },
     mining::break_time_ticks,
-    player::Player,
-    player::registry::{PlayerRegistry, next_entity_id},
+    player::{
+        Player,
+        registry::{PlayerRegistry, next_entity_id},
+    },
     projectile::{Projectile, ProjectileKind},
 };
 use coral_types::{GameMode, ToolMaterial, dist_xz, dist3, look_direction};
@@ -135,6 +138,7 @@ pub async fn play(
     let mut private_msg_rx = channels.private_msg_tx.subscribe();
     let mut teleport_rq_rx = channels.teleport_rq_tx.subscribe();
     let mut kick_rq_rx = channels.kick_rq_tx.subscribe();
+    let mut shutdown_rx = channels.shutdown_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -144,6 +148,10 @@ pub async fn play(
                 state.keep_alive_count += 1;
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(framed, KeepAlive { id: state.keep_alive_count }).await;
+            }
+            Ok(()) = shutdown_rx.recv() => {
+                kick(framed, "Server closed.").await;
+                break;
             }
             Ok(()) = tick_rx.recv() => {
                 state.tick_count += 1;
@@ -714,7 +722,7 @@ pub async fn play(
                                     let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
 
                                     if state.gamemode == GameMode::Creative {
-                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air(), &generator).await;
+                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
                                         channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                         channels.sound_tx.send((
                                             block_break_sound(block.id).to_string(),
@@ -764,7 +772,7 @@ pub async fn play(
                                             state.breaking_block = Some((bx, by, bz));
                                             continue;
                                         }
-                                        world_blocks.set(bx, by as u8, bz, Block::air(), &generator).await;
+                                        world_blocks.set(bx, by as u8, bz, Block::air()).await;
                                         channels.block_tx.send((
                                             bx, by, bz,
                                             0, 0
@@ -943,7 +951,7 @@ pub async fn play(
                                                 entity_id: arrow_eid,
                                                 owner_entity_id: state.entity_id,
                                                 kind: ProjectileKind::Arrow,
-                                                x: p.x, y: p.y + 1.5, z: p.z,
+                                                x: p.x, y: p.y + EntityBounds::player(p.is_sneaking).height, z: p.z,
                                                 vx: dx * speed,
                                                 vy: dy * speed,
                                                 vz: dz * speed,
@@ -1020,18 +1028,17 @@ pub async fn play(
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
+                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &world_blocks, &generator, &fluid_queue, &channels, None).await {
+                                    continue;
+                                }
                                 continue;
                             };
-                            println!("[PLACE 1] held={} face={:?} pos=({},{},{})",
-                                    place.held_item_id, face, place.x, place.y, place.z);
                             if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &chest_storage, &fluid_queue, &channels).await
                                 || place.held_item_id == -1
                                 || state.gamemode >= GameMode::Adventure
                             {
                                 continue;
                             }
-                            println!("[PLACE 2] held={} face={:?} pos=({},{},{})",
-                                    place.held_item_id, face, place.x, place.y, place.z);
                             let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
 
                             if !(0..=255).contains(&ty) {
@@ -1092,7 +1099,7 @@ pub async fn play(
                                 send_held_equip(&channels.equip_tx, state);
                             }
 
-                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta), &generator).await;
+                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
                             channels.block_tx.send((tx, ty, tz, block_id, block_meta)).ok();
                             channels.sound_tx.send((
                                 block_break_sound(block_id as u8).to_string(),

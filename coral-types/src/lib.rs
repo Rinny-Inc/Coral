@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use uuid::Uuid;
 
 pub type DamageEvent = (Uuid, f32, i32, f32, i32);
@@ -111,4 +113,22 @@ pub fn offline_uuid(username: &str) -> Uuid {
         &Uuid::NAMESPACE_DNS,
         format!("OfflinePlayer:{}", username).as_bytes(),
     )
+}
+
+pub trait TicksExt {
+    /// Convert a count of Minecraft ticks (20/sec, 50ms each) into a Duration.
+    fn from_ticks(ticks: u64) -> Duration;
+
+    /// Convert this Duration into a tick count, rounding down.
+    fn as_ticks(&self) -> u64;
+}
+
+impl TicksExt for Duration {
+    fn from_ticks(ticks: u64) -> Duration {
+        Duration::from_millis(ticks * 50)
+    }
+
+    fn as_ticks(&self) -> u64 {
+        self.as_millis() as u64 / 50
+    }
 }

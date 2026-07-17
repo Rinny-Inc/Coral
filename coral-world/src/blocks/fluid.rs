@@ -56,20 +56,6 @@ impl Fluid {
         }
     }
 
-    pub fn spread_rate_ticks(&self) -> u64 {
-        match self.kind {
-            FluidKind::Water => 5,
-            FluidKind::Lava => 30,
-        }
-    }
-
-    pub fn max_spread(&self) -> u8 {
-        match self.kind {
-            FluidKind::Water => 7,
-            FluidKind::Lava => 3,
-        }
-    }
-
     pub fn bucket_item(&self) -> i16 {
         match self.kind {
             FluidKind::Water => 326,
@@ -96,19 +82,11 @@ impl Fluid {
     }
 
     pub fn is_source(id: u8, metadata: u8) -> bool {
-        match id {
-            9 | 11 => true,
-            8 | 10 => (metadata & 0x8) == 0 && (metadata & 0x7) == 0,
-            _ => false,
-        }
+        matches!(id, 8 | 9 | 10 | 11) && (metadata & 0x8) == 0 && (metadata & 0x7) == 0
     }
 
-    pub fn flow_level(id: u8, metadata: u8) -> u8 {
-        if matches!(id, 9 | 11) {
-            0
-        } else {
-            metadata & 0x7
-        }
+    pub fn flow_level(_id: u8, metadata: u8) -> u8 {
+        metadata & 0x7
     }
 
     pub fn is_falling(metadata: u8) -> bool {

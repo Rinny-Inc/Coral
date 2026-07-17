@@ -18,7 +18,7 @@ use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EquipmentUpdate,
     GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, KickRequest, MetadataUpdate, ParticleEffect,
     PingUpdate, PrivateMessage, ProjectileMove, SoundEffect, SplashEffect, TeleportRequest,
-    TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
+    TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -413,7 +413,7 @@ fn spawn_shutdown_task(
 }
 fn spawn_tick_task(tick_tx: Arc<Sender<()>>, player_registry: Arc<PlayerRegistry>) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_millis(50));
+        let mut interval = interval(Duration::from_ticks(1));
         loop {
             interval.tick().await;
             player_registry.tick().await;
@@ -427,7 +427,7 @@ fn spawn_world_time_task(
     wake_tx: Arc<Sender<()>>,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_millis(50)); // 1 tick
+        let mut interval = interval(Duration::from_ticks(1));
         let mut world_age: i64 = 0;
         let mut time_of_day: i64 = 0;
 
@@ -456,7 +456,7 @@ fn spawn_world_time_task(
 }
 fn spawn_weather_task(weather_tx: Arc<Sender<WeatherState>>) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_millis(50));
+        let mut interval = interval(Duration::from_ticks(1));
         let mut weather = Weather::new();
 
         loop {
@@ -578,7 +578,7 @@ fn spawn_projectile_task(
     channels: Channels,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_millis(50));
+        let mut interval = interval(Duration::from_ticks(50));
         loop {
             interval.tick().await;
 
@@ -735,7 +735,7 @@ fn spawn_xp_orb_task(
     channels: Channels,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_millis(50));
+        let mut interval = interval(Duration::from_ticks(50));
         loop {
             interval.tick().await;
 

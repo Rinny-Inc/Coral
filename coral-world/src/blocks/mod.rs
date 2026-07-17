@@ -148,37 +148,14 @@ impl WorldBlocks {
         generator.get(y)
     }
 
-    pub async fn set(&self, x: i32, y: u8, z: i32, block: Block, generator: &FlatWorldGenerator) {
+    pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
         let cx = x >> 4;
         let cz = z >> 4;
 
         self.get_chunk_nbt(cx, cz).await;
 
-        let base_block = {
-            if let Some(nbt) = self.get_chunk_nbt(cx, cz).await {
-                let mut chunk_blocks = HashMap::new();
-                nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
-                chunk_blocks
-                    .get(&(x, y, z))
-                    .cloned()
-                    .unwrap_or_else(Block::air)
-            } else {
-                generator.get(y)
-            }
-        };
-
-        self.update_block(x, y, z, block, base_block).await;
-
+        self.blocks.write().await.insert((x, y, z), block);
         self.dirty_chunks.write().await.insert((cx, cz));
-    }
-
-    async fn update_block(&self, x: i32, y: u8, z: i32, block: Block, gen_block: Block) {
-        let mut blocks = self.blocks.write().await;
-        if block.id == gen_block.id && block.metadata == gen_block.metadata {
-            blocks.remove(&(x, y, z));
-        } else {
-            blocks.insert((x, y, z), block);
-        }
     }
 
     pub async fn evict_stale_chunks(&self, max_age: Duration) {

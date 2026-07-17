@@ -17,6 +17,7 @@ use coral_protocol::packets::play::{
     inventory::{ItemStack, OpenWindow, SetSlot, WindowItems},
 };
 use coral_server::{
+    bounding_box::EntityBounds,
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind},
@@ -138,34 +139,74 @@ pub async fn try_with_item_on_block(
     framed: &mut Framed<TcpStream, Codec>,
     place: &PlayerBlockPlacement,
     state: &mut PlayerState,
-    clicked: &Block,
     player_registry: &Arc<PlayerRegistry>,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
+    clicked: Option<(i32, i32, i32)>,
 ) -> bool {
-    let Some(face) = &place.face else {
-        return false;
-    };
     if place.held_item_id == 325 {
-        let Some(fluid) = Fluid::from_block_id(clicked.id) else {
+        println!(
+            "[BUCKET] entered branch, checking ({}, {}, {})",
+            place.x, place.y, place.z
+        );
+
+        let Some(uuid) = state.uuid else {
             return false;
         };
-        if !Fluid::is_source(clicked.id, clicked.metadata) {
+        let Some(p) = player_registry.get(&uuid).await else {
+            return false;
+        };
+
+        // FIXME: might be problematic
+        let hit = match clicked {
+            Some(l) => Some((l.0, l.1, l.2)),
+            None => {
+                let eye_y = p.y + EntityBounds::player(p.is_sneaking).height;
+                raytrace_for_fluid(
+                    p.x,
+                    eye_y,
+                    p.z,
+                    p.yaw,
+                    p.pitch,
+                    6.0,
+                    &world_blocks,
+                    &generator,
+                )
+                .await
+            }
+        };
+
+        println!("[BUCKET] raytrace hit = {:?}", hit);
+
+        let Some(hit) = hit else {
+            return false;
+        };
+
+        let y = hit.1 + 1;
+
+        let target = world_blocks.get(hit.0, y as u8, hit.2, &generator).await;
+        println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
+
+        let Some(fluid) = Fluid::from_block_id(target.id) else {
+            println!("[BUCKET] not a fluid block, aborting");
+            return false;
+        };
+        if !Fluid::is_source(target.id, target.metadata) {
+            println!("[BUCKET] fluid found but not a source (falling/edge), aborting");
             return false;
         }
+
+        println!("[BUCKET] confirmed source, removing");
         // remove the source
         world_blocks
-            .set(place.x, place.y, place.z, Block::air(), generator)
+            .set(place.x, y as u8, place.z, Block::air())
             .await;
-        channels
-            .block_tx
-            .send((place.x, place.y as i32, place.z, 0, 0))
-            .ok();
+        channels.block_tx.send((place.x, y, place.z, 0, 0)).ok();
 
         // recalculate neighbor fluids (it may now drain)
-        queue_fluid_update(place.x, place.y as i32, place.z, fluid_queue).await;
+        queue_fluid_update(place.x, y, place.z, fluid_queue).await;
         println!(
             "[BUCKET] queued, queue len = {}",
             fluid_queue.read().await.len()
@@ -208,7 +249,7 @@ pub async fn try_with_item_on_block(
             .send((
                 sound.to_string(),
                 place.x as f64 + 0.5,
-                place.y as f64 + 0.5,
+                y as f64 + 0.5,
                 place.z as f64 + 0.5,
                 1.0,
                 63,
@@ -216,6 +257,10 @@ pub async fn try_with_item_on_block(
             .ok();
         return true;
     }
+
+    let Some(face) = &place.face else {
+        return false;
+    };
 
     if let Some(fluid) = Fluid::from_bucket_item(place.held_item_id) {
         let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
@@ -232,7 +277,7 @@ pub async fn try_with_item_on_block(
 
         let source_id = fluid.block_id();
         world_blocks
-            .set(tx, ty as u8, tz, Block::new(source_id, 0), generator)
+            .set(tx, ty as u8, tz, Block::new(source_id, 0))
             .await;
         channels
             .block_tx
@@ -297,18 +342,21 @@ pub async fn try_with_block(
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
 ) -> bool {
+    if place.face.is_none() {
+        return false;
+    };
     let clicked = world_blocks.get(place.x, place.y, place.z, generator).await;
 
     if try_with_item_on_block(
         framed,
         place,
         state,
-        &clicked,
         player_registry,
         world_blocks,
         generator,
         fluid_queue,
         channels,
+        Some((place.x, place.y as i32, place.z)),
     )
     .await
     {
@@ -436,4 +484,56 @@ async fn open_chest(
 
     // TODO: play chest sound + animation
     // (0x24 BlockAction)
+}
+
+async fn raytrace_for_fluid(
+    eye_x: f64,
+    eye_y: f64,
+    eye_z: f64,
+    yaw: f32,
+    pitch: f32,
+    max_dist: f64,
+    world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
+) -> Option<(i32, i32, i32)> {
+    let yaw_rad = (yaw as f64).to_radians();
+    let pitch_rad = (pitch as f64).to_radians();
+
+    let dx = -yaw_rad.sin() * pitch_rad.cos();
+    let dy = -pitch_rad.sin();
+    let dz = yaw_rad.cos() * pitch_rad.cos();
+
+    let step = 0.2;
+    let mut t = 0.0;
+
+    let mut last_block: Option<(i32, i32, i32)> = None;
+
+    while t <= max_dist {
+        let px = eye_x + dx * t;
+        let py = eye_y + dy * t;
+        let pz = eye_z + dz * t;
+
+        let bx = px.floor() as i32;
+        let by = py.floor() as i32;
+        let bz = pz.floor() as i32;
+
+        if last_block != Some((bx, by, bz)) {
+            last_block = Some((bx, by, bz));
+
+            if (0..=255).contains(&by) {
+                let block = world_blocks.get(bx, by as u8, bz, generator).await;
+
+                if Fluid::is_fluid(block.id) && Fluid::is_source(block.id, block.metadata) {
+                    return Some((bx, by, bz));
+                }
+                if !block.is_air() && !is_replaceable(block.id) {
+                    return None;
+                }
+            }
+        }
+
+        t += step;
+    }
+
+    None
 }
