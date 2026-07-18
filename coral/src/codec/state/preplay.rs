@@ -43,7 +43,6 @@ pub struct PrePlayContext {
 }
 
 pub struct JoinRequest {
-    pub uuid: Uuid,
     pub profile: AuthProfile,
     pub client_protocol: i32,
     pub peer_ip: Option<SocketAddr>,
@@ -54,7 +53,7 @@ pub async fn pre_play(
     framed: &mut Framed<TcpStream, Codec>,
     ctx: PrePlayContext,
     peer_ip: Option<SocketAddr>,
-) -> Option<JoinRequest> {
+) -> Option<(Uuid, JoinRequest)> {
     let PrePlayContext {
         player_registry,
         config,
@@ -215,13 +214,12 @@ pub async fn pre_play(
                                             .map(|ip| SocketAddr::new(ip, peer_ip.map(|a| a.port()).unwrap_or(0)))
                                             .or(peer_ip);
 
-                                        return Some(JoinRequest {
-                                            uuid,
+                                        return Some((uuid, JoinRequest {
                                             profile,
                                             client_protocol,
                                             peer_ip: effective_ip,
                                             is_op: ops.read().await.is_op(uuid),
-                                        });
+                                        }));
                                     }
                                     if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
                                         let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
@@ -253,13 +251,12 @@ pub async fn pre_play(
 
                                         framed.codec_mut().encryption = Some(Encryption::new(&shared_secret));
 
-                                        return Some(JoinRequest {
-                                            uuid,
+                                        return Some((uuid, JoinRequest {
                                             profile,
                                             client_protocol,
                                             peer_ip,
                                             is_op: ops.read().await.is_op(uuid)
-                                        });
+                                        }));
                                     }
                                 }
                                 _ => {}

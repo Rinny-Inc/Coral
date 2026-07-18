@@ -433,7 +433,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     let peer_ip = socket.peer_addr().ok();
     let mut framed = Framed::new(socket, codec);
 
-    let Some(req) = state::preplay::pre_play(
+    let Some((uuid, req)) = state::preplay::pre_play(
         &mut framed,
         PrePlayContext {
             player_registry: ctx.player_registry.clone(),
@@ -459,7 +459,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
     let client_protocol = req.client_protocol;
     // uuid and name are known at this point
-    let mut state = PlayerState::new(req.uuid, req.profile.username.clone());
+    let mut state = PlayerState::new(uuid, req.profile.username.clone());
 
     make_player_join(
         &mut framed,
@@ -520,7 +520,6 @@ async fn make_player_join(
     }
 
     let JoinRequest {
-        uuid,
         profile,
         client_protocol,
         peer_ip,
@@ -532,7 +531,7 @@ async fn make_player_join(
     send_packet(
         framed,
         LoginSuccess {
-            uuid,
+            uuid: state.uuid,
             username: profile.username.clone(),
         },
     )
@@ -540,7 +539,7 @@ async fn make_player_join(
 
     framed.codec_mut().state = handshake::EnumProtocol::Play;
 
-    let saved = load_player_data(world_dir, &uuid).await;
+    let saved = load_player_data(world_dir, &state.uuid).await;
     let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm, xp_total) = if let Some(d) = &saved {
         (
             d.x,
@@ -597,7 +596,7 @@ async fn make_player_join(
         send_packet(
             framed,
             PlayerListItemAdd {
-                uuid,
+                uuid: state.uuid,
                 username: profile.username.clone(),
                 properties: profile.properties.clone(),
                 gamemode: gamemodeu8 as i32,
@@ -609,7 +608,7 @@ async fn make_player_join(
         let already_online = player_registry.get_all().await;
 
         for p in &already_online {
-            if p.uuid == uuid {
+            if p.uuid == state.uuid {
                 continue;
             }
             send_packet(
@@ -717,7 +716,7 @@ async fn make_player_join(
 
     let player = Player::new(
         entity_id,
-        uuid,
+        state.uuid,
         profile.username.clone(),
         profile.properties.clone(),
         px,
@@ -753,7 +752,7 @@ async fn make_player_join(
 
     let existing_players = player_registry.get_all().await;
     for p in existing_players {
-        if p.uuid == uuid {
+        if p.uuid == state.uuid {
             continue;
         }
         send_spawn_player(framed, &p).await;
@@ -805,7 +804,7 @@ async fn make_player_join(
 
     entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,
-        uuid,
+        state.uuid,
         px,
         py,
         pz,
