@@ -1,4 +1,5 @@
 pub mod armor;
+pub mod drop_physics;
 pub mod drops;
 pub mod food;
 pub mod potions;

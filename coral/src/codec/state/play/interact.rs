@@ -67,8 +67,7 @@ pub async fn try_with_item(
             if !state
                 .try_retract_fishing_hook(projectiles, &channels.despawn_tx)
                 .await
-                && let Some(uuid) = state.uuid
-                && let Some(p) = player_registry.get(&uuid).await
+                && let Some(p) = player_registry.get(&state.uuid).await
             {
                 let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                 let speed = 1.5;
@@ -152,10 +151,7 @@ pub async fn try_with_item_on_block(
             place.x, place.y, place.z
         );
 
-        let Some(uuid) = state.uuid else {
-            return false;
-        };
-        let Some(p) = player_registry.get(&uuid).await else {
+        let Some(p) = player_registry.get(&state.uuid).await else {
             return false;
         };
 
@@ -234,9 +230,7 @@ pub async fn try_with_item_on_block(
             )
             .await;
             state.held_item = filled;
-            if let Some(uuid) = state.uuid {
-                player_registry.update_held_item(uuid, filled).await;
-            }
+            player_registry.update_held_item(state.uuid, filled).await;
             send_held_equip(&channels.equip_tx, state);
         }
 
@@ -308,9 +302,7 @@ pub async fn try_with_item_on_block(
             )
             .await;
             state.held_item = 325;
-            if let Some(uuid) = state.uuid {
-                player_registry.update_held_item(uuid, 325).await;
-            }
+            player_registry.update_held_item(state.uuid, 325).await;
             send_held_equip(&channels.equip_tx, state);
         }
 
@@ -398,9 +390,7 @@ pub async fn try_with_block(
             .await;
 
             state.is_sleeping = true;
-            if let Some(uuid) = state.uuid {
-                player_registry.update_sleeping(uuid, true).await;
-            }
+            player_registry.update_sleeping(state.uuid, true).await;
 
             send_packet(
                 framed,

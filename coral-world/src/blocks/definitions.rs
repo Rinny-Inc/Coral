@@ -16,6 +16,9 @@ impl BlockBehavior for Air {
     fn is_transparent(&self) -> bool {
         true
     }
+    fn is_replaceable(&self) -> bool {
+        true
+    }
 }
 
 pub struct Stone;

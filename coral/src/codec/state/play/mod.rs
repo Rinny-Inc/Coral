@@ -44,6 +44,7 @@ use coral_server::{
     experience::{self, XpOrb, xp_needed_for_level},
     items::{
         armor::{apply_armor_reduction, total_defense},
+        drop_physics::{break_drop_velocity, manual_drop_velocity},
         drops::block_drop,
         potions::PotionEffect,
     },
@@ -205,7 +206,7 @@ pub async fn play(
                 }).await;*/
             }
             Ok((from, to, message)) = private_msg_rx.recv() => {
-                if state.name.as_deref() != Some(&to) {
+                if &state.name != &to {
                     continue;
                 }
 
@@ -219,7 +220,7 @@ pub async fn play(
                 send_packet(framed, ChatMessageOut::from_json(&json)).await;
             }
             Ok((target_uuid, effect_id, amplifier, duration)) = splash_effect_rx.recv() => {
-                if Some(target_uuid) != state.uuid {
+                if target_uuid != state.uuid {
                     continue;
                 }
 
@@ -320,7 +321,7 @@ pub async fn play(
                 if mv.entity_id == state.entity_id {
                     continue;
                 }
-                let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                let visible = if let Some(me) = player_registry.get(&state.uuid).await {
                     entity_tracker.read().await.is_visible_to(mv.entity_id, me.x, me.z)
                 } else {
                     false
@@ -427,7 +428,7 @@ pub async fn play(
             }
 
             Ok((target_uuid, x, y, z)) = teleport_rq_rx.recv() => {
-                if Some(target_uuid) != state.uuid {
+                if target_uuid != state.uuid {
                     continue;
                 }
 
@@ -456,7 +457,7 @@ pub async fn play(
                 state.was_on_ground = false;
             }
             Ok((target_uuid, reason)) = kick_rq_rx.recv() => {
-                if Some(target_uuid) != state.uuid {
+                if target_uuid != state.uuid {
                     continue;
                 }
                 kick(framed, &format!("§c{}", reason)).await;
@@ -464,7 +465,7 @@ pub async fn play(
             }
 
             Ok((uuid, amount)) = xp_pickup_rx.recv() => {
-                if Some(uuid) != state.uuid {
+                if uuid != state.uuid {
                     continue;
                 }
                 state.xp_total += amount;
@@ -533,7 +534,7 @@ pub async fn play(
                 }).await;
             }
             Ok((player, join_event)) = join_rx.recv() => {
-                if Some(player.uuid) == state.uuid {
+                if player.uuid == state.uuid {
                     continue;
                 }
                 if !join_event {
@@ -559,7 +560,7 @@ pub async fn play(
                             ping: player.latency_ms as i16
                         }).await;
                     }
-                    if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await
+                    if let Some(me) = player_registry.get(&state.uuid).await
                         && dist_xz(player.x, player.z, me.x, me.z) > config.tracking.player
                     {
                         continue;
@@ -568,7 +569,7 @@ pub async fn play(
                 }
             }
             Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
-                if Some(uuid) != state.uuid {
+                if uuid != state.uuid {
                     continue;
                 }
                 state.health = health;
@@ -593,8 +594,7 @@ pub async fn play(
                 }).await;
 
                 if health > 0.0
-                    && let Some(uuid_val) = state.uuid
-                    && let Some(me) = player_registry.get(&uuid_val).await
+                    && let Some(me) = player_registry.get(&state.uuid).await
                     && let Some(attacker) = player_registry.get_by_entity_id(attacker_eid).await
                 {
                     let magnitude = dist_xz(me.x, me.z, attacker.x, attacker.z).max(0.0001);
@@ -615,8 +615,8 @@ pub async fn play(
                     }).await;
                 }
             }
-            Ok((eid, x, y, z, item_id, count, metadata)) = item_rx.recv() => {
-                let visible = if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+            Ok((eid, x, y, z, item_id, count, metadata, vx, vy, vz)) = item_rx.recv() => {
+                let visible = if let Some(me) = player_registry.get(&state.uuid).await {
                     entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
                 } else {
                     false
@@ -625,6 +625,8 @@ pub async fn play(
                 if !visible {
                     continue;
                 }
+                let v_max = i16::MAX as f64;
+                let v_min = i16::MIN as f64;
                 send_packet(framed, SpawnObject {
                     entity_id: eid,
                     object_type: 2, // itemstack
@@ -632,9 +634,9 @@ pub async fn play(
                     yaw: 0,
                     pitch: 0,
                     data: 1, // non zero to send velocity
-                    vx: 0,
-                    vy: 100,
-                    vz: 0,
+                    vx: (vx * 8000.0).clamp(v_min, v_max) as i16,
+                    vy: (vy * 8000.0).clamp(v_min, v_max) as i16,
+                    vz: (vz * 8000.0).clamp(v_min, v_max) as i16,
                 }).await;
                 send_packet(framed, ItemEntityMetadata {
                     entity_id: eid,
@@ -653,22 +655,22 @@ pub async fn play(
                 }).await;
             }
             Ok((_uuid, gamemode)) = gm_rx.recv() => {
-                if state.uuid.is_some() {
-                    state.gamemode = gamemode;
-                    let gm_u8 = u8::from(gamemode);
-                    send_packet(framed, ChangeGameState::set_gamemode(gm_u8)).await;
+                // FIXME: where did i put this???
+                // if state.uuid.is_some() {
+                state.gamemode = gamemode;
+                let gm_u8 = u8::from(gamemode);
+                send_packet(framed, ChangeGameState::set_gamemode(gm_u8)).await;
 
-                    let (flags, fly_speed, walk_speed) = match gm_u8 {
-                        1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
-                        3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
-                        _ => (0x00, 0.05, 0.1),
-                    };
-                    send_packet(framed, PlayerAbilities {
-                        flags,
-                        fly_speed,
-                        walk_speed
-                    }).await;
-                }
+                let (flags, fly_speed, walk_speed) = match gm_u8 {
+                    1 => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
+                    3 => (0x01 | 0x02 | 0x04, 0.05, 0.1),
+                    _ => (0x00, 0.05, 0.1),
+                };
+                send_packet(framed, PlayerAbilities {
+                    flags,
+                    fly_speed,
+                    walk_speed
+                }).await;
             }
             result = framed.next() => {
                 let Some(result) = result else {
@@ -683,13 +685,11 @@ pub async fn play(
                                 let (actual, last) = state.latency_ms;
                                 state.latency_ms.1 = actual;
                                 state.latency_ms.0 = sent_time.elapsed().as_millis() as i32;
-                                if let Some(uuid) = state.uuid {
-                                    player_registry.update_latency(uuid, actual).await;
-                                    if ping_to_bar(actual) == ping_to_bar(last) {
-                                        continue;
-                                    }
-                                    channels.ping_tx.send((uuid, actual)).ok();
+                                player_registry.update_latency(state.uuid, actual).await;
+                                if ping_to_bar(actual) == ping_to_bar(last) {
+                                    continue;
                                 }
+                                channels.ping_tx.send((state.uuid, actual)).ok();
                             }
                             continue;
                         }
@@ -705,11 +705,12 @@ pub async fn play(
                                 .as_ref()
                                 .map(|s| s.item_id)
                                 .unwrap_or(-1);
-                            if let Some(uuid) = state.uuid {
-                                player_registry.update_held_slot(uuid, slot).await;
-                                player_registry.update_held_item(uuid, state.held_item).await;
-                            }
+
+                            player_registry.update_held_slot(state.uuid, slot).await;
+                            player_registry.update_held_item(state.uuid, state.held_item).await;
+
                             send_held_equip(&channels.equip_tx, state);
+
                             state.eating = None;
                             state.bow_charging = None;
                             state.try_retract_fishing_hook(&projectiles, &channels.despawn_tx).await;
@@ -811,12 +812,15 @@ pub async fn play(
                                                 let x = bx as f64 + 0.5;
                                                 let y = by as f64 + 0.5;
                                                 let z = bz as f64 + 0.5;
+                                                let (vx, vy, vz) = break_drop_velocity();
+
                                                 channels.item_tx.send((
                                                     drop_eid,
                                                     x, y, z,
                                                     drop_id,
                                                     drop_count,
-                                                    drop_metadata
+                                                    drop_metadata,
+                                                    vx, vy, vz
                                                 )).ok();
                                                 item_spawn_times.write().await.insert(drop_eid, Instant::now());
                                                 entity_tracker.write().await.track(
@@ -896,9 +900,9 @@ pub async fn play(
                                             .as_ref()
                                             .map(|s| s.item_id)
                                             .unwrap_or(-1);
-                                        if let Some(uuid) = state.uuid {
-                                            player_registry.update_held_item(uuid, state.held_item).await;
-                                        }
+
+                                        player_registry.update_held_item(state.uuid, state.held_item).await;
+
                                         send_held_equip(&channels.equip_tx, state);
 
                                         if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
@@ -907,15 +911,21 @@ pub async fn play(
                                             let drop_y = p.y + 1.0;
                                             let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
 
+                                            let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
                                             let drop_eid = next_entity_id();
+
                                             channels.item_tx.send((
                                                 drop_eid,
                                                 drop_x, drop_y, drop_z,
                                                 dropped.item_id,
                                                 dropped.count,
-                                                dropped.metadata
+                                                dropped.metadata,
+                                                vx, vy, vz
                                             )).ok();
                                             item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                            entity_tracker.write().await.track(
+                                                TrackedEntity::item(drop_eid, drop_x, drop_y, drop_z, config.tracking.item)
+                                            );
                                             item_positions.write().await.insert(
                                                 drop_eid,
                                                 (drop_eid, drop_x, drop_y, drop_z,
@@ -940,9 +950,7 @@ pub async fn play(
 
                                         let power = ((charge_secs * charge_secs + charge_secs * 2.0) / 3.0).clamp(0.0, 1.0);
 
-                                        if let Some(uuid) = state.uuid
-                                            && let Some(p) = player_registry.get(&uuid).await
-                                        {
+                                        if let Some(p) = player_registry.get(&state.uuid).await {
                                             let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                                             let speed = power as f64 * 3.0;
                                             let arrow_eid = next_entity_id();
@@ -978,8 +986,7 @@ pub async fn play(
                                         let meta = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.metadata).unwrap_or(0);
                                         let is_splash = (meta & 0x4000i16) != 0;
                                         if is_splash
-                                            && let Some(uuid) = state.uuid
-                                            && let Some(p) = player_registry.get(&uuid).await
+                                            && let Some(p) = player_registry.get(&state.uuid).await
                                         {
                                             let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
                                             let speed = 0.5;
@@ -1012,9 +1019,8 @@ pub async fn play(
                                                 item_id: -1, count: 0, metadata: 0
                                             }).await;
                                             state.held_item = -1;
-                                            if let Some(uuid) = state.uuid {
-                                                player_registry.update_held_item(uuid, -1).await;
-                                            }
+
+                                            player_registry.update_held_item(state.uuid, -1).await;
                                             send_held_equip(&channels.equip_tx, state);
                                         }
                                     }
@@ -1056,7 +1062,7 @@ pub async fn play(
                                     .map(|s| s.metadata as u8)
                                     .unwrap_or(0);
 
-                                let yaw = player_registry.get(&state.uuid.unwrap_or_default())
+                                let yaw = player_registry.get(&state.uuid)
                                     .await
                                     .map(|p| p.yaw)
                                     .unwrap_or(0.0);
@@ -1093,9 +1099,8 @@ pub async fn play(
                                     .as_ref()
                                     .map(|s| s.item_id)
                                     .unwrap_or(-1);
-                                if let Some(uuid) = state.uuid {
-                                    player_registry.update_held_item(uuid, state.held_item).await;
-                                }
+
+                                player_registry.update_held_item(state.uuid, state.held_item).await;
                                 send_held_equip(&channels.equip_tx, state);
                             }
 
@@ -1126,7 +1131,7 @@ pub async fn play(
                                 }
 
                                 let ctx = CommandContext {
-                                    sender: state.name.clone().unwrap_or_default(),
+                                    sender: state.name.clone(),
                                     args,
                                     reply_target: state.last_message_from.clone(),
                                     is_op: state.is_op
@@ -1146,18 +1151,16 @@ pub async fn play(
                                 }
                                 continue;
                             }
-                            if let Some(ref name) = state.name {
-                                let max_len = match state.client_brand.as_deref() {
-                                    Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
-                                    _ => 100,
-                                };
-                                if chat.message.len() > max_len {
-                                    continue;
-                                }
-                                let json = ChatBuilder::chat_message(&config.chat.format, name, &chat.message);
-
-                                channels.chat_tx.send(json).ok();
+                            let max_len = match state.client_brand.as_deref() {
+                                Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
+                                _ => 100,
+                            };
+                            if chat.message.len() > max_len {
+                                continue;
                             }
+                            let json = ChatBuilder::chat_message(&config.chat.format, &state.name, &chat.message);
+
+                            channels.chat_tx.send(json).ok();
                             continue;
                         }
                         if let Some(tab) = packet.as_any().downcast_ref::<TabComplete>() {
@@ -1185,8 +1188,7 @@ pub async fn play(
                             .or_else(|| packet.as_any().downcast_ref::<PlayerOnGround>().map(Into::into));
 
                         if let Some(mv) = movement
-                            && let Some(uuid) = state.uuid
-                            && let Some(p) = player_registry.get(&uuid).await
+                            && let Some(p) = player_registry.get(&state.uuid).await
                         {
                             let (x, y, z) = mv.position.unwrap_or((p.x, p.y, p.z));
                             let (yaw, pitch) = mv.rotation.unwrap_or((p.yaw, p.pitch));
@@ -1217,9 +1219,9 @@ pub async fn play(
                                     if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
                                         if !state.first_position_received {
                                             state.first_position_received = true;
-                                            player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
+                                            player_registry.update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground).await;
                                             channels.pos_tx.send(MovementBroadcast {
-                                                uuid,
+                                                uuid: state.uuid,
                                                 entity_id: state.entity_id,
                                                 kind: MoveKind::Teleport {
                                                     x, y, z, yaw, pitch,
@@ -1249,7 +1251,7 @@ pub async fn play(
 
                             if position_changed || rotation_changed {
                                 handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
-                                player_registry.update_position(&uuid, x, y, z, yaw, pitch, mv.on_ground).await;
+                                player_registry.update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground).await;
                             }
 
                             let kind = if needs_teleport {
@@ -1276,7 +1278,7 @@ pub async fn play(
                             };
 
                             channels.pos_tx.send(MovementBroadcast {
-                                uuid,
+                                uuid: state.uuid,
                                 entity_id: state.entity_id,
                                 kind,
                                 head_yaw: if rotation_changed {
@@ -1348,9 +1350,7 @@ pub async fn play(
                                     && idx == state.held_slot as usize
                                 {
                                     state.held_item = creative.item_id;
-                                    if let Some(uuid) = state.uuid {
-                                        player_registry.update_held_item(uuid, state.held_item).await;
-                                    }
+                                    player_registry.update_held_item(state.uuid, state.held_item).await;
                                     send_held_equip(&channels.equip_tx, state);
                                 }
 
@@ -1404,9 +1404,7 @@ pub async fn play(
                                 state.food_saturation = 5.0;
                                 state.is_dead = false;
 
-                                if let Some(uuid) = state.uuid {
-                                    player_registry.update_health(uuid, state.health, state.food, state.food_saturation).await;
-                                }
+                                player_registry.update_health(state.uuid, state.health, state.food, state.food_saturation).await;
 
                                 send_packet(framed, Respawn {
                                     dimension: 0,
@@ -1421,9 +1419,7 @@ pub async fn play(
                                     *spawn_point.read().await
                                 };
 
-                                if let Some(uuid) = state.uuid {
-                                    player_registry.update_position(&uuid, sx, sy, sz, syaw, spitch, false).await;
-                                }
+                                player_registry.update_position(&state.uuid, sx, sy, sz, syaw, spitch, false).await;
 
                                 let spawn_cx = (sx as i32) >> 4;
                                 let spawn_cz = (sz as i32) >> 4;
@@ -1461,46 +1457,44 @@ pub async fn play(
                         }
 
                         if let Some(action) = packet.as_any().downcast_ref::<EntityAction>() {
-                            if let Some(uuid) = state.uuid {
-                                let update = match action.action {
-                                    EntityActionType::LeaveBed => {
-                                        state.is_sleeping = false;
-                                        player_registry.update_sleeping(uuid, false).await;
-                                        channels.anim_tx.send((state.entity_id, EntityAnimationType::LeaveBed)).ok();
-                                        continue;
-                                    }
-                                    EntityActionType::StartSneaking => Some((true, true)),
-                                    EntityActionType::StopSneaking => Some((true, false)),
-                                    EntityActionType::StartSprinting => {
-                                        // server authority dont allow sprint if food < 6
-                                        if state.food > 6 {
-                                            Some((false, true))  // sprinting on
-                                        } else {
-                                            // deny sprint
-                                            send_packet(framed, PlayerAbilities {
-                                                flags: 0x00,
-                                                fly_speed: 0.05,
-                                                walk_speed: 0.1,
-                                            }).await;
-                                            None
-                                        }
-                                    }
-                                    EntityActionType::StopSprinting => Some((false, false)),
-                                    _ => None,
-                                };
-
-                                if let Some((sneaking, value)) = update {
-                                    if sneaking {
-                                        state.is_sneaking = value;
-                                        player_registry.update_sneaking(uuid, value).await;
+                            let update = match action.action {
+                                EntityActionType::LeaveBed => {
+                                    state.is_sleeping = false;
+                                    player_registry.update_sleeping(state.uuid, false).await;
+                                    channels.anim_tx.send((state.entity_id, EntityAnimationType::LeaveBed)).ok();
+                                    continue;
+                                }
+                                EntityActionType::StartSneaking => Some((true, true)),
+                                EntityActionType::StopSneaking => Some((true, false)),
+                                EntityActionType::StartSprinting => {
+                                    // server authority dont allow sprint if food < 6
+                                    if state.food > 6 {
+                                        Some((false, true))  // sprinting on
                                     } else {
-                                        state.is_sprinting = value;
-                                        player_registry.update_sprinting(uuid, value).await;
+                                        // deny sprint
+                                        send_packet(framed, PlayerAbilities {
+                                            flags: 0x00,
+                                            fly_speed: 0.05,
+                                            walk_speed: 0.1,
+                                        }).await;
+                                        None
                                     }
+                                }
+                                EntityActionType::StopSprinting => Some((false, false)),
+                                _ => None,
+                            };
 
-                                    if let Some(player) = player_registry.get(&uuid).await {
-                                        channels.meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
-                                    }
+                            if let Some((sneaking, value)) = update {
+                                if sneaking {
+                                    state.is_sneaking = value;
+                                    player_registry.update_sneaking(state.uuid, value).await;
+                                } else {
+                                    state.is_sprinting = value;
+                                    player_registry.update_sprinting(state.uuid, value).await;
+                                }
+
+                                if let Some(player) = player_registry.get(&state.uuid).await {
+                                    channels.meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
                                 }
                             }
                             continue;
@@ -1520,7 +1514,7 @@ pub async fn play(
                                             continue;
                                         }
                                         player_registry.update_no_damage_ticks(target.uuid, 10).await;
-                                        if let Some(me) = player_registry.get(&state.uuid.unwrap_or_default()).await {
+                                        if let Some(me) = player_registry.get(&state.uuid).await {
                                             let reach = if state.gamemode == GameMode::Creative {
                                                 5.0
                                             } else {
@@ -1565,7 +1559,7 @@ pub async fn play(
                                                 channels.chat_tx.send(ChatBuilder::plain_json(&format!(
                                                     "{} was slain by {}",
                                                     target.username,
-                                                    state.name.clone().unwrap_or_default()
+                                                    state.name.clone()
                                                 ))).ok();
 
                                                 let xp_amount = level_to_xp_drop(1); // TODO: add xp_level, xp_total to coral_server::Player
@@ -1615,9 +1609,7 @@ pub async fn play(
 
                         if let Some(settings) = packet.as_any().downcast_ref::<ClientSettings>() {
                             state.skin_parts = settings.skin_parts;
-                            if let Some(uuid) = state.uuid {
-                                player_registry.update_skin_parts(uuid, settings.skin_parts).await;
-                            }
+                            player_registry.update_skin_parts(state.uuid, settings.skin_parts).await;
                             channels.meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
                             continue;
                         }
@@ -1646,50 +1638,48 @@ pub async fn play(
             }
         }
     }
-    if let (Some(uuid), Some(name)) = (state.uuid, &state.name) {
-        let mut inventory_data = vec![];
-        for i in 0..46i16 {
-            if let Some(idx) = Inventory::packet_to_internal(i)
-                && let Some(slot) = &state.inventory.slots[idx]
-            {
-                inventory_data.push((i, slot.item_id, slot.count, slot.metadata));
-            }
+    let mut inventory_data = vec![];
+    for i in 0..46i16 {
+        if let Some(idx) = Inventory::packet_to_internal(i)
+            && let Some(slot) = &state.inventory.slots[idx]
+        {
+            inventory_data.push((i, slot.item_id, slot.count, slot.metadata));
         }
-        if let Some(p) = player_registry.get(&uuid).await {
-            let data = PlayerData {
-                x: p.x,
-                y: p.y,
-                z: p.z,
-                yaw: p.yaw,
-                pitch: p.pitch,
-                health: state.health,
-                food: state.food,
-                food_saturation: state.food_saturation,
-                gamemode: u8::from(state.gamemode),
-                inventory: inventory_data,
-                xp_total: state.xp_total,
-                bed_spawn: state.bed_spawn,
-            };
-            save_player_data(&world_dir, &uuid, &data).await;
-            channels.join_tx.send((p, false)).ok();
-        }
-        player_registry.remove(&uuid).await;
-        entity_tracker.write().await.untrack(state.entity_id);
-        if !player_registry.players.read().await.is_empty() {
-            channels
-                .chat_tx
-                .send(ChatBuilder::colored_json(
-                    &format!("{} left the game", name),
-                    ChatColor::Yellow,
-                ))
-                .ok();
-        }
-        println!(
-            "{} left the game; Online: {}",
-            name,
-            player_registry.get_online_count().await
-        );
     }
+    if let Some(p) = player_registry.get(&state.uuid).await {
+        let data = PlayerData {
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            yaw: p.yaw,
+            pitch: p.pitch,
+            health: state.health,
+            food: state.food,
+            food_saturation: state.food_saturation,
+            gamemode: u8::from(state.gamemode),
+            inventory: inventory_data,
+            xp_total: state.xp_total,
+            bed_spawn: state.bed_spawn,
+        };
+        save_player_data(&world_dir, &state.uuid, &data).await;
+        channels.join_tx.send((p, false)).ok();
+    }
+    player_registry.remove(&state.uuid).await;
+    entity_tracker.write().await.untrack(state.entity_id);
+    if !player_registry.players.read().await.is_empty() {
+        channels
+            .chat_tx
+            .send(ChatBuilder::colored_json(
+                &format!("{} left the game", state.name),
+                ChatColor::Yellow,
+            ))
+            .ok();
+    }
+    println!(
+        "{} left the game; Online: {}",
+        state.name,
+        player_registry.get_online_count().await
+    );
 }
 
 // ;) nPaper
@@ -1723,11 +1713,9 @@ async fn apply_potion_effect(
         InstantHealth => {
             let heal = 4.0 * (1 << pe.amplifier) as f32;
             state.health = (state.health + heal).min(20.0 + state.absorption_hp);
-            if let Some(uuid) = state.uuid {
-                player_registry
-                    .update_health(uuid, state.health, state.food, state.food_saturation)
-                    .await;
-            }
+            player_registry
+                .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                .await;
             send_packet(
                 framed,
                 UpdateHealth {
@@ -1795,11 +1783,9 @@ async fn apply_effect(
     )
     .await;
 
-    if let Some(uuid) = state.uuid {
-        player_registry
-            .update_effects(uuid, state.active_effects.clone())
-            .await;
-    }
+    player_registry
+        .update_effects(state.uuid, state.active_effects.clone())
+        .await;
 }
 async fn remove_effect(
     framed: &mut Framed<TcpStream, Codec>,
@@ -1989,9 +1975,7 @@ async fn sync_held_slot(
     )
     .await;
     if broke {
-        if let Some(uuid) = state.uuid {
-            player_registry.update_held_item(uuid, -1).await;
-        }
+        player_registry.update_held_item(state.uuid, -1).await;
         send_held_equip(equip_tx, state);
     }
 }
@@ -2045,11 +2029,11 @@ async fn handle_landing(
                 "game.player.hurt.fall.small"
             };
             sound_tx.send((sound.to_string(), x, y, z, 1.0, 63)).ok();
-            if died && let Some(ref name) = state.name {
+            if died {
                 chat_tx
                     .send(ChatBuilder::plain_json(&format!(
                         "{} hit the ground too hard",
-                        name
+                        state.name
                     )))
                     .ok();
             }

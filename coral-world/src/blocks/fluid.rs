@@ -128,6 +128,7 @@ impl BlockBehavior for Fluid {
     }
 }
 
+// TODO: in the future use BLOCK#is_replaceable()
 pub fn is_replaceable(block_id: u8) -> bool {
     matches!(block_id, 0 | 6 | 31 | 32 | 37 | 38 | 39 | 40 | 51)
     // air, sapling, tall grass, dead bush, flowers, mushrooms, fire

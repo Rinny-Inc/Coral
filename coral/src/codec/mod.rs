@@ -218,7 +218,7 @@ async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Code
 }
 
 struct PlayerState {
-    uuid: Option<Uuid>,
+    uuid: Uuid,
     entity_id: i32,
     gamemode: GameMode,
     held_item: i16,
@@ -236,7 +236,7 @@ struct PlayerState {
     is_flying: bool,
     was_on_ground: bool,
     latency_ms: (i32, i32),
-    name: Option<String>,
+    name: String,
     keep_alive_count: i32,
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
     inventory: Inventory,
@@ -268,9 +268,9 @@ struct PlayerState {
     last_message_from: Option<String>,
 }
 impl PlayerState {
-    fn new() -> Self {
+    fn new(uuid: Uuid, name: String) -> Self {
         Self {
-            uuid: None,
+            uuid,
             entity_id: 0,
             gamemode: GameMode::Survival,
             held_item: -1,
@@ -288,7 +288,7 @@ impl PlayerState {
             is_flying: false,
             was_on_ground: true,
             latency_ms: (0, 0),
-            name: None,
+            name,
             keep_alive_count: 0,
             last_sent_keep_alive: None,
             inventory: Inventory::new(),
@@ -366,11 +366,9 @@ impl PlayerState {
     ) {
         let (helmet, chest, legs, boots) = self.get_equipped_armor();
 
-        if let Some(uuid) = self.uuid {
-            player_registry
-                .update_armor(uuid, helmet, chest, legs, boots)
-                .await;
-        }
+        player_registry
+            .update_armor(self.uuid, helmet, chest, legs, boots)
+            .await;
 
         for (slot, item) in [(1, boots), (2, legs), (3, chest), (4, helmet)] {
             equip_tx.send((self.entity_id, slot, item, 1, 0)).ok();
@@ -403,12 +401,7 @@ impl PlayerState {
         self.health = (self.health - amount).max(0.0);
 
         player_registry
-            .update_health(
-                self.uuid.unwrap_or_default(),
-                self.health,
-                self.food,
-                self.food_saturation,
-            )
+            .update_health(self.uuid, self.health, self.food, self.food_saturation)
             .await;
 
         send_packet(
@@ -438,7 +431,6 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
-    let mut state = PlayerState::new();
     let mut framed = Framed::new(socket, codec);
 
     let Some(req) = state::preplay::pre_play(
@@ -466,6 +458,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
     };
 
     let client_protocol = req.client_protocol;
+    // uuid and name are known at this point
+    let mut state = PlayerState::new(req.uuid, req.profile.username.clone());
 
     make_player_join(
         &mut framed,
@@ -798,9 +792,7 @@ async fn make_player_join(
 
     join_tx.send((player, true)).ok();
 
-    state.uuid = Some(uuid);
     state.entity_id = entity_id;
-    state.name = Some(profile.username);
     state.gamemode = pgm;
     state.held_item = state.inventory.slots[state.held_slot as usize]
         .as_ref()

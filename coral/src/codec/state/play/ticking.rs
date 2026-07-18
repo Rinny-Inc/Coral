@@ -82,16 +82,15 @@ async fn tick_void_damage(
     chat_tx: &Arc<Sender<String>>,
 ) {
     if state.tick_count % 10 == 0
-        && let Some(uuid) = state.uuid
-        && let Some(p) = player_registry.get(&uuid).await
+        && let Some(p) = player_registry.get(&state.uuid).await
         && p.y < -64.0
     {
         let died = state.damage_player(framed, 4.0, player_registry).await;
-        if died && let Some(ref name) = state.name {
+        if died {
             chat_tx
                 .send(ChatBuilder::plain_json(&format!(
                     "{} fell out of the world",
-                    name
+                    state.name
                 )))
                 .ok();
         }
@@ -108,9 +107,7 @@ async fn tick_item_pickup(
     equip_tx: &Arc<Sender<EquipmentUpdate>>,
     sound_tx: &Arc<Sender<SoundEffect>>,
 ) {
-    if let Some(uuid) = state.uuid
-        && let Some(p) = player_registry.get(&uuid).await
-    {
+    if let Some(p) = player_registry.get(&state.uuid).await {
         let mut items = item_positions.write().await;
         let mut picked_up = vec![];
 
@@ -157,9 +154,7 @@ async fn tick_item_pickup(
 
                     if internal_idx == state.held_slot as usize {
                         state.held_item = *item_id;
-                        if let Some(uuid) = state.uuid {
-                            player_registry.update_held_item(uuid, *item_id).await;
-                        }
+                        player_registry.update_held_item(state.uuid, *item_id).await;
                         send_held_equip(equip_tx, state);
                     }
                 }
@@ -168,7 +163,7 @@ async fn tick_item_pickup(
         for eid in picked_up {
             items.remove(&eid);
             item_spawn_times.write().await.remove(&eid);
-            pickup_tx.send((state.entity_id, uuid, eid)).ok();
+            pickup_tx.send((state.entity_id, state.uuid, eid)).ok();
             let pitch = 63 + (rand::rng().random_range(-12i8..=12) as i16) as u8;
             sound_tx
                 .send(("random.pop".to_string(), p.x, p.y, p.z, 0.2, pitch))
@@ -213,9 +208,7 @@ async fn tick_eating(
             )
             .await;
             state.held_item = -1;
-            if let Some(uuid) = state.uuid {
-                player_registry.update_held_item(uuid, -1).await;
-            }
+            player_registry.update_held_item(state.uuid, -1).await;
             send_held_equip(equip_tx, state);
         } else if let Some((hunger, saturation)) = item_registry.food_value(state.held_item) {
             state.food = (state.food + hunger).min(20);
@@ -245,18 +238,14 @@ async fn tick_eating(
                 .await;
 
                 state.held_item = remaining.map(|(id, _, _)| id).unwrap_or(-1);
-                if let Some(uuid) = state.uuid {
-                    player_registry
-                        .update_held_item(uuid, state.held_item)
-                        .await;
-                }
+                player_registry
+                    .update_held_item(state.uuid, state.held_item)
+                    .await;
                 send_held_equip(equip_tx, state);
             }
-            if let Some(uuid) = state.uuid {
-                player_registry
-                    .update_health(uuid, state.health, state.food, state.food_saturation)
-                    .await;
-            }
+            player_registry
+                .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                .await;
             send_packet(
                 framed,
                 UpdateHealth {
@@ -267,9 +256,7 @@ async fn tick_eating(
             )
             .await;
 
-            if let Some(uuid) = state.uuid
-                && let Some(player) = player_registry.get(&uuid).await
-            {
+            if let Some(player) = player_registry.get(&state.uuid).await {
                 sound_tx
                     .send((
                         "random.burp".to_string(),
@@ -300,11 +287,9 @@ async fn tick_food_and_regen(
             if state.regen_timer >= 80 {
                 state.regen_timer = 0;
                 state.health = (state.health + 1.0).min(20.0);
-                if let Some(uuid) = state.uuid {
-                    player_registry
-                        .update_health(uuid, state.health, state.food, state.food_saturation)
-                        .await;
-                }
+                player_registry
+                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .await;
                 send_packet(
                     framed,
                     UpdateHealth {
@@ -328,11 +313,9 @@ async fn tick_food_and_regen(
                 state.food -= 1;
                 state.food_saturation = 0.0;
 
-                if let Some(uuid) = state.uuid {
-                    player_registry
-                        .update_health(uuid, state.health, state.food, state.food_saturation)
-                        .await;
-                }
+                player_registry
+                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .await;
 
                 send_packet(
                     framed,
@@ -353,11 +336,9 @@ async fn tick_food_and_regen(
                 state.health = (state.health + 1.0).min(20.0);
                 state.food_exhaustion += 3.0;
 
-                if let Some(uuid) = state.uuid {
-                    player_registry
-                        .update_health(uuid, state.health, state.food, state.food_saturation)
-                        .await;
-                }
+                player_registry
+                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .await;
                 send_packet(
                     framed,
                     UpdateHealth {
@@ -385,20 +366,18 @@ async fn tick_food_and_regen(
                 let just_died = state.health <= 0.0 && !state.is_dead;
                 state.is_dead = state.health <= 0.0;
 
-                if just_died && let Some(ref name) = state.name {
+                if just_died {
                     chat_tx
                         .send(ChatBuilder::plain_json(&format!(
                             "{} starved to death",
-                            name
+                            state.name
                         )))
                         .ok();
                 }
 
-                if let Some(uuid) = state.uuid {
-                    player_registry
-                        .update_health(uuid, state.health, state.food, state.food_saturation)
-                        .await;
-                }
+                player_registry
+                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .await;
 
                 send_packet(
                     framed,
@@ -456,11 +435,9 @@ async fn tick_effects(
 
     if regen_from_effect && state.health < 20.0 + state.absorption_hp {
         state.health = (state.health + 1.0).min(20.0 + state.absorption_hp);
-        if let Some(uuid) = state.uuid {
-            player_registry
-                .update_health(uuid, state.health, state.food, state.food_saturation)
-                .await;
-        }
+        player_registry
+            .update_health(state.uuid, state.health, state.food, state.food_saturation)
+            .await;
         send_packet(
             framed,
             UpdateHealth {
@@ -473,11 +450,9 @@ async fn tick_effects(
     }
     if poison_tick && state.health > 1.0 {
         state.health = (state.health - 1.0).max(1.0);
-        if let Some(uuid) = state.uuid {
-            player_registry
-                .update_health(uuid, state.health, state.food, state.food_saturation)
-                .await;
-        }
+        player_registry
+            .update_health(state.uuid, state.health, state.food, state.food_saturation)
+            .await;
         send_packet(
             framed,
             UpdateHealth {
@@ -490,9 +465,12 @@ async fn tick_effects(
     }
     if wither_tick {
         let died = state.damage_player(framed, 1.0, player_registry).await;
-        if died && let Some(ref name) = state.name {
+        if died {
             chat_tx
-                .send(ChatBuilder::plain_json(&format!("{} withered away", name)))
+                .send(ChatBuilder::plain_json(&format!(
+                    "{} withered away",
+                    state.name
+                )))
                 .ok();
         }
     }
@@ -503,9 +481,7 @@ async fn tick_effects(
             state.absorption_hp = 0.0;
         }
     }
-    if let Some(uuid) = state.uuid {
-        player_registry
-            .update_effects(uuid, state.active_effects.clone())
-            .await;
-    }
+    player_registry
+        .update_effects(state.uuid, state.active_effects.clone())
+        .await;
 }
