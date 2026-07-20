@@ -1,3 +1,4 @@
+#[derive(Debug, Clone)]
 pub enum NbtTag {
     Byte(i8),
     Short(i16),
@@ -154,6 +155,13 @@ impl NbtTag {
     pub fn as_i16_val(&self) -> Option<i16> {
         if let NbtTag::Short(v) = self {
             Some(*v)
+        } else {
+            None
+        }
+    }
+    pub fn as_string(&self) -> Option<&str> {
+        if let NbtTag::String(s) = self {
+            Some(s)
         } else {
             None
         }

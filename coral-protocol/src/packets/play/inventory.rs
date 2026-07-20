@@ -1,5 +1,8 @@
 use crate::{
-    packets::{PacketIn, PacketOut, play::chat::builder::ChatBuilder},
+    packets::{
+        PacketIn, PacketOut,
+        play::{block::BlockPosition, chat::builder::ChatBuilder},
+    },
     reader::Reader,
 };
 
@@ -163,6 +166,33 @@ impl Inventory {
         Self {
             slots: std::array::from_fn(|_| None),
         }
+    }
+
+    // FIXME: I think it doesnt behave as it should
+    pub fn insert_itemstack(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
+        // first merge into existing matching stacks
+        for existing in self.slots.iter_mut().take(36).flatten() {
+            if existing.item_id == stack.item_id
+                && existing.metadata == stack.metadata
+                && existing.count < 64
+            {
+                let space = 64 - existing.count;
+                let move_n = space.min(stack.count);
+                existing.count += move_n;
+                stack.count -= move_n;
+                if stack.count == 0 {
+                    return None;
+                }
+            }
+        }
+        // second place into empty space
+        for slot in self.slots.iter_mut().take(36) {
+            if slot.is_none() {
+                *slot = Some(stack);
+                return None;
+            }
+        }
+        Some(stack) // didnt fit
     }
 
     pub fn add_item_get_slot(
@@ -336,5 +366,20 @@ impl WindowType {
             WindowType::Hopper { .. } => "minecraft:hopper",
             WindowType::Beacon { .. } => "minecraft:beacon",
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct SignEditorOpen {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+impl PacketOut for SignEditorOpen {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x36);
+        let pos = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(pos);
+        Ok(())
     }
 }

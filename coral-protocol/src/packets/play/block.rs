@@ -5,6 +5,31 @@ use crate::{
     reader::Reader,
 };
 
+#[derive(Debug)]
+pub struct BlockPosition {
+    pub x: i32,
+    pub y: u8,
+    pub z: i32,
+}
+impl BlockPosition {
+    pub fn new(x: i32, y: u8, z: i32) -> Self {
+        Self { x, y, z }
+    }
+
+    pub fn from_long(position: i64) -> Self {
+        Self {
+            x: (position >> 38) as i32,
+            y: ((position >> 26) & 0xFFF) as u8,
+            z: (position << 38 >> 38) as i32,
+        }
+    }
+    pub fn to_long(&self) -> i64 {
+        ((self.x as i64 & 0x3FFFFFF) << 38)
+            | ((self.y as i64 & 0xFFF) << 26)
+            | (self.z as i64 & 0x3FFFFFF)
+    }
+}
+
 #[derive(Debug, PartialEq)]
 #[repr(u8)]
 pub enum DigStatus {
@@ -112,9 +137,7 @@ impl PacketIn for PlayerDig {
         let mut reader = Reader::new(buf);
         let status = reader.read_byte();
         let position = reader.read_long();
-        let x = (position >> 38) as i32;
-        let y = ((position >> 26) & 0xFFF) as u8;
-        let z = (position << 38 >> 38) as i32;
+        let BlockPosition { x, y, z } = BlockPosition::from_long(position);
         let face = BlockFace::try_from(reader.read_byte()).ok();
         Ok(PlayerDig {
             status: DigStatus::try_from(status).map_err(|e| {
@@ -141,9 +164,7 @@ impl PacketIn for PlayerBlockPlacement {
     {
         let mut reader = Reader::new(buf);
         let position = reader.read_long();
-        let x = (position >> 38) as i32;
-        let y = ((position >> 26) & 0xFFF) as u8;
-        let z = (position << 38 >> 38) as i32;
+        let BlockPosition { x, y, z } = BlockPosition::from_long(position);
         let face = BlockFace::try_from(reader.read_byte()).ok();
         let held_item_id = reader.read_i16();
         let (held_item_count, held_item_damage, cursor_x, cursor_y, cursor_z) = {
@@ -202,11 +223,8 @@ impl PacketOut for BlockChange {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x23);
 
-        // pack position into i64
-        let position: i64 = ((self.x as i64 & 0x3FFFFFF) << 38)
-            | ((self.y as i64 & 0xFFF) << 26)
-            | (self.z as i64 & 0x3FFFFFF);
-        writer.write_long(position);
+        let position = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(position);
 
         writer.write_varint(self.block_id << 4 | self.block_metadata as i32);
         Ok(())
@@ -225,10 +243,8 @@ impl PacketOut for BlockBreakAnimation {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x25);
         writer.write_varint(self.entity_id);
-        let position: i64 = ((self.x as i64 & 0x3FFFFFF) << 38)
-            | ((self.y as i64 & 0xFFF) << 26)
-            | (self.z as i64 & 0x3FFFFFF);
-        writer.write_long(position);
+        let position = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(position);
         writer.write_byte(self.destroy_stage);
         Ok(())
     }

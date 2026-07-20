@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -21,16 +21,18 @@ use uuid::Uuid;
 use crate::codec::state::play::{self, send_chunks, send_spawn_player, send_weather};
 use crate::codec::state::preplay::{JoinRequest, PrePlayContext};
 use crate::codec::state::throttle;
-use crate::{EquipmentUpdate, JoinLeave, ServerContext};
+use crate::{Channels, EquipmentUpdate, JoinLeave, ServerContext};
 use coral_config::Config;
 use coral_protocol::encryption::Encryption;
 use coral_protocol::packets::login::SetCompression;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
-use coral_protocol::packets::play::entity::EntityMetadata;
+use coral_protocol::packets::play::entity::{EntityMetadata, TileEntity};
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
-use coral_protocol::packets::play::inventory::{Inventory, ItemStack, WindowItems, WindowType};
+use coral_protocol::packets::play::inventory::{
+    Inventory, ItemStack, SetSlot, WindowItems, WindowType,
+};
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
 use coral_protocol::packets::{PacketIn, PacketOut};
@@ -265,6 +267,7 @@ struct PlayerState {
     window_id_counter: u8,
     cursor_item: Option<ItemStack>,
     crafting_grid: Vec<Option<ItemStack>>,
+    editing_sign: Option<(i32, i32, i32)>,
     last_message_from: Option<String>,
 }
 impl PlayerState {
@@ -317,6 +320,7 @@ impl PlayerState {
             window_id_counter: 1,
             cursor_item: None,
             crafting_grid: vec![],
+            editing_sign: None,
             last_message_from: None,
         }
     }
@@ -420,6 +424,105 @@ impl PlayerState {
         }
         false
     }
+
+    fn send_held_equip(&self, equip_tx: &Arc<Sender<EquipmentUpdate>>) {
+        let (item_id, count, metadata) = self.inventory.slots[self.held_slot as usize]
+            .as_ref()
+            .map(|s| (s.item_id, s.count, s.metadata))
+            .unwrap_or((-1, 0, 0));
+
+        equip_tx
+            .send((self.entity_id, 0, item_id, count, metadata))
+            .ok();
+    }
+
+    pub async fn send_hotbar_slot_packet(&self, framed: &mut Framed<TcpStream, Codec>) {
+        let hotbar_slot = self.held_slot as usize;
+        let packet_slot = (36 + hotbar_slot) as i16;
+        let remaining = self.inventory.slots[hotbar_slot].as_ref();
+
+        send_packet(
+            framed,
+            SetSlot {
+                window_id: 0,
+                slot: packet_slot,
+                item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
+                count: remaining.map(|s| s.count).unwrap_or(0),
+                metadata: remaining.map(|s| s.metadata).unwrap_or(0),
+            },
+        )
+        .await;
+    }
+
+    pub async fn sync_held_item_registry(
+        &mut self,
+        item_id: i16,
+        player_registry: &Arc<PlayerRegistry>,
+        channels: &Channels,
+    ) {
+        self.held_item = item_id;
+        player_registry.update_held_item(self.uuid, item_id).await;
+        self.send_held_equip(&channels.equip_tx);
+    }
+
+    pub async fn sync_hotbar_slot(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        player_registry: &Arc<PlayerRegistry>,
+        channels: &Channels,
+    ) {
+        self.send_hotbar_slot_packet(framed).await;
+        let item_id = self.inventory.slots[self.held_slot as usize]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(-1);
+        self.sync_held_item_registry(item_id, player_registry, channels)
+            .await;
+    }
+
+    pub async fn sync_held_slot_after_damage(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        player_registry: &Arc<PlayerRegistry>,
+        channels: &Channels,
+        broke: bool,
+    ) {
+        self.send_hotbar_slot_packet(framed).await;
+        if broke {
+            self.sync_held_item_registry(-1, player_registry, channels)
+                .await;
+        }
+    }
+
+    pub async fn consume_held_one(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        player_registry: &Arc<PlayerRegistry>,
+        channels: &Channels,
+    ) {
+        let hotbar_slot = self.held_slot as usize;
+        if let Some(slot) = self.inventory.slots[hotbar_slot].as_mut() {
+            slot.count -= 1;
+            if slot.count == 0 {
+                self.inventory.slots[hotbar_slot] = None;
+            }
+        }
+        self.sync_hotbar_slot(framed, player_registry, channels)
+            .await;
+    }
+
+    pub async fn replace_held_item(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        new_item: ItemStack,
+        player_registry: &Arc<PlayerRegistry>,
+        channels: &Channels,
+    ) {
+        let hotbar_slot = self.held_slot as usize;
+        self.inventory.slots[hotbar_slot] = Some(new_item);
+        self.sync_hotbar_slot(framed, player_registry, channels)
+            .await;
+    }
 }
 
 pub async fn process(socket: TcpStream, ctx: ServerContext) {
@@ -470,6 +573,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &ctx.channels.chat_tx,
         &ctx.world_blocks,
         &ctx.generator,
+        &ctx.tile_entities,
         &ctx.entity_tracker,
         &ctx.config,
         &ctx.spawn_point,
@@ -502,6 +606,7 @@ async fn make_player_join(
     chat_tx: &Arc<Sender<String>>,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
@@ -694,6 +799,7 @@ async fn make_player_join(
         client_protocol,
         world_blocks,
         generator,
+        tile_entities,
         state.chunk_x,
         state.chunk_z,
         config.server.view_distance,

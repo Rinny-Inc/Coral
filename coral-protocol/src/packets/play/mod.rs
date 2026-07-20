@@ -1,7 +1,10 @@
 use std::io::Error;
 
 use crate::{
-    packets::{PacketIn, PacketOut, play::chat::builder::ChatBuilder},
+    packets::{
+        PacketIn, PacketOut,
+        play::{block::BlockPosition, chat::builder::ChatBuilder},
+    },
     reader::Reader,
 };
 
@@ -34,11 +37,9 @@ pub struct PlayerAbilities {
 impl PacketOut for SpawnPosition {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x05);
-        let packed: i64 = ((self.x as i64 & 0x3FFFFFF) << 38)
-            | ((self.y as i64 & 0xFFF) << 26)
-            | (self.z as i64 & 0x3FFFFFF);
+        let position = BlockPosition::new(self.x, self.y as u8, self.z);
 
-        writer.write_long(packed);
+        writer.write_block_position(position);
         Ok(())
     }
 }

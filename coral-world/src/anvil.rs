@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use coral_protocol::packets::play::entity::TileEntity;
+
 use crate::{
     blocks::Block,
     generator::FlatWorldGenerator,
@@ -11,6 +13,7 @@ pub fn chunk_to_nbt(
     chunk_z: i32,
     blocks: &HashMap<(i32, u8, i32), Block>,
     generator: &FlatWorldGenerator,
+    tile_entities: Vec<NbtTag>,
     is_new_chunk: bool,
 ) -> Vec<u8> {
     let mut sections = vec![];
@@ -111,13 +114,108 @@ pub fn chunk_to_nbt(
         ("HeightMap".to_string(), NbtTag::IntArray(heightmap)),
         ("Sections".to_string(), NbtTag::List(10, sections)),
         ("Entities".to_string(), NbtTag::List(10, vec![])),
-        ("TileEntities".to_string(), NbtTag::List(10, vec![])),
+        ("TileEntities".to_string(), NbtTag::List(10, tile_entities)),
         ("TileTicks".to_string(), NbtTag::List(10, vec![])),
     ]);
 
     let root = NbtTag::Compound(vec![("Level".to_string(), level)]);
     let mut out = Vec::new();
     NbtTag::write_named_root("", &root, &mut out);
+    out
+}
+
+#[derive(Debug)]
+pub struct RawTileEntity {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub id: String,
+    pub compound: NbtTag,
+}
+
+pub fn tile_entity_to_nbt(x: i32, y: i32, z: i32, tile: &TileEntity) -> Option<NbtTag> {
+    match tile {
+        TileEntity::Sign { lines } => Some(NbtTag::Compound(vec![
+            ("id".to_string(), NbtTag::String("Sign".to_string())),
+            ("x".to_string(), NbtTag::Int(x)),
+            ("y".to_string(), NbtTag::Int(y)),
+            ("z".to_string(), NbtTag::Int(z)),
+            (
+                "Text1".to_string(),
+                NbtTag::String(format!(r#"{{"text":"{}"}}"#, escape_json(&lines[0]))),
+            ),
+            (
+                "Text2".to_string(),
+                NbtTag::String(format!(r#"{{"text":"{}"}}"#, escape_json(&lines[1]))),
+            ),
+            (
+                "Text3".to_string(),
+                NbtTag::String(format!(r#"{{"text":"{}"}}"#, escape_json(&lines[2]))),
+            ),
+            (
+                "Text4".to_string(),
+                NbtTag::String(format!(r#"{{"text":"{}"}}"#, escape_json(&lines[3]))),
+            ),
+        ])),
+        TileEntity::Chest { items } => {
+            let item_list: Vec<NbtTag> = items
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, item)| {
+                    let s = item.as_ref()?;
+                    Some(NbtTag::Compound(vec![
+                        ("Slot".to_string(), NbtTag::Byte(slot as i8)),
+                        ("id".to_string(), NbtTag::Int(s.item_id as i32)),
+                        ("Count".to_string(), NbtTag::Byte(s.count as i8)),
+                        ("Damage".to_string(), NbtTag::Short(s.metadata)),
+                    ]))
+                })
+                .collect();
+
+            Some(NbtTag::Compound(vec![
+                ("id".to_string(), NbtTag::String("Chest".to_string())),
+                ("x".to_string(), NbtTag::Int(x)),
+                ("y".to_string(), NbtTag::Int(y)),
+                ("z".to_string(), NbtTag::Int(z)),
+                ("Items".to_string(), NbtTag::List(10, item_list)),
+            ]))
+        }
+    }
+}
+
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+pub fn nbt_to_tile_entities(nbt_data: &[u8]) -> Vec<RawTileEntity> {
+    let mut reader = NbtReader::new(nbt_data);
+    let (_, root) = reader.read_named_root();
+    let mut out = vec![];
+
+    let Some(level) = root.get("Level") else {
+        return out;
+    };
+    let Some(list) = level.get("TileEntities").and_then(|t| t.as_list()) else {
+        return out;
+    };
+
+    for entry in list {
+        let Some(id) = entry.get("id").and_then(|t| t.as_string()) else {
+            continue;
+        };
+        let x = entry.get("x").and_then(|t| t.as_i32()).unwrap_or(0);
+        let y = entry.get("y").and_then(|t| t.as_i32()).unwrap_or(0);
+        let z = entry.get("z").and_then(|t| t.as_i32()).unwrap_or(0);
+
+        out.push(RawTileEntity {
+            x,
+            y,
+            z,
+            id: id.to_string(),
+            compound: entry.clone(),
+        });
+    }
+
     out
 }
 

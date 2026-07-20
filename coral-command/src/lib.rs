@@ -44,7 +44,7 @@ pub struct CommandDispatcher {
 impl CommandDispatcher {
     pub fn new() -> Self {
         Self {
-            commands: RwLock::new(HashMap::with_capacity(1)),
+            commands: RwLock::new(HashMap::with_capacity(15)), // TODO: add 1 for every commands
         }
     }
 

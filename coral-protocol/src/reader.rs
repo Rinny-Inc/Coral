@@ -1,4 +1,4 @@
-use crate::{CONTINUE_BIT, SEGMENT_BITS};
+use crate::{CONTINUE_BIT, SEGMENT_BITS, packets::play::block::BlockPosition};
 
 pub struct Reader<'a> {
     pub data: &'a [u8],
@@ -127,5 +127,13 @@ impl<'a> Reader<'a> {
             *byte = self.read_byte();
         }
         i64::from_be_bytes(bytes)
+    }
+
+    pub fn read_block_position(&mut self) -> BlockPosition {
+        let mut bytes = [0u8; 8];
+        for byte in &mut bytes {
+            *byte = self.read_byte();
+        }
+        BlockPosition::from_long(i64::from_be_bytes(bytes))
     }
 }

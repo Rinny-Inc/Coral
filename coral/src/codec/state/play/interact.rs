@@ -8,13 +8,13 @@ use std::{
 };
 
 use coral_protocol::packets::play::{
-    block::PlayerBlockPlacement,
+    block::{BlockFace, PlayerBlockPlacement},
     chat::{
         ChatMessageOut,
         builder::{ChatBuilder, ChatColor},
     },
-    entity::{EntityAnimationType, UseBed},
-    inventory::{ItemStack, OpenWindow, SetSlot, WindowItems},
+    entity::{EntityAnimationType, TileEntity, UseBed},
+    inventory::{ItemStack, OpenWindow, SignEditorOpen, WindowItems},
 };
 use coral_server::{
     bounding_box::EntityBounds,
@@ -35,7 +35,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, WindowType, send_packet, state::play::send_held_equip},
+    codec::{Codec, PlayerState, WindowType, send_packet},
     fluid_sim::queue_fluid_update,
 };
 
@@ -140,116 +140,179 @@ pub async fn try_with_item_on_block(
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
     world_blocks: &Arc<WorldBlocks>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     generator: &Arc<FlatWorldGenerator>,
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
     clicked: Option<(i32, i32, i32)>,
 ) -> bool {
-    if place.held_item_id == 325 {
-        println!(
-            "[BUCKET] entered branch, checking ({}, {}, {})",
-            place.x, place.y, place.z
-        );
+    match place.held_item_id {
+        325 => {
+            println!(
+                "[BUCKET] entered branch, checking ({}, {}, {})",
+                place.x, place.y, place.z
+            );
 
-        let Some(p) = player_registry.get(&state.uuid).await else {
-            return false;
-        };
+            let Some(p) = player_registry.get(&state.uuid).await else {
+                return false;
+            };
 
-        // FIXME: might be problematic
-        let hit = match clicked {
-            Some(l) => Some((l.0, l.1, l.2)),
-            None => {
-                let eye_y = p.y + EntityBounds::player(p.is_sneaking).height;
-                raytrace_for_fluid(
-                    p.x,
-                    eye_y,
-                    p.z,
-                    p.yaw,
-                    p.pitch,
-                    6.0,
-                    &world_blocks,
-                    &generator,
-                )
-                .await
+            // FIXME: might be problematic
+            let hit = match clicked {
+                Some(l) => Some((l.0, l.1, l.2)),
+                None => {
+                    let eye_y = p.y + EntityBounds::player(p.is_sneaking).height;
+                    raytrace_for_fluid(
+                        p.x,
+                        eye_y,
+                        p.z,
+                        p.yaw,
+                        p.pitch,
+                        6.0,
+                        world_blocks,
+                        generator,
+                    )
+                    .await
+                }
+            };
+
+            println!("[BUCKET] raytrace hit = {:?}", hit);
+
+            let Some(hit) = hit else {
+                return false;
+            };
+
+            let y = hit.1 + 1;
+
+            let target = world_blocks.get(hit.0, y as u8, hit.2, generator).await;
+            println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
+
+            let Some(fluid) = Fluid::from_block_id(target.id) else {
+                println!("[BUCKET] not a fluid block, aborting");
+                return false;
+            };
+            if !Fluid::is_source(target.id, target.metadata) {
+                println!("[BUCKET] fluid found but not a source (falling/edge), aborting");
+                return false;
             }
-        };
 
-        println!("[BUCKET] raytrace hit = {:?}", hit);
+            println!("[BUCKET] confirmed source, removing");
+            // remove the source
+            world_blocks
+                .set(place.x, y as u8, place.z, Block::air())
+                .await;
+            channels.block_tx.send((place.x, y, place.z, 0, 0)).ok();
 
-        let Some(hit) = hit else {
-            return false;
-        };
+            // recalculate neighbor fluids (it may now drain)
+            queue_fluid_update(place.x, y, place.z, fluid_queue).await;
+            println!(
+                "[BUCKET] queued, queue len = {}",
+                fluid_queue.read().await.len()
+            );
 
-        let y = hit.1 + 1;
+            // repalce empty bucket with filled one (survival only)
+            if state.gamemode == GameMode::Survival {
+                let filled = fluid.bucket_item();
+                state
+                    .replace_held_item(
+                        framed,
+                        ItemStack {
+                            item_id: filled,
+                            count: 1,
+                            metadata: 0,
+                            durability: 0,
+                        },
+                        player_registry,
+                        channels,
+                    )
+                    .await;
+            }
 
-        let target = world_blocks.get(hit.0, y as u8, hit.2, &generator).await;
-        println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
-
-        let Some(fluid) = Fluid::from_block_id(target.id) else {
-            println!("[BUCKET] not a fluid block, aborting");
-            return false;
-        };
-        if !Fluid::is_source(target.id, target.metadata) {
-            println!("[BUCKET] fluid found but not a source (falling/edge), aborting");
-            return false;
+            let sound = match fluid.kind {
+                FluidKind::Water => "liquid.water",
+                FluidKind::Lava => "liquid.lava",
+            };
+            channels
+                .sound_tx
+                .send((
+                    sound.to_string(),
+                    place.x as f64 + 0.5,
+                    y as f64 + 0.5,
+                    place.z as f64 + 0.5,
+                    1.0,
+                    63,
+                ))
+                .ok();
+            return true;
         }
+        323 => {
+            let Some(face) = &place.face else {
+                return false;
+            };
+            let (block_id, meta, tx, ty, tz) = match face.clone() as u8 {
+                1 => {
+                    let yaw = player_registry
+                        .get(&state.uuid)
+                        .await
+                        .map(|p| p.yaw)
+                        .unwrap_or(0.0);
+                    let rotation = (((yaw + 180.0) / 22.5).round() as i32 & 0xF) as u8;
+                    (63u8, rotation, place.x, place.y as i32 + 1, place.z)
+                }
+                2..=5 => {
+                    let meta = match face.clone() as u8 {
+                        2 => 2,
+                        3 => 3,
+                        4 => 4,
+                        5 => 5,
+                        _ => 2,
+                    };
+                    let face = BlockFace::try_from(meta).unwrap();
+                    let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
+                    (68u8, meta, tx, ty, tz)
+                }
+                _ => return false,
+            };
 
-        println!("[BUCKET] confirmed source, removing");
-        // remove the source
-        world_blocks
-            .set(place.x, y as u8, place.z, Block::air())
-            .await;
-        channels.block_tx.send((place.x, y, place.z, 0, 0)).ok();
+            world_blocks
+                .set(tx, ty as u8, tz, Block::new(block_id, meta))
+                .await;
+            channels
+                .block_tx
+                .send((tx, ty, tz, block_id as i32, meta))
+                .ok();
 
-        // recalculate neighbor fluids (it may now drain)
-        queue_fluid_update(place.x, y, place.z, fluid_queue).await;
-        println!(
-            "[BUCKET] queued, queue len = {}",
-            fluid_queue.read().await.len()
-        );
+            tile_entities.write().await.insert(
+                (tx, ty, tz),
+                TileEntity::Sign {
+                    lines: [
+                        String::with_capacity(16),
+                        String::with_capacity(16),
+                        String::with_capacity(16),
+                        String::with_capacity(16),
+                    ],
+                },
+            );
 
-        // repalce empty bucket with filled one (survival only)
-        if state.gamemode == GameMode::Survival {
-            let hotbar = state.held_slot as usize;
-            let filled = fluid.bucket_item();
-            state.inventory.slots[hotbar] = Some(ItemStack {
-                item_id: filled,
-                count: 1,
-                metadata: 0,
-                durability: 0,
-            });
+            if state.gamemode == GameMode::Survival {
+                state
+                    .consume_held_one(framed, player_registry, channels)
+                    .await;
+            }
+
+            state.editing_sign = Some((tx, ty, tz));
             send_packet(
                 framed,
-                SetSlot {
-                    window_id: 0,
-                    slot: (36 + hotbar) as i16,
-                    item_id: filled,
-                    count: 1,
-                    metadata: 0,
+                SignEditorOpen {
+                    x: tx,
+                    y: ty,
+                    z: tz,
                 },
             )
             .await;
-            state.held_item = filled;
-            player_registry.update_held_item(state.uuid, filled).await;
-            send_held_equip(&channels.equip_tx, state);
+            return true;
         }
-
-        let sound = match fluid.kind {
-            FluidKind::Water => "liquid.water",
-            FluidKind::Lava => "liquid.lava",
-        };
-        channels
-            .sound_tx
-            .send((
-                sound.to_string(),
-                place.x as f64 + 0.5,
-                y as f64 + 0.5,
-                place.z as f64 + 0.5,
-                1.0,
-                63,
-            ))
-            .ok();
-        return true;
+        _ => {}
     }
 
     let Some(face) = &place.face else {
@@ -283,27 +346,19 @@ pub async fn try_with_item_on_block(
 
         // empty the bucket only in survival mode
         if state.gamemode == GameMode::Survival {
-            let hotbar = state.held_slot as usize;
-            state.inventory.slots[hotbar] = Some(ItemStack {
-                item_id: 325,
-                count: 1,
-                metadata: 0,
-                durability: 0,
-            });
-            send_packet(
-                framed,
-                SetSlot {
-                    window_id: 0,
-                    slot: (36 + hotbar) as i16,
-                    item_id: 325,
-                    count: 1,
-                    metadata: 0,
-                },
-            )
-            .await;
-            state.held_item = 325;
-            player_registry.update_held_item(state.uuid, 325).await;
-            send_held_equip(&channels.equip_tx, state);
+            state
+                .replace_held_item(
+                    framed,
+                    ItemStack {
+                        item_id: 325,
+                        count: 1,
+                        metadata: 0,
+                        durability: 0,
+                    },
+                    player_registry,
+                    channels,
+                )
+                .await;
         }
 
         let sound = match fluid.kind {
@@ -330,7 +385,7 @@ pub async fn try_with_block(
     world_blocks: &Arc<WorldBlocks>,
     world_time: &Arc<AtomicI64>,
     generator: &Arc<FlatWorldGenerator>,
-    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
 ) -> bool {
@@ -345,6 +400,7 @@ pub async fn try_with_block(
         state,
         player_registry,
         world_blocks,
+        tile_entities,
         generator,
         fluid_queue,
         channels,
@@ -362,7 +418,7 @@ pub async fn try_with_block(
                     framed,
                     state,
                     (place.x, place.y as i32, place.z),
-                    chest_storage,
+                    tile_entities,
                 )
                 .await;
                 return true;
@@ -420,7 +476,7 @@ async fn open_chest(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     pos: (i32, i32, i32),
-    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
 ) {
     state.window_id_counter = state.window_id_counter.wrapping_add(1);
     if state.window_id_counter == 0 {
@@ -429,8 +485,13 @@ async fn open_chest(
     let window_id = state.window_id_counter;
 
     let contents = {
-        let mut storage = chest_storage.write().await;
-        storage.entry(pos).or_insert_with(|| vec![None; 27]).clone()
+        let mut storage = tile_entities.write().await;
+        match storage.entry(pos).or_insert_with(|| TileEntity::Chest {
+            items: vec![None; 27],
+        }) {
+            TileEntity::Chest { items } => items.clone(),
+            _ => vec![None; 27],
+        }
     };
 
     let window_type = WindowType::Chest { window_id, pos };

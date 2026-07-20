@@ -36,7 +36,7 @@ pub struct PacketRegistry {
 
 macro_rules! register_packet_handers { // GOD DAMN THIS SHIT IS STILL ALIEN AHAHAH
     ($($state:expr, $id:expr => $ty:path;)+) => {{
-        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(26); // TODO: add 1 for every new packets
+        let mut handlers: HashMap<PacketKey, DecoderFn> = HashMap::with_capacity(27); // TODO: add 1 for every new packets
         $(
             handlers.insert(
                 PacketKey {
@@ -71,6 +71,7 @@ impl PacketRegistry {
             EnumProtocol::Play, 0x08 => play::block::PlayerBlockPlacement;
             EnumProtocol::Play, 0x09 => play::block::HeldItemChange;
             EnumProtocol::Play, 0x10 => play::inventory::CreativeInventoryAction;
+            EnumProtocol::Play, 0x12 => play::entity::UpdateSign;
             EnumProtocol::Play, 0x13 => play::PlayerAbilities;
             EnumProtocol::Play, 0x14 => play::chat::TabComplete;
             EnumProtocol::Play, 0x15 => play::ClientSettings;

@@ -20,7 +20,7 @@ use crate::{
     BreakAnimation, Channels, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect,
     codec::{
         Codec, PlayerState, send_packet,
-        state::play::{apply_potion_effect, remove_effect, send_held_equip},
+        state::play::{apply_potion_effect, remove_effect},
     },
 };
 
@@ -35,15 +35,7 @@ pub async fn handle_tick(
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
     channels: &Channels,
 ) {
-    tick_eating(
-        framed,
-        state,
-        player_registry,
-        item_registry,
-        &channels.equip_tx,
-        &channels.sound_tx,
-    )
-    .await;
+    tick_eating(framed, state, player_registry, item_registry, channels).await;
     tick_item_pickup(
         framed,
         state,
@@ -155,7 +147,7 @@ async fn tick_item_pickup(
                     if internal_idx == state.held_slot as usize {
                         state.held_item = *item_id;
                         player_registry.update_held_item(state.uuid, *item_id).await;
-                        send_held_equip(equip_tx, state);
+                        state.send_held_equip(equip_tx);
                     }
                 }
             }
@@ -176,8 +168,7 @@ async fn tick_eating(
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
-    equip_tx: &Arc<Sender<EquipmentUpdate>>,
-    sound_tx: &Arc<Sender<SoundEffect>>,
+    channels: &Channels,
 ) {
     if let Some(started) = state.eating
         && started.elapsed().as_millis() >= 1600
@@ -193,56 +184,16 @@ async fn tick_eating(
             for pe in effects {
                 apply_potion_effect(framed, state, player_registry, pe).await;
             }
-            let hotbar_slot = state.held_slot as usize;
-            state.inventory.slots[hotbar_slot] = None;
-            let packet_slot = (36 + hotbar_slot) as i16;
-            send_packet(
-                framed,
-                SetSlot {
-                    window_id: 0,
-                    slot: packet_slot,
-                    item_id: -1,
-                    count: 0,
-                    metadata: 0,
-                },
-            )
-            .await;
-            state.held_item = -1;
-            player_registry.update_held_item(state.uuid, -1).await;
-            send_held_equip(equip_tx, state);
+            state
+                .consume_held_one(framed, player_registry, channels)
+                .await;
         } else if let Some((hunger, saturation)) = item_registry.food_value(state.held_item) {
             state.food = (state.food + hunger).min(20);
             state.food_saturation = (state.food_saturation + saturation).min(state.food as f32);
 
-            let hotbar_slot = state.held_slot as usize;
-            if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
-                slot.count -= 1;
-                let remaining = if slot.count == 0 {
-                    state.inventory.slots[hotbar_slot] = None;
-                    None
-                } else {
-                    Some((slot.item_id, slot.count, slot.metadata))
-                };
-
-                let packed_slot = (36 + hotbar_slot) as i16;
-                send_packet(
-                    framed,
-                    SetSlot {
-                        window_id: 0,
-                        slot: packed_slot,
-                        item_id: remaining.map(|(id, _, _)| id).unwrap_or(-1),
-                        count: remaining.map(|(_, c, _)| c).unwrap_or(0),
-                        metadata: remaining.map(|(_, _, m)| m).unwrap_or(0),
-                    },
-                )
+            state
+                .consume_held_one(framed, player_registry, channels)
                 .await;
-
-                state.held_item = remaining.map(|(id, _, _)| id).unwrap_or(-1);
-                player_registry
-                    .update_held_item(state.uuid, state.held_item)
-                    .await;
-                send_held_equip(equip_tx, state);
-            }
             player_registry
                 .update_health(state.uuid, state.health, state.food, state.food_saturation)
                 .await;
@@ -257,7 +208,8 @@ async fn tick_eating(
             .await;
 
             if let Some(player) = player_registry.get(&state.uuid).await {
-                sound_tx
+                channels
+                    .sound_tx
                     .send((
                         "random.burp".to_string(),
                         player.x,

@@ -10,15 +10,17 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{
     PacketRegistry,
     play::{
-        chat::builder::ChatBuilder, entity::EntityAnimationType, game::EntityStatusType,
-        inventory::ItemStack, movement::MovementBroadcast,
+        chat::builder::ChatBuilder,
+        entity::{EntityAnimationType, TileEntity},
+        game::EntityStatusType,
+        movement::MovementBroadcast,
     },
 };
 use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EquipmentUpdate,
     GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, KickRequest, MetadataUpdate, ParticleEffect,
-    PingUpdate, PrivateMessage, ProjectileMove, SoundEffect, SplashEffect, TeleportRequest,
-    TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
+    PingUpdate, PrivateMessage, ProjectileMove, SignUpdate, SoundEffect, SplashEffect,
+    TeleportRequest, TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -83,8 +85,8 @@ pub struct ServerContext {
     spawn_point: Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
-    chest_storage: Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
     fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
 }
 
 type JoinLeave = (Player, bool);
@@ -126,6 +128,7 @@ pub struct Channels {
     private_msg_tx: Arc<Sender<PrivateMessage>>,
     teleport_rq_tx: Arc<Sender<TeleportRequest>>,
     kick_rq_tx: Arc<Sender<KickRequest>>,
+    sign_update_tx: Arc<Sender<SignUpdate>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -162,6 +165,7 @@ impl Channels {
             private_msg_tx: Arc::new(channel::<PrivateMessage>(50).0),
             teleport_rq_tx: Arc::new(channel::<TeleportRequest>(5).0),
             kick_rq_tx: Arc::new(channel::<KickRequest>(5).0),
+            sign_update_tx: Arc::new(channel::<SignUpdate>(5).0),
         }
     }
 }
@@ -211,11 +215,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write_level_dat(world_dir, "world");
     }
 
+    let tile_entities = Arc::new(RwLock::new(HashMap::new()));
+
     if config.world.enable_auto_save {
         spawn_world_save_task(
             world_blocks.clone(),
             generator.clone(),
             world_dir.to_path_buf(),
+            tile_entities.clone(),
             config.world.auto_save_interval,
         );
     }
@@ -320,8 +327,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_point,
         world_dir: world_dir.clone(),
         xp_orbs: Arc::new(RwLock::new(Vec::new())),
-        chest_storage: Arc::new(RwLock::new(HashMap::new())),
         fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
+        tile_entities,
     };
 
     spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
@@ -330,6 +337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.player_registry.clone(),
         ctx.world_blocks.clone(),
         world_dir.to_path_buf(),
+        ctx.tile_entities.clone(),
         ctx.generator.clone(),
     );
     spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
@@ -392,6 +400,7 @@ fn spawn_shutdown_task(
     player_registry: Arc<PlayerRegistry>,
     world_blocks: Arc<WorldBlocks>,
     world_dir: PathBuf,
+    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     generator: Arc<FlatWorldGenerator>,
 ) {
     tokio::spawn(async move {
@@ -406,7 +415,9 @@ fn spawn_shutdown_task(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         println!("Saving world..");
-        world_blocks.save(&world_dir, &generator).await;
+        world_blocks
+            .save(&world_dir, &generator, &tile_entities)
+            .await;
         println!("World saved. Server closed.");
         std::process::exit(0);
     });
@@ -547,13 +558,16 @@ pub fn spawn_world_save_task(
     world_blocks: Arc<WorldBlocks>,
     generator: Arc<FlatWorldGenerator>,
     world_dir: PathBuf,
+    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     auto_save_interval: u64,
 ) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(auto_save_interval));
         loop {
             interval.tick().await;
-            world_blocks.save(&world_dir, &generator).await;
+            world_blocks
+                .save(&world_dir, &generator, &tile_entities)
+                .await;
             println!("[World] Auto-Saved.");
         }
     });

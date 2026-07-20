@@ -82,7 +82,7 @@ impl Fluid {
     }
 
     pub fn is_source(id: u8, metadata: u8) -> bool {
-        matches!(id, 8 | 9 | 10 | 11) && (metadata & 0x8) == 0 && (metadata & 0x7) == 0
+        matches!(id, 8..=11) && (metadata & 0x8) == 0 && (metadata & 0x7) == 0
     }
 
     pub fn flow_level(_id: u8, metadata: u8) -> u8 {

@@ -1,9 +1,10 @@
 use crate::{
-    anvil::{chunk_to_nbt, nbt_to_blocks_raw},
+    anvil::{chunk_to_nbt, nbt_to_blocks_raw, tile_entity_to_nbt},
     generator::FlatWorldGenerator,
+    nbt::NbtTag,
     region::RegionFile,
 };
-use coral_protocol::packets::play::block::BlockFace;
+use coral_protocol::packets::play::{block::BlockFace, entity::TileEntity};
 use coral_types::{ToolKind, ToolMaterial};
 use std::{
     collections::{HashMap, HashSet},
@@ -227,7 +228,12 @@ impl WorldBlocks {
     }
 
     #[allow(clippy::mut_range_bound)]
-    pub async fn save(&self, world_dir: &Path, generator: &FlatWorldGenerator) {
+    pub async fn save(
+        &self,
+        world_dir: &Path,
+        generator: &FlatWorldGenerator,
+        tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    ) {
         let dirty = {
             let d = self.dirty_chunks.read().await;
             if d.is_empty() {
@@ -256,8 +262,12 @@ impl WorldBlocks {
         let mut chunk_block_maps: HashMap<(i32, i32), HashMap<(i32, u8, i32), Block>> =
             HashMap::new();
         let mut chunk_is_new: HashMap<(i32, i32), bool> = HashMap::new();
+        let mut chunk_tile_entities: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
+
+        // TODO: make a function instead of a block
         {
             let cache = self.chunk_cache.read().await;
+            let all_tiles = tile_entities.read().await;
             for (cx, cz) in &dirty {
                 let (base, is_new) = if let Some((nbt, _)) = cache.get(&(*cx, *cz)) {
                     let mut m = HashMap::new();
@@ -277,6 +287,13 @@ impl WorldBlocks {
 
                 chunk_block_maps.insert((*cx, *cz), final_blocks);
                 chunk_is_new.insert((*cx, *cz), is_new);
+
+                let tiles_here: Vec<NbtTag> = all_tiles
+                    .iter()
+                    .filter(|((x, _, z), _)| (x >> 4) == *cx && (z >> 4) == *cz)
+                    .filter_map(|((x, y, z), tile)| tile_entity_to_nbt(*x, *y, *z, tile))
+                    .collect();
+                chunk_tile_entities.insert((*cx, *cz), tiles_here);
             }
         }
 
@@ -305,7 +322,8 @@ impl WorldBlocks {
                         continue;
                     };
                     let is_new = *chunk_is_new.get(&(*cx, *cz)).unwrap_or(&true);
-                    let nbt = chunk_to_nbt(*cx, *cz, final_blocks, &generator, is_new);
+                    let tiles = chunk_tile_entities.remove(&(*cx, *cz)).unwrap_or_default();
+                    let nbt = chunk_to_nbt(*cx, *cz, final_blocks, &generator, tiles, is_new);
 
                     let compressed = {
                         use flate2::Compression;

@@ -20,7 +20,8 @@ use coral_protocol::packets::play::{
         ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
         EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook,
         EntityLookAndMove, EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity,
-        SpawnExperienceOrb, SpawnObject, SpawnPlayer, UseBed, UseEntity, UseEntityAction,
+        SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign, UseBed, UseEntity,
+        UseEntityAction,
     },
     game::{
         ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
@@ -73,7 +74,7 @@ use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 
 use crate::{
-    EquipmentUpdate, ServerContext, SoundEffect,
+    ServerContext, SoundEffect,
     codec::{Codec, PlayerState, WindowType, is_normal_disconnect, kick, send_packet},
 };
 
@@ -103,8 +104,8 @@ pub async fn play(
         world_dir,
         xp_orbs,
         world_time,
-        chest_storage,
         fluid_queue,
+        tile_entities,
         ..
     } = ctx;
 
@@ -140,6 +141,7 @@ pub async fn play(
     let mut teleport_rq_rx = channels.teleport_rq_tx.subscribe();
     let mut kick_rq_rx = channels.kick_rq_tx.subscribe();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
+    let mut sign_update_rx = channels.sign_update_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -206,7 +208,7 @@ pub async fn play(
                 }).await;*/
             }
             Ok((from, to, message)) = private_msg_rx.recv() => {
-                if &state.name != &to {
+                if state.name != to {
                     continue;
                 }
 
@@ -451,7 +453,7 @@ pub async fn play(
                 if new_cx != state.chunk_x || new_cz != state.chunk_z {
                     state.chunk_x = new_cx;
                     state.chunk_z = new_cz;
-                    update_chunks(framed, client_protocol, &world_blocks, &generator, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
+                    update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
                 }
 
                 state.was_on_ground = false;
@@ -567,6 +569,9 @@ pub async fn play(
                     }
                     send_spawn_player(framed, &player).await;
                 }
+            }
+            Ok((x, y, z, lines)) = sign_update_rx.recv() => {
+                send_packet(framed, UpdateSign { x, y, z, lines }).await;
             }
             Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
                 if uuid != state.uuid {
@@ -709,7 +714,7 @@ pub async fn play(
                             player_registry.update_held_slot(state.uuid, slot).await;
                             player_registry.update_held_item(state.uuid, state.held_item).await;
 
-                            send_held_equip(&channels.equip_tx, state);
+                            state.send_held_equip(&channels.equip_tx);
 
                             state.eating = None;
                             state.bow_charging = None;
@@ -730,6 +735,10 @@ pub async fn play(
                                             dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
                                             1.0, 63
                                         )).ok();
+
+                                        if matches!(block.id, 63 | 68) {
+                                            tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
+                                        }
                                         continue;
                                     }
                                     let required = break_time_ticks(
@@ -795,6 +804,10 @@ pub async fn play(
                                             1.0, 63
                                         )).ok();
 
+                                        if matches!(block.id, 63 | 68) {
+                                            tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
+                                        }
+
                                         if !block.is_air() && block.id > 0 {
                                             let can_drop = if let Some(req_mat) = block_registry.required_material(block.id) {
                                                 item_registry.get(state.held_item)
@@ -855,7 +868,7 @@ pub async fn play(
                                         }
                                     }
                                     let broke = state.damage_item(1, &item_registry);
-                                    sync_held_slot(framed, state, &player_registry, &channels.equip_tx, broke).await;
+                                    state.sync_held_slot_after_damage(framed, &player_registry, &channels, broke).await;
                                 }
                                 DigStatus::DropItem(is_itemstack) => {
                                     let hotbar_slot = state.held_slot as usize;
@@ -885,25 +898,7 @@ pub async fn play(
                                     };
 
                                     if let Some(dropped) = item {
-                                        let packet_slot = (36 + hotbar_slot) as i16;
-                                        let remaining = state.inventory.slots[hotbar_slot].as_ref();
-
-                                        send_packet(framed, SetSlot {
-                                            window_id: 0,
-                                            slot: packet_slot,
-                                            item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
-                                            count: remaining.map(|s| s.count).unwrap_or(0),
-                                            metadata: remaining.map(|s| s.metadata).unwrap_or(0)
-                                        }).await;
-
-                                        state.held_item = state.inventory.slots[hotbar_slot]
-                                            .as_ref()
-                                            .map(|s| s.item_id)
-                                            .unwrap_or(-1);
-
-                                        player_registry.update_held_item(state.uuid, state.held_item).await;
-
-                                        send_held_equip(&channels.equip_tx, state);
+                                        state.sync_hotbar_slot(framed, &player_registry, &channels).await;
 
                                         if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
@@ -1012,16 +1007,7 @@ pub async fn play(
                                                 proj.vx, proj.vy, proj.vz
                                             )).ok();
 
-                                            let hotbar = state.held_slot as usize;
-                                            state.inventory.slots[hotbar] = None;
-                                            send_packet(framed, SetSlot {
-                                                window_id: 0, slot: (36 + hotbar) as i16,
-                                                item_id: -1, count: 0, metadata: 0
-                                            }).await;
-                                            state.held_item = -1;
-
-                                            player_registry.update_held_item(state.uuid, -1).await;
-                                            send_held_equip(&channels.equip_tx, state);
+                                            state.consume_held_one(framed, &player_registry, &channels).await;
                                         }
                                     }
                                 }
@@ -1034,12 +1020,12 @@ pub async fn play(
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
-                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &world_blocks, &generator, &fluid_queue, &channels, None).await {
+                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &world_blocks, &tile_entities, &generator, &fluid_queue, &channels, None).await {
                                     continue;
                                 }
                                 continue;
                             };
-                            if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &chest_storage, &fluid_queue, &channels).await
+                            if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &tile_entities, &fluid_queue, &channels).await
                                 || place.held_item_id == -1
                                 || state.gamemode >= GameMode::Adventure
                             {
@@ -1073,35 +1059,7 @@ pub async fn play(
                             };
 
                             if state.gamemode == GameMode::Survival {
-                                let hotbar_slot = state.held_slot as usize;
-                                let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() else {
-                                    continue;
-                                };
-                                slot.count -= 1;
-                                let remaining_count = slot.count;
-                                let item_id = slot.item_id;
-                                let metadata = slot.metadata;
-
-                                if remaining_count == 0 {
-                                    state.inventory.slots[hotbar_slot] = None;
-                                }
-
-                                let packed_slot = (36 + hotbar_slot) as i16;
-                                send_packet(framed, SetSlot {
-                                    window_id: 0,
-                                    slot: packed_slot,
-                                    item_id: if remaining_count > 0 { item_id } else { -1 },
-                                    count: remaining_count,
-                                    metadata
-                                }).await;
-
-                                state.held_item = state.inventory.slots[hotbar_slot]
-                                    .as_ref()
-                                    .map(|s| s.item_id)
-                                    .unwrap_or(-1);
-
-                                player_registry.update_held_item(state.uuid, state.held_item).await;
-                                send_held_equip(&channels.equip_tx, state);
+                                state.consume_held_one(framed, &player_registry, &channels).await;
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
@@ -1234,7 +1192,7 @@ pub async fn play(
                                         }
                                         state.chunk_x = new_chunk_x;
                                         state.chunk_z = new_chunk_z;
-                                        update_chunks(framed, client_protocol, &world_blocks, &generator, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                        update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                     }
 
                                     let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
@@ -1292,7 +1250,7 @@ pub async fn play(
 
                         if packet.as_any().downcast_ref::<CloseWindow>().is_some() {
                             if let Some(cursor) = state.cursor_item.take() {
-                                let leftover = insert_into_inventory(&mut state.inventory, cursor);
+                                let leftover = state.inventory.insert_itemstack(cursor);
                                 if let Some(dropped) = leftover {
                                     // TODO
                                     // drop in world if inventory full - spawn item entoty at player pos
@@ -1349,9 +1307,7 @@ pub async fn play(
                                 if idx < 9
                                     && idx == state.held_slot as usize
                                 {
-                                    state.held_item = creative.item_id;
-                                    player_registry.update_held_item(state.uuid, state.held_item).await;
-                                    send_held_equip(&channels.equip_tx, state);
+                                    state.sync_held_item_registry(creative.item_id, &player_registry, &channels).await;
                                 }
 
                                 if (5..=8).contains(&idx) {
@@ -1379,7 +1335,7 @@ pub async fn play(
                                             pos,
                                             window_id,
                                             click,
-                                            &chest_storage,
+                                            &tile_entities,
                                         ).await;
                                     }
                                     _ => {}
@@ -1430,6 +1386,7 @@ pub async fn play(
                                     client_protocol,
                                     &world_blocks,
                                     &generator,
+                                    &tile_entities,
                                     spawn_cx, spawn_cz,
                                     config.server.view_distance,
                                     &mut state.loaded_chunks
@@ -1579,7 +1536,7 @@ pub async fn play(
                                             channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
 
                                             let broke = state.damage_item(2, &item_registry);
-                                            sync_held_slot(framed, state, &player_registry, &channels.equip_tx, broke).await;
+                                            state.sync_held_slot_after_damage(framed, &player_registry, &channels, broke).await;
 
                                             channels.sound_tx.send((
                                                 "game.player.hurt".to_string(),
@@ -1604,6 +1561,37 @@ pub async fn play(
                         if let Some(abilities) = packet.as_any().downcast_ref::<PlayerAbilities>() {
                             let is_flying = (abilities.flags & 0x02) != 0;
                             state.is_flying = is_flying;
+                            continue;
+                        }
+
+                        if let Some(sign) = packet.as_any().downcast_ref::<UpdateSign>() {
+                            let pos = (sign.x, sign.y, sign.z);
+
+                            if state.editing_sign != Some(pos) {
+                                continue;
+                            }
+                            state.editing_sign = None;
+
+                            let sanitize = |s: &str| -> String {
+                                s.chars().filter(|c| *c != '\u{00a7}').take(16).collect()
+                            };
+
+                            let lines = [
+                                sanitize(&sign.lines[0]),
+                                sanitize(&sign.lines[1]),
+                                sanitize(&sign.lines[2]),
+                                sanitize(&sign.lines[3]),
+                            ];
+
+                            tile_entities.write().await.insert(pos, TileEntity::Sign { lines: lines.clone() });
+
+                            let json_lines = [
+                                ChatBuilder::plain_json(&lines[0]),
+                                ChatBuilder::plain_json(&lines[1]),
+                                ChatBuilder::plain_json(&lines[2]),
+                                ChatBuilder::plain_json(&lines[3]),
+                            ];
+                            channels.sign_update_tx.send((sign.x, sign.y, sign.z, json_lines)).ok();
                             continue;
                         }
 
@@ -1931,17 +1919,6 @@ fn level_to_xp_drop(level: i32) -> i32 {
     drop.max(0)
 }
 
-fn send_held_equip(equip_tx: &Arc<Sender<EquipmentUpdate>>, state: &PlayerState) {
-    let (item_id, count, metadata) = state.inventory.slots[state.held_slot as usize]
-        .as_ref()
-        .map(|s| (s.item_id, s.count, s.metadata))
-        .unwrap_or((-1, 0, 0));
-
-    equip_tx
-        .send((state.entity_id, 0, item_id, count, metadata))
-        .ok();
-}
-
 fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
     let rank = |m: ToolMaterial| match m {
         ToolMaterial::Wood | ToolMaterial::Gold => 0,
@@ -1953,39 +1930,13 @@ fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
     rank(have) >= rank(need)
 }
 
-async fn sync_held_slot(
-    framed: &mut Framed<TcpStream, Codec>,
-    state: &mut PlayerState,
-    player_registry: &Arc<PlayerRegistry>,
-    equip_tx: &Arc<Sender<EquipmentUpdate>>,
-    broke: bool,
-) {
-    let slot_idx = state.held_slot as usize;
-    let packet_slot = (36 + slot_idx) as i16;
-    let remaining = state.inventory.slots[slot_idx].as_ref();
-    send_packet(
-        framed,
-        SetSlot {
-            window_id: 0,
-            slot: packet_slot,
-            item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
-            count: remaining.map(|s| s.count).unwrap_or(0),
-            metadata: remaining.map(|s| s.metadata).unwrap_or(0),
-        },
-    )
-    .await;
-    if broke {
-        player_registry.update_held_item(state.uuid, -1).await;
-        send_held_equip(equip_tx, state);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     center_x: i32,
     center_z: i32,
     view_distance: i32,
@@ -1999,6 +1950,30 @@ pub async fn send_chunks(
             let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, generator).await;
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
+
+            let te = tile_entities.read().await;
+            for ((x, y, z), tile) in te.iter() {
+                if (x >> 4) == cx
+                    && (z >> 4) == cz
+                    && let TileEntity::Sign { lines } = tile
+                {
+                    send_packet(
+                        framed,
+                        UpdateSign {
+                            x: *x,
+                            y: *y,
+                            z: *z,
+                            lines: [
+                                ChatBuilder::plain_json(&lines[0]),
+                                ChatBuilder::plain_json(&lines[1]),
+                                ChatBuilder::plain_json(&lines[2]),
+                                ChatBuilder::plain_json(&lines[3]),
+                            ],
+                        },
+                    )
+                    .await;
+                }
+            }
         }
     }
 }
@@ -2049,6 +2024,7 @@ async fn update_chunks(
     client_protocol: i32,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     new_chunk_x: i32,
     new_chunk_z: i32,
     view_distance: i32,
@@ -2059,6 +2035,7 @@ async fn update_chunks(
         client_protocol,
         world_blocks,
         generator,
+        tile_entities,
         new_chunk_x,
         new_chunk_z,
         view_distance,
@@ -2142,7 +2119,7 @@ async fn handle_chest_click(
     pos: (i32, i32, i32),
     window_id: u8,
     click: &ClickWindow,
-    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
 ) {
     let slot = click.slot;
 
@@ -2159,8 +2136,14 @@ async fn handle_chest_click(
 
     // TODO: a function so theres no block and the lock is dropped when needed
     {
-        let mut storage = chest_storage.write().await;
-        let chest = storage.entry(pos).or_insert_with(|| vec![None; 27]);
+        let mut storage = tile_entities.write().await;
+        let chest = match storage.entry(pos).or_insert_with(|| TileEntity::Chest {
+            items: vec![None; 27],
+        }) {
+            TileEntity::Chest { items } => items,
+            _ => return,
+        };
+
         match click.mode {
             0 => {
                 let Some((is_chest, idx)) = resolve(slot) else {
@@ -2193,7 +2176,7 @@ async fn handle_chest_click(
                 };
                 if let Some(stack) = moving {
                     if is_chest {
-                        let leftover = insert_into_inventory(&mut state.inventory, stack);
+                        let leftover = state.inventory.insert_itemstack(stack);
                         chest[idx] = leftover;
                     } else {
                         let leftover = insert_into_chest(chest, stack);
@@ -2205,34 +2188,9 @@ async fn handle_chest_click(
         }
     }
 
-    resend_chest_window(framed, state, pos, window_id, chest_storage).await;
+    resend_chest_window(framed, state, pos, window_id, tile_entities).await;
 }
 
-fn insert_into_inventory(inv: &mut Inventory, mut stack: ItemStack) -> Option<ItemStack> {
-    // first merge into existing matching stacks
-    for existing in inv.slots.iter_mut().take(36).flatten() {
-        if existing.item_id == stack.item_id
-            && existing.metadata == stack.metadata
-            && existing.count < 64
-        {
-            let space = 64 - existing.count;
-            let move_n = space.min(stack.count);
-            existing.count += move_n;
-            stack.count -= move_n;
-            if stack.count == 0 {
-                return None;
-            }
-        }
-    }
-    // second place into empty space
-    for slot in inv.slots.iter_mut().take(36) {
-        if slot.is_none() {
-            *slot = Some(stack);
-            return None;
-        }
-    }
-    Some(stack) // didnt fit
-}
 fn insert_into_chest(chest: &mut [Option<ItemStack>], mut stack: ItemStack) -> Option<ItemStack> {
     for existing in chest.iter_mut().flatten() {
         if existing.item_id == stack.item_id
@@ -2261,11 +2219,14 @@ async fn resend_chest_window(
     state: &PlayerState,
     pos: (i32, i32, i32),
     window_id: u8,
-    chest_storage: &Arc<RwLock<HashMap<(i32, i32, i32), Vec<Option<ItemStack>>>>>,
+    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
 ) {
-    let storage = chest_storage.read().await;
+    let storage = tile_entities.read().await;
     let empty = vec![None; 27];
-    let chest = storage.get(&pos).unwrap_or(&empty);
+    let chest = match storage.get(&pos) {
+        Some(TileEntity::Chest { items }) => items,
+        _ => &empty,
+    };
 
     let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(63);
     for item in chest.iter().take(27) {

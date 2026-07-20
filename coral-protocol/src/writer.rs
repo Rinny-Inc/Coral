@@ -1,4 +1,4 @@
-use crate::{CONTINUE_BIT, SEGMENT_BITS};
+use crate::{CONTINUE_BIT, SEGMENT_BITS, packets::play::block::BlockPosition};
 
 pub struct Writer {
     pub data: Vec<u8>,
@@ -46,8 +46,8 @@ impl Writer {
         self.data.extend_from_slice(&value.to_be_bytes());
     }
 
-    pub fn write_i64(&mut self, value: i64) {
-        self.data.extend_from_slice(&value.to_be_bytes());
+    pub fn write_block_position(&mut self, bp: BlockPosition) {
+        self.data.extend_from_slice(&bp.to_long().to_be_bytes());
     }
 
     pub fn write_f32(&mut self, value: f32) {

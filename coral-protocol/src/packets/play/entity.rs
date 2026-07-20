@@ -2,7 +2,10 @@ use std::io::Error;
 
 use crate::{
     auth::ProfileProperty,
-    packets::{PacketIn, PacketOut},
+    packets::{
+        PacketIn, PacketOut,
+        play::{block::BlockPosition, inventory::ItemStack},
+    },
     reader::Reader,
 };
 
@@ -496,10 +499,60 @@ impl PacketOut for UseBed {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x0A);
         writer.write_varint(self.entity_id);
-        let pos = ((self.x as i64 & 0x3FFFFFF) << 38)
-            | ((self.y as i64 & 0xFFF) << 26)
-            | (self.z as i64 & 0x3FFFFFF);
-        writer.write_i64(pos);
+        let pos = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(pos);
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TileEntity {
+    Sign { lines: [String; 4] },
+    Chest { items: Vec<Option<ItemStack>> },
+    // Furnace(FurnaceData)
+}
+
+#[derive(Debug)]
+pub struct UpdateSign {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub lines: [String; 4],
+}
+impl PacketOut for UpdateSign {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x33);
+        let pos = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(pos);
+        for line in &self.lines {
+            writer.write_string(line);
+        }
+        Ok(())
+    }
+}
+impl PacketIn for UpdateSign {
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let mut reader = Reader::new(buf);
+        let BlockPosition { x, y, z } = reader.read_block_position();
+
+        let lines = [
+            reader.read_string(),
+            reader.read_string(),
+            reader.read_string(),
+            reader.read_string(),
+        ];
+        Ok(UpdateSign {
+            x,
+            y: y as i32,
+            z,
+            lines,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

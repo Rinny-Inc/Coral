@@ -71,7 +71,7 @@ pub fn spawn_fluid_task(
                             FluidKind::Water => 5,
                             FluidKind::Lava => 30,
                         };
-                        if tick % rate != 0 {
+                        if !tick.is_multiple_of(rate) {
                             fluid_queue.write().await.push_back((x, y, z));
                             continue;
                         }
