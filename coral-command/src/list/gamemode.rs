@@ -50,7 +50,7 @@ pub fn command(
                 let uuid = target.uuid;
                 let username = target.username.clone();
 
-                registry.update_gamemode(uuid, gamemode).await;
+                registry.update_gamemode(&uuid, gamemode).await;
                 tx.send((uuid, gamemode)).ok();
 
                 CommandResult::Success(

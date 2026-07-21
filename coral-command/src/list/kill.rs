@@ -29,7 +29,7 @@ pub fn command(player_registry: Arc<PlayerRegistry>, dmg_tx: Arc<Sender<DamageEv
                 };
 
                 registry
-                    .update_health(target.uuid, 0.0, target.food, target.food_saturation)
+                    .update_health(&target.uuid, 0.0, target.food, target.food_saturation)
                     .await;
                 tx.send((
                     target.uuid,

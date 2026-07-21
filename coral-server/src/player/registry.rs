@@ -63,20 +63,20 @@ impl PlayerRegistry {
             .cloned()
     }
 
-    pub async fn update_gamemode(&self, uuid: Uuid, gamemode: GameMode) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_gamemode(&self, uuid: &Uuid, gamemode: GameMode) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.gamemode = gamemode;
         }
     }
 
-    pub async fn update_held_slot(&self, uuid: Uuid, held_slot: u8) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_held_slot(&self, uuid: &Uuid, held_slot: u8) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.held_slot = held_slot;
         }
     }
 
-    pub async fn update_health(&self, uuid: Uuid, health: f32, food: i32, food_saturation: f32) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_health(&self, uuid: &Uuid, health: f32, food: i32, food_saturation: f32) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.health = health;
             player.food = food;
             player.food_saturation = food_saturation;
@@ -84,14 +84,14 @@ impl PlayerRegistry {
         }
     }
 
-    pub async fn update_held_item(&self, uuid: Uuid, item_id: i16) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_held_item(&self, uuid: &Uuid, item_id: i16) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.held_item_id = item_id;
         }
     }
 
-    pub async fn update_armor(&self, uuid: Uuid, helmet: i16, chest: i16, legs: i16, boots: i16) {
-        if let Some(p) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_armor(&self, uuid: &Uuid, helmet: i16, chest: i16, legs: i16, boots: i16) {
+        if let Some(p) = self.players.write().await.get_mut(uuid) {
             p.helmet = helmet;
             p.chestplate = chest;
             p.leggings = legs;
@@ -108,37 +108,37 @@ impl PlayerRegistry {
             .unwrap_or((-1, -1, -1, -1))
     }
 
-    pub async fn update_latency(&self, uuid: Uuid, latency_ms: i32) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_latency(&self, uuid: &Uuid, latency_ms: i32) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.latency_ms = latency_ms;
         }
     }
 
-    pub async fn update_sprinting(&self, uuid: Uuid, is_sprinting: bool) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_sprinting(&self, uuid: &Uuid, is_sprinting: bool) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.is_sprinting = is_sprinting;
         }
     }
-    pub async fn update_sneaking(&self, uuid: Uuid, is_sneaking: bool) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_sneaking(&self, uuid: &Uuid, is_sneaking: bool) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.is_sneaking = is_sneaking;
         }
     }
 
-    pub async fn update_skin_parts(&self, uuid: Uuid, skin_parts: u8) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_skin_parts(&self, uuid: &Uuid, skin_parts: u8) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.skin_parts = skin_parts;
         }
     }
 
-    pub async fn update_no_damage_ticks(&self, uuid: Uuid, no_damage_ticks: i32) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_no_damage_ticks(&self, uuid: &Uuid, no_damage_ticks: i32) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.no_damage_ticks = no_damage_ticks;
         }
     }
 
-    pub async fn update_effects(&self, uuid: Uuid, effects: Vec<ActiveEffect>) {
-        if let Some(player) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_effects(&self, uuid: &Uuid, effects: Vec<ActiveEffect>) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.active_effects = effects;
         }
     }
@@ -152,8 +152,8 @@ impl PlayerRegistry {
             .unwrap_or_default()
     }
 
-    pub async fn update_sleeping(&self, uuid: Uuid, sleeping: bool) {
-        if let Some(p) = self.players.write().await.get_mut(&uuid) {
+    pub async fn update_sleeping(&self, uuid: &Uuid, sleeping: bool) {
+        if let Some(p) = self.players.write().await.get_mut(uuid) {
             p.is_sleeping = sleeping;
         }
     }
@@ -171,6 +171,21 @@ impl PlayerRegistry {
         for p in self.players.write().await.values_mut() {
             p.is_sleeping = false;
         }
+    }
+
+    pub async fn update_velocity(&self, uuid: &Uuid, velocity: (f64, f64, f64)) {
+        if let Some(p) = self.players.write().await.get_mut(uuid) {
+            p.velocity = velocity;
+        }
+    }
+
+    pub async fn get_velocity(&self, uuid: &Uuid) -> (f64, f64, f64) {
+        self.players
+            .read()
+            .await
+            .get(uuid)
+            .map(|p| p.velocity)
+            .unwrap_or((0.0, 0.0, 0.0))
     }
 
     #[allow(clippy::too_many_arguments)]

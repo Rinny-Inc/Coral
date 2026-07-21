@@ -19,6 +19,7 @@ pub struct Player {
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: bool,
+    pub velocity: (f64, f64, f64),
     pub gamemode: GameMode,
     pub held_slot: u8,
     pub held_item_id: i16,
@@ -85,6 +86,7 @@ impl Player {
             boots: -1,
             active_effects: vec![],
             is_sleeping: false,
+            velocity: (0.0, 0.0, 0.0),
         }
     }
 

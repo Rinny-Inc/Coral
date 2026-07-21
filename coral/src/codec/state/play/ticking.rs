@@ -146,7 +146,9 @@ async fn tick_item_pickup(
 
                     if internal_idx == state.held_slot as usize {
                         state.held_item = *item_id;
-                        player_registry.update_held_item(state.uuid, *item_id).await;
+                        player_registry
+                            .update_held_item(&state.uuid, *item_id)
+                            .await;
                         state.send_held_equip(equip_tx);
                     }
                 }
@@ -195,7 +197,7 @@ async fn tick_eating(
                 .consume_held_one(framed, player_registry, channels)
                 .await;
             player_registry
-                .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                 .await;
             send_packet(
                 framed,
@@ -240,7 +242,7 @@ async fn tick_food_and_regen(
                 state.regen_timer = 0;
                 state.health = (state.health + 1.0).min(20.0);
                 player_registry
-                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                     .await;
                 send_packet(
                     framed,
@@ -266,7 +268,7 @@ async fn tick_food_and_regen(
                 state.food_saturation = 0.0;
 
                 player_registry
-                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                     .await;
 
                 send_packet(
@@ -289,7 +291,7 @@ async fn tick_food_and_regen(
                 state.food_exhaustion += 3.0;
 
                 player_registry
-                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                     .await;
                 send_packet(
                     framed,
@@ -328,7 +330,7 @@ async fn tick_food_and_regen(
                 }
 
                 player_registry
-                    .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                     .await;
 
                 send_packet(
@@ -388,7 +390,7 @@ async fn tick_effects(
     if regen_from_effect && state.health < 20.0 + state.absorption_hp {
         state.health = (state.health + 1.0).min(20.0 + state.absorption_hp);
         player_registry
-            .update_health(state.uuid, state.health, state.food, state.food_saturation)
+            .update_health(&state.uuid, state.health, state.food, state.food_saturation)
             .await;
         send_packet(
             framed,
@@ -403,7 +405,7 @@ async fn tick_effects(
     if poison_tick && state.health > 1.0 {
         state.health = (state.health - 1.0).max(1.0);
         player_registry
-            .update_health(state.uuid, state.health, state.food, state.food_saturation)
+            .update_health(&state.uuid, state.health, state.food, state.food_saturation)
             .await;
         send_packet(
             framed,
@@ -434,6 +436,6 @@ async fn tick_effects(
         }
     }
     player_registry
-        .update_effects(state.uuid, state.active_effects.clone())
+        .update_effects(&state.uuid, state.active_effects.clone())
         .await;
 }

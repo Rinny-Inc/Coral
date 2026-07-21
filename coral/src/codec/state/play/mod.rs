@@ -142,6 +142,7 @@ pub async fn play(
     let mut kick_rq_rx = channels.kick_rq_tx.subscribe();
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
     let mut sign_update_rx = channels.sign_update_tx.subscribe();
+    let mut velocity_broadcast_rx = channels.velocity_broadcast_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -316,6 +317,15 @@ pub async fn play(
                     item_id,
                     count,
                     metadata
+                }).await;
+            }
+            Ok((eid, vx, vy, vz)) = velocity_broadcast_rx.recv() => {
+                if eid == state.entity_id {
+                    continue;
+                }
+                send_packet(framed, EntityVelocity {
+                    entity_id: eid,
+                    vx, vy, vz
                 }).await;
             }
 
@@ -599,12 +609,13 @@ pub async fn play(
                 }).await;
 
                 if health > 0.0
-                    && let Some(me) = player_registry.get(&state.uuid).await
+                    && let Some(me) = player_registry.get(&uuid).await
                     && let Some(attacker) = player_registry.get_by_entity_id(attacker_eid).await
                 {
                     let magnitude = dist_xz(me.x, me.z, attacker.x, attacker.z).max(0.0001);
                     let mut vx = ((me.x - attacker.x) / magnitude) * 0.4;
                     let mut vz = ((me.z - attacker.z) / magnitude) * 0.4;
+                    let vy = 0.4;
 
                     if attacker.is_sprinting {
                         let yaw_rad = (attacker.yaw * std::f32::consts::PI / 180.0) as f64;
@@ -615,9 +626,13 @@ pub async fn play(
                     send_packet(framed, EntityVelocity {
                         entity_id: state.entity_id,
                         vx,
-                        vy: 0.4,
+                        vy,
                         vz,
                     }).await;
+
+                    state.velocity = (vx, vy, vz);
+                    state.last_position_tick = Instant::now();
+                    player_registry.update_velocity(&uuid, state.velocity).await;
                 }
             }
             Ok((eid, x, y, z, item_id, count, metadata, vx, vy, vz)) = item_rx.recv() => {
@@ -690,7 +705,7 @@ pub async fn play(
                                 let (actual, last) = state.latency_ms;
                                 state.latency_ms.1 = actual;
                                 state.latency_ms.0 = sent_time.elapsed().as_millis() as i32;
-                                player_registry.update_latency(state.uuid, actual).await;
+                                player_registry.update_latency(&state.uuid, actual).await;
                                 if ping_to_bar(actual) == ping_to_bar(last) {
                                     continue;
                                 }
@@ -711,8 +726,8 @@ pub async fn play(
                                 .map(|s| s.item_id)
                                 .unwrap_or(-1);
 
-                            player_registry.update_held_slot(state.uuid, slot).await;
-                            player_registry.update_held_item(state.uuid, state.held_item).await;
+                            player_registry.update_held_slot(&state.uuid, slot).await;
+                            player_registry.update_held_item(&state.uuid, state.held_item).await;
 
                             state.send_held_equip(&channels.equip_tx);
 
@@ -907,6 +922,9 @@ pub async fn play(
                                             let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
 
                                             let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
+                                            let vx = vx + p.velocity.0 * 0.3;
+                                            let vy = vy + (p.velocity.1 * 0.3).max(0.0);
+                                            let vz = vz + p.velocity.1 * 0.3;
                                             let drop_eid = next_entity_id();
 
                                             channels.item_tx.send((
@@ -955,9 +973,9 @@ pub async fn play(
                                                 owner_entity_id: state.entity_id,
                                                 kind: ProjectileKind::Arrow,
                                                 x: p.x, y: p.y + EntityBounds::player(p.is_sneaking).height, z: p.z,
-                                                vx: dx * speed,
-                                                vy: dy * speed,
-                                                vz: dz * speed,
+                                                vx: dx * speed + state.velocity.0,
+                                                vy: dy * speed + state.velocity.1.max(0.0),
+                                                vz: dz * speed + state.velocity.2,
                                                 ticks_alive: 0,
                                                 left_owner: false,
                                             };
@@ -1157,6 +1175,7 @@ pub async fn play(
                             let dy = ((y - p.y) * 32.0).round() as i64;
                             let dz = ((z - p.z) * 32.0).round() as i64;
 
+                            let prev_velocity = state.velocity;
                             let position_changed = dx != 0 || dy != 0 || dz != 0;
 
                             if mv.position.is_some() {
@@ -1167,6 +1186,36 @@ pub async fn play(
                                 }
 
                                 if position_changed {
+                                    let now = Instant::now();
+                                    let dt = now.duration_since(state.last_position_tick).as_secs_f64();
+
+                                    if dt > 0.0 {
+                                        let raw_vx = (x - state.last_position.0) / dt / 20.0;
+                                        let raw_vy = (y - state.last_position.1) / dt / 20.0;
+                                        let raw_vz = (z - state.last_position.2) / dt / 20.0;
+
+                                        let smoothing = 0.6;
+                                        state.velocity.0 = state.velocity.0 * (1.0 - smoothing) + raw_vx * smoothing;
+                                        state.velocity.1 = state.velocity.1 * (1.0 - smoothing) + raw_vy * smoothing;
+                                        state.velocity.2 = state.velocity.2 * (1.0 - smoothing) + raw_vz * smoothing;
+                                    }
+
+                                    let vel_delta = (
+                                        (state.velocity.0 - prev_velocity.0).abs(),
+                                        (state.velocity.1 - prev_velocity.1).abs(),
+                                        (state.velocity.2 - prev_velocity.2).abs(),
+                                    );
+
+                                    if vel_delta.0 > 0.1 || vel_delta.1 > 0.1 || vel_delta.2 > 0.1 {
+                                        channels.velocity_broadcast_tx.send((
+                                            state.entity_id, state.velocity.0, state.velocity.1, state.velocity.2,
+                                        )).ok();
+                                    }
+
+                                    state.last_position = (x, y, z);
+                                    state.last_position_tick = now;
+
+                                    player_registry.update_velocity(&state.uuid, state.velocity).await;
                                     entity_tracker.write().await.update_position(
                                         state.entity_id,
                                         x, y, z
@@ -1201,6 +1250,21 @@ pub async fn play(
                                     } else {
                                         state.food_exhaustion += 0.01 * distance as f32;
                                     }
+                                } else {
+                                    let decay = 0.8;
+                                    state.velocity.0 *= decay;
+                                    state.velocity.1 *= decay;
+                                    state.velocity.2 *= decay;
+                                    if state.velocity.0.abs() < 0.001 {
+                                        state.velocity.0 = 0.0;
+                                    }
+                                    if state.velocity.1.abs() < 0.001 {
+                                        state.velocity.1 = 0.0;
+                                    }
+                                    if state.velocity.2.abs() < 0.001 {
+                                        state.velocity.2 = 0.0;
+                                    }
+                                    player_registry.update_velocity(&state.uuid, state.velocity).await;
                                 }
                             }
 
@@ -1360,7 +1424,7 @@ pub async fn play(
                                 state.food_saturation = 5.0;
                                 state.is_dead = false;
 
-                                player_registry.update_health(state.uuid, state.health, state.food, state.food_saturation).await;
+                                player_registry.update_health(&state.uuid, state.health, state.food, state.food_saturation).await;
 
                                 send_packet(framed, Respawn {
                                     dimension: 0,
@@ -1417,7 +1481,7 @@ pub async fn play(
                             let update = match action.action {
                                 EntityActionType::LeaveBed => {
                                     state.is_sleeping = false;
-                                    player_registry.update_sleeping(state.uuid, false).await;
+                                    player_registry.update_sleeping(&state.uuid, false).await;
                                     channels.anim_tx.send((state.entity_id, EntityAnimationType::LeaveBed)).ok();
                                     continue;
                                 }
@@ -1444,10 +1508,10 @@ pub async fn play(
                             if let Some((sneaking, value)) = update {
                                 if sneaking {
                                     state.is_sneaking = value;
-                                    player_registry.update_sneaking(state.uuid, value).await;
+                                    player_registry.update_sneaking(&state.uuid, value).await;
                                 } else {
                                     state.is_sprinting = value;
-                                    player_registry.update_sprinting(state.uuid, value).await;
+                                    player_registry.update_sprinting(&state.uuid, value).await;
                                 }
 
                                 if let Some(player) = player_registry.get(&state.uuid).await {
@@ -1470,7 +1534,7 @@ pub async fn play(
                                         if target.is_dead || target.no_damage_ticks > 0 {
                                             continue;
                                         }
-                                        player_registry.update_no_damage_ticks(target.uuid, 10).await;
+                                        player_registry.update_no_damage_ticks(&target.uuid, 10).await;
                                         if let Some(me) = player_registry.get(&state.uuid).await {
                                             let reach = if state.gamemode == GameMode::Creative {
                                                 5.0
@@ -1510,7 +1574,7 @@ pub async fn play(
                                             let damage = apply_armor_reduction(raw_damage, total_armor) * (1.0 - resistance);
                                             let new_health = (target.health - damage).max(0.0);
 
-                                            player_registry.update_health(target.uuid, new_health, target.food, target.food_saturation).await;
+                                            player_registry.update_health(&target.uuid, new_health, target.food, target.food_saturation).await;
 
                                             if new_health <= 0.0 {
                                                 channels.chat_tx.send(ChatBuilder::plain_json(&format!(
@@ -1597,7 +1661,7 @@ pub async fn play(
 
                         if let Some(settings) = packet.as_any().downcast_ref::<ClientSettings>() {
                             state.skin_parts = settings.skin_parts;
-                            player_registry.update_skin_parts(state.uuid, settings.skin_parts).await;
+                            player_registry.update_skin_parts(&state.uuid, settings.skin_parts).await;
                             channels.meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
                             continue;
                         }
@@ -1702,7 +1766,7 @@ async fn apply_potion_effect(
             let heal = 4.0 * (1 << pe.amplifier) as f32;
             state.health = (state.health + heal).min(20.0 + state.absorption_hp);
             player_registry
-                .update_health(state.uuid, state.health, state.food, state.food_saturation)
+                .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                 .await;
             send_packet(
                 framed,
@@ -1772,7 +1836,7 @@ async fn apply_effect(
     .await;
 
     player_registry
-        .update_effects(state.uuid, state.active_effects.clone())
+        .update_effects(&state.uuid, state.active_effects.clone())
         .await;
 }
 async fn remove_effect(

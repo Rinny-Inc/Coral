@@ -17,10 +17,11 @@ use coral_protocol::packets::{
     },
 };
 use coral_types::{
-    BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EquipmentUpdate,
-    GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, KickRequest, MetadataUpdate, ParticleEffect,
-    PingUpdate, PrivateMessage, ProjectileMove, SignUpdate, SoundEffect, SplashEffect,
-    TeleportRequest, TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3, dist3,
+    BedUpdate, BlockUpdate, BreakAnimation, DamageEvent, DespawnEntity, EntityVelocityUpdate,
+    EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup, KickRequest, MetadataUpdate,
+    ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate, SoundEffect,
+    SplashEffect, TeleportRequest, TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup, dist_sq3,
+    dist3,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -129,6 +130,7 @@ pub struct Channels {
     teleport_rq_tx: Arc<Sender<TeleportRequest>>,
     kick_rq_tx: Arc<Sender<KickRequest>>,
     sign_update_tx: Arc<Sender<SignUpdate>>,
+    velocity_broadcast_tx: Arc<Sender<EntityVelocityUpdate>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -166,6 +168,7 @@ impl Channels {
             teleport_rq_tx: Arc::new(channel::<TeleportRequest>(5).0),
             kick_rq_tx: Arc::new(channel::<KickRequest>(5).0),
             sign_update_tx: Arc::new(channel::<SignUpdate>(5).0),
+            velocity_broadcast_tx: Arc::new(channel::<EntityVelocityUpdate>(100).0),
         }
     }
 }
@@ -691,7 +694,7 @@ fn spawn_projectile_task(
 
                                 player_registry
                                     .update_health(
-                                        target.uuid,
+                                        &target.uuid,
                                         target.health,
                                         target.food,
                                         target.food_saturation,

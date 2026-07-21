@@ -269,6 +269,9 @@ struct PlayerState {
     crafting_grid: Vec<Option<ItemStack>>,
     editing_sign: Option<(i32, i32, i32)>,
     last_message_from: Option<String>,
+    last_position: (f64, f64, f64),
+    last_position_tick: Instant,
+    velocity: (f64, f64, f64), // blocks per tick, smoothed
 }
 impl PlayerState {
     fn new(uuid: Uuid, name: String) -> Self {
@@ -322,6 +325,9 @@ impl PlayerState {
             crafting_grid: vec![],
             editing_sign: None,
             last_message_from: None,
+            last_position: (0.0, 0.0, 0.0),
+            last_position_tick: Instant::now(),
+            velocity: (0.0, 0.0, 0.0),
         }
     }
 
@@ -371,7 +377,7 @@ impl PlayerState {
         let (helmet, chest, legs, boots) = self.get_equipped_armor();
 
         player_registry
-            .update_armor(self.uuid, helmet, chest, legs, boots)
+            .update_armor(&self.uuid, helmet, chest, legs, boots)
             .await;
 
         for (slot, item) in [(1, boots), (2, legs), (3, chest), (4, helmet)] {
@@ -405,7 +411,7 @@ impl PlayerState {
         self.health = (self.health - amount).max(0.0);
 
         player_registry
-            .update_health(self.uuid, self.health, self.food, self.food_saturation)
+            .update_health(&self.uuid, self.health, self.food, self.food_saturation)
             .await;
 
         send_packet(
@@ -461,7 +467,7 @@ impl PlayerState {
         channels: &Channels,
     ) {
         self.held_item = item_id;
-        player_registry.update_held_item(self.uuid, item_id).await;
+        player_registry.update_held_item(&self.uuid, item_id).await;
         self.send_held_equip(&channels.equip_tx);
     }
 
@@ -907,6 +913,8 @@ async fn make_player_join(
     state.food = pfood;
     state.food_saturation = psat;
     state.is_op = is_op;
+    state.last_position = (px, py, pz);
+    state.last_position_tick = Instant::now();
 
     entity_tracker.write().await.track(TrackedEntity::player(
         entity_id,

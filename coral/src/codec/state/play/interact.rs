@@ -446,7 +446,7 @@ pub async fn try_with_block(
             .await;
 
             state.is_sleeping = true;
-            player_registry.update_sleeping(state.uuid, true).await;
+            player_registry.update_sleeping(&state.uuid, true).await;
 
             send_packet(
                 framed,
