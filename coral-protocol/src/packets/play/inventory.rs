@@ -389,3 +389,19 @@ impl PacketOut for SignEditorOpen {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct WindowProperty {
+    pub window_id: u8,
+    pub property: i16,
+    pub value: i16,
+}
+impl PacketOut for WindowProperty {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x31);
+        writer.write_byte(self.window_id);
+        writer.write_i16(self.property);
+        writer.write_i16(self.value);
+        Ok(())
+    }
+}

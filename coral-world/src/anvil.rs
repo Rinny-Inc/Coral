@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use coral_protocol::packets::play::entity::TileEntity;
+use coral_protocol::packets::play::{entity::TileEntity, inventory::ItemStack};
 
 use crate::{
     blocks::Block,
@@ -235,7 +235,6 @@ fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-// TODO: add details for sign, chest, furnace
 pub fn nbt_to_tile_entities(nbt_data: &[u8]) -> Vec<RawTileEntity> {
     let mut reader = NbtReader::new(nbt_data);
     let (_, root) = reader.read_named_root();
@@ -266,6 +265,105 @@ pub fn nbt_to_tile_entities(nbt_data: &[u8]) -> Vec<RawTileEntity> {
     }
 
     out
+}
+
+pub fn parse_tile_entity(raw: &RawTileEntity) -> Option<TileEntity> {
+    match raw.id.as_str() {
+        "Sign" => {
+            let get_text = |key: &str| -> String {
+                raw.compound
+                    .get(key)
+                    .and_then(|t| t.as_string())
+                    .and_then(|json| {
+                        json.strip_prefix(r#"{"text":""#)?
+                            .strip_suffix(r#""}"#)
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default()
+            };
+            Some(TileEntity::Sign {
+                lines: [
+                    get_text("Text1"),
+                    get_text("Text2"),
+                    get_text("Text3"),
+                    get_text("Text4"),
+                ],
+            })
+        }
+        "Chest" => {
+            let mut items = vec![None; 27];
+            if let Some(list) = raw.compound.get("Items").and_then(|t| t.as_list()) {
+                for entry in list {
+                    let slot = entry.get("Slot").and_then(|t| t.as_i8()).unwrap_or(0) as usize;
+                    if slot < 27 {
+                        items[slot] = Some(ItemStack {
+                            item_id: entry.get("id").and_then(|t| t.as_i32()).unwrap_or(-1) as i16,
+                            count: entry.get("Count").and_then(|t| t.as_i8()).unwrap_or(0) as u8,
+                            metadata: entry
+                                .get("Damage")
+                                .and_then(|t| t.as_i16_val())
+                                .unwrap_or(0),
+                            durability: 0,
+                        });
+                    }
+                }
+            }
+            Some(TileEntity::Chest { items, viewers: 0 })
+        }
+        "Furnace" => {
+            let mut input = None;
+            let mut fuel = None;
+            let mut output = None;
+
+            if let Some(list) = raw.compound.get("Items").and_then(|t| t.as_list()) {
+                for entry in list {
+                    let slot = entry.get("Slot").and_then(|t| t.as_i8()).unwrap_or(-1);
+                    let stack = ItemStack {
+                        item_id: entry.get("id").and_then(|t| t.as_i32()).unwrap_or(-1) as i16,
+                        count: entry.get("Count").and_then(|t| t.as_i8()).unwrap_or(0) as u8,
+                        metadata: entry
+                            .get("Damage")
+                            .and_then(|t| t.as_i16_val())
+                            .unwrap_or(0),
+                        durability: 0,
+                    };
+                    match slot {
+                        0 => input = Some(stack),
+                        1 => fuel = Some(stack),
+                        2 => output = Some(stack),
+                        _ => {}
+                    }
+                }
+            }
+
+            let burn_ticks = raw
+                .compound
+                .get("BurnTime")
+                .and_then(|t| t.as_i16_val())
+                .unwrap_or(0);
+            let cook_ticks = raw
+                .compound
+                .get("CookTime")
+                .and_then(|t| t.as_i16_val())
+                .unwrap_or(0);
+            let burn_ticks_total = raw
+                .compound
+                .get("CookTimeTotal")
+                .and_then(|t| t.as_i16_val())
+                .unwrap_or(0);
+
+            Some(TileEntity::Furnace {
+                input,
+                fuel,
+                output,
+                burn_ticks,
+                burn_ticks_total,
+                cook_ticks,
+                viewers: 0,
+            })
+        }
+        _ => None,
+    }
 }
 
 pub fn nbt_to_blocks(

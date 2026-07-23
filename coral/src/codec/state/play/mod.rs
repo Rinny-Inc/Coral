@@ -28,7 +28,8 @@ use coral_protocol::packets::play::{
         GameStateChangeReason, Respawn, SetExperience, UpdateHealth,
     },
     inventory::{
-        ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory, ItemStack,
+        ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
+        ItemStack, WindowItems, WindowProperty, WindowType,
     },
     keepalive::KeepAlive,
     movement::{
@@ -76,7 +77,10 @@ use crate::{
     ServerContext, SoundEffect,
     codec::{
         Codec, PlayerState, is_normal_disconnect, kick, send_packet,
-        state::play::window_ops::{close_tile_entity_window, handle_tile_entity_click},
+        state::play::{
+            tile_entity_window::slot_tuple,
+            window_ops::{close_tile_entity_window, handle_tile_entity_click},
+        },
     },
 };
 
@@ -148,6 +152,7 @@ pub async fn play(
     let mut sign_update_rx = channels.sign_update_tx.subscribe();
     let mut velocity_broadcast_rx = channels.velocity_broadcast_tx.subscribe();
     let mut chest_anim_rx = channels.chest_anim_tx.subscribe();
+    let mut furnace_update_rx = channels.furnace_update_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -342,6 +347,31 @@ pub async fn play(
                     entity_id: eid,
                     vx, vy, vz
                 }).await;
+            }
+            Ok(pos) = furnace_update_rx.recv() => {
+                if let Some(WindowType::Furnace { window_id, pos: open_pos }) = &state.open_window
+                    && *open_pos == pos
+                {
+                    let window_id = *window_id;
+                    if let Some(TileEntity::Furnace { input, fuel, output, burn_ticks, burn_ticks_total, cook_ticks, .. }) =
+                        tile_entities.read().await.get(&pos)
+                    {
+                        send_packet(framed, WindowProperty { window_id, property: 0, value: *burn_ticks }).await;
+                        send_packet(framed, WindowProperty { window_id, property: 1, value: (*burn_ticks_total).max(1) }).await;
+                        send_packet(framed, WindowProperty { window_id, property: 2, value: *cook_ticks }).await;
+                        send_packet(framed, WindowProperty { window_id, property: 3, value: 200 }).await;
+
+                        let slots = vec![slot_tuple(input), slot_tuple(fuel), slot_tuple(output)];
+                        let mut all_slots = slots;
+                        for i in 9..36 {
+                            all_slots.push(slot_tuple(&state.inventory.slots[i]));
+                        }
+                        for i in 0..9 {
+                            all_slots.push(slot_tuple(&state.inventory.slots[i]));
+                        }
+                        send_packet(framed, WindowItems { window_id, slots: all_slots }).await;
+                    }
+                }
             }
 
             Ok(mv) = pos_rx.recv() => {

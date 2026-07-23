@@ -412,6 +412,17 @@ pub async fn try_with_block(
     }
 
     match clicked.id {
+        61 | 62 => {
+            return open_tile_entity_window(
+                framed,
+                state,
+                (place.x, place.y as i32, place.z),
+                tile_entities,
+                &channels.chest_anim_tx,
+                &channels.sound_tx,
+            )
+            .await;
+        }
         54 | 146 => {
             if !(state.is_sneaking && place.held_item_id > 0) {
                 return open_tile_entity_window(

@@ -242,7 +242,7 @@ impl TileEntityWindow for TileEntity {
     }
 }
 
-fn slot_tuple(item: &Option<ItemStack>) -> (i16, u8, i16) {
+pub fn slot_tuple(item: &Option<ItemStack>) -> (i16, u8, i16) {
     match item {
         Some(s) => (s.item_id, s.count, s.metadata),
         None => (-1, 0, 0),
