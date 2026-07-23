@@ -26,6 +26,7 @@ pub type TeleportRequest = (Uuid, f64, f64, f64);
 pub type KickRequest = (Uuid, String);
 pub type SignUpdate = (i32, i32, i32, [String; 4]);
 pub type EntityVelocityUpdate = (i32, f64, f64, f64);
+pub type ChestAnimation = (i32, i32, i32, u8);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolKind {

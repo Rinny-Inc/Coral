@@ -270,3 +270,24 @@ impl PacketOut for ItemEntityMetadata {
         Ok(())
     }
 }
+
+#[derive(Debug)]
+pub struct BlockAction {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub action_id: u8,
+    pub action_param: u8,
+    pub block_type: i32,
+}
+impl PacketOut for BlockAction {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x24);
+        let pos = BlockPosition::new(self.x, self.y as u8, self.z);
+        writer.write_block_position(pos);
+        writer.write_byte(self.action_id);
+        writer.write_byte(self.action_param);
+        writer.write_varint(self.block_type);
+        Ok(())
+    }
+}

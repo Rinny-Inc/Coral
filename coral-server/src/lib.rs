@@ -9,4 +9,5 @@ pub mod mining;
 pub mod ops;
 pub mod player;
 pub mod projectile;
+pub mod smelting;
 pub mod whitelist;

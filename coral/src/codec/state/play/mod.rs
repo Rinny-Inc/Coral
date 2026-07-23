@@ -9,8 +9,8 @@ use coral_protocol::packets::play::{
     ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
     ResourcePackStatus,
     block::{
-        BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange, ItemEntityMetadata,
-        PlayerBlockPlacement, PlayerDig,
+        BlockAction, BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange,
+        ItemEntityMetadata, PlayerBlockPlacement, PlayerDig,
     },
     chat::{
         ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
@@ -28,8 +28,7 @@ use coral_protocol::packets::play::{
         GameStateChangeReason, Respawn, SetExperience, UpdateHealth,
     },
     inventory::{
-        ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
-        ItemStack, SetSlot, WindowItems,
+        ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory, ItemStack,
     },
     keepalive::KeepAlive,
     movement::{
@@ -75,11 +74,16 @@ use tokio_util::codec::Framed;
 
 use crate::{
     ServerContext, SoundEffect,
-    codec::{Codec, PlayerState, WindowType, is_normal_disconnect, kick, send_packet},
+    codec::{
+        Codec, PlayerState, is_normal_disconnect, kick, send_packet,
+        state::play::window_ops::{close_tile_entity_window, handle_tile_entity_click},
+    },
 };
 
 mod interact;
 mod ticking;
+pub mod tile_entity_window;
+mod window_ops;
 
 pub async fn play(
     framed: &mut Framed<TcpStream, Codec>,
@@ -143,6 +147,7 @@ pub async fn play(
     let mut shutdown_rx = channels.shutdown_tx.subscribe();
     let mut sign_update_rx = channels.sign_update_tx.subscribe();
     let mut velocity_broadcast_rx = channels.velocity_broadcast_tx.subscribe();
+    let mut chest_anim_rx = channels.chest_anim_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -221,6 +226,16 @@ pub async fn play(
                     .add(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
                     .build();
                 send_packet(framed, ChatMessageOut::from_json(&json)).await;
+            }
+            Ok((x, y, z, viewers)) = chest_anim_rx.recv() => { // TODO: add block_id
+                if state.loaded_chunks.contains(&((x >> 4), (z >> 4))) {
+                    send_packet(framed, BlockAction {
+                        x, y, z,
+                        action_id: 1,
+                        action_param: viewers,
+                        block_type: 54,
+                    }).await;
+                }
             }
             Ok((target_uuid, effect_id, amplifier, duration)) = splash_effect_rx.recv() => {
                 if target_uuid != state.uuid {
@@ -1321,7 +1336,7 @@ pub async fn play(
                                     // reuse existing drop logic
                                 }
                             }
-                            state.open_window = None;
+                            close_tile_entity_window(state, &tile_entities, &channels.chest_anim_tx, &channels.sound_tx).await;
                             continue;
                         }
 
@@ -1388,22 +1403,7 @@ pub async fn play(
                                 accepted: true
                             }).await;
 
-                            if let Some(open) = state.open_window.clone()
-                                && click.window_id == open.window_id()
-                            {
-                                match open {
-                                    WindowType::Chest { window_id, pos } => {
-                                        handle_chest_click(
-                                            framed,
-                                            state,
-                                            pos,
-                                            window_id,
-                                            click,
-                                            &tile_entities,
-                                        ).await;
-                                    }
-                                    _ => {}
-                                }
+                            if handle_tile_entity_click(framed, state, click, &tile_entities).await {
                                 continue;
                             }
 
@@ -1718,6 +1718,13 @@ pub async fn play(
     }
     player_registry.remove(&state.uuid).await;
     entity_tracker.write().await.untrack(state.entity_id);
+    close_tile_entity_window(
+        state,
+        &tile_entities,
+        &channels.chest_anim_tx,
+        &channels.sound_tx,
+    )
+    .await;
     if !player_registry.players.read().await.is_empty() {
         channels
             .chat_tx
@@ -2175,154 +2182,4 @@ async fn send_player_equipment(
         )
         .await;
     }
-}
-
-async fn handle_chest_click(
-    framed: &mut Framed<TcpStream, Codec>,
-    state: &mut PlayerState,
-    pos: (i32, i32, i32),
-    window_id: u8,
-    click: &ClickWindow,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-) {
-    let slot = click.slot;
-
-    // map a window slot to either chest storage or player inventory
-    // returns (is_chest, index)
-    fn resolve(slot: i16) -> Option<(bool, usize)> {
-        match slot {
-            0..=26 => Some((true, slot as usize)),              // chest
-            27..=53 => Some((false, (slot - 27 + 9) as usize)), // main inv -> internal 9-35
-            54..=62 => Some((false, (slot - 54) as usize)),     // hotbar -> internal 0-8
-            _ => None,
-        }
-    }
-
-    // TODO: a function so theres no block and the lock is dropped when needed
-    {
-        let mut storage = tile_entities.write().await;
-        let chest = match storage.entry(pos).or_insert_with(|| TileEntity::Chest {
-            items: vec![None; 27],
-        }) {
-            TileEntity::Chest { items } => items,
-            _ => return,
-        };
-
-        match click.mode {
-            0 => {
-                let Some((is_chest, idx)) = resolve(slot) else {
-                    return;
-                };
-
-                let slot_item = if is_chest {
-                    chest[idx].take()
-                } else {
-                    state.inventory.slots[idx].take()
-                };
-
-                let cursor = state.cursor_item.take();
-
-                if is_chest {
-                    chest[idx] = cursor;
-                } else {
-                    state.inventory.slots[idx] = cursor;
-                }
-                state.cursor_item = slot_item;
-            }
-            1 => {
-                let Some((is_chest, idx)) = resolve(slot) else {
-                    return;
-                };
-                let moving = if is_chest {
-                    chest[idx].take()
-                } else {
-                    state.inventory.slots[idx].take()
-                };
-                if let Some(stack) = moving {
-                    if is_chest {
-                        let leftover = state.inventory.insert_itemstack(stack);
-                        chest[idx] = leftover;
-                    } else {
-                        let leftover = insert_into_chest(chest, stack);
-                        state.inventory.slots[idx] = leftover;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    resend_chest_window(framed, state, pos, window_id, tile_entities).await;
-}
-
-fn insert_into_chest(chest: &mut [Option<ItemStack>], mut stack: ItemStack) -> Option<ItemStack> {
-    for existing in chest.iter_mut().flatten() {
-        if existing.item_id == stack.item_id
-            && existing.metadata == stack.metadata
-            && existing.count < 64
-        {
-            let space = 64 - existing.count;
-            let move_n = space.min(stack.count);
-            existing.count += move_n;
-            stack.count -= move_n;
-            if stack.count == 0 {
-                return None;
-            }
-        }
-    }
-    for existing in chest.iter_mut() {
-        if existing.is_none() {
-            *existing = Some(stack);
-            return None;
-        }
-    }
-    Some(stack)
-}
-async fn resend_chest_window(
-    framed: &mut Framed<TcpStream, Codec>,
-    state: &PlayerState,
-    pos: (i32, i32, i32),
-    window_id: u8,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-) {
-    let storage = tile_entities.read().await;
-    let empty = vec![None; 27];
-    let chest = match storage.get(&pos) {
-        Some(TileEntity::Chest { items }) => items,
-        _ => &empty,
-    };
-
-    let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(63);
-    for item in chest.iter().take(27) {
-        match item {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-    for internal in 9..36 {
-        match &state.inventory.slots[internal] {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-    for internal in 0..9 {
-        match &state.inventory.slots[internal] {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-
-    send_packet(framed, WindowItems { window_id, slots }).await;
-
-    send_packet(
-        framed,
-        SetSlot {
-            window_id: -1, // 255
-            slot: -1,
-            item_id: state.cursor_item.as_ref().map(|s| s.item_id).unwrap_or(-1),
-            count: state.cursor_item.as_ref().map(|s| s.count).unwrap_or(0),
-            metadata: state.cursor_item.as_ref().map(|s| s.metadata).unwrap_or(0),
-        },
-    )
-    .await;
 }

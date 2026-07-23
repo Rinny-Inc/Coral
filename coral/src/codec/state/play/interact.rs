@@ -14,7 +14,7 @@ use coral_protocol::packets::play::{
         builder::{ChatBuilder, ChatColor},
     },
     entity::{EntityAnimationType, TileEntity, UseBed},
-    inventory::{ItemStack, OpenWindow, SignEditorOpen, WindowItems},
+    inventory::{ItemStack, SignEditorOpen},
 };
 use coral_server::{
     bounding_box::EntityBounds,
@@ -35,7 +35,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, WindowType, send_packet},
+    codec::{Codec, PlayerState, send_packet, state::play::window_ops::open_tile_entity_window},
     fluid_sim::queue_fluid_update,
 };
 
@@ -414,14 +414,15 @@ pub async fn try_with_block(
     match clicked.id {
         54 | 146 => {
             if !(state.is_sneaking && place.held_item_id > 0) {
-                open_chest(
+                return open_tile_entity_window(
                     framed,
                     state,
                     (place.x, place.y as i32, place.z),
                     tile_entities,
+                    &channels.chest_anim_tx,
+                    &channels.sound_tx,
                 )
                 .await;
-                return true;
             }
             false
         }
@@ -470,71 +471,6 @@ pub async fn try_with_block(
 
 fn is_night(time_of_day: i64) -> bool {
     (12542..=23459).contains(&time_of_day)
-}
-
-async fn open_chest(
-    framed: &mut Framed<TcpStream, Codec>,
-    state: &mut PlayerState,
-    pos: (i32, i32, i32),
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-) {
-    state.window_id_counter = state.window_id_counter.wrapping_add(1);
-    if state.window_id_counter == 0 {
-        state.window_id_counter = 1;
-    }
-    let window_id = state.window_id_counter;
-
-    let contents = {
-        let mut storage = tile_entities.write().await;
-        match storage.entry(pos).or_insert_with(|| TileEntity::Chest {
-            items: vec![None; 27],
-        }) {
-            TileEntity::Chest { items } => items.clone(),
-            _ => vec![None; 27],
-        }
-    };
-
-    let window_type = WindowType::Chest { window_id, pos };
-
-    send_packet(
-        framed,
-        OpenWindow {
-            window_id,
-            window_type: window_type.clone(),
-            title: ChatBuilder::new("Chest"),
-            slot_count: 27,
-        },
-    )
-    .await;
-
-    let mut slots: Vec<(i16, u8, i16)> = Vec::with_capacity(27 + 36);
-
-    for item in contents.iter().take(27) {
-        match item {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-
-    for internal in 9..36 {
-        match &state.inventory.slots[internal] {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-    for internal in 0..9 {
-        match &state.inventory.slots[internal] {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
-        }
-    }
-
-    send_packet(framed, WindowItems { window_id, slots }).await;
-
-    state.open_window = Some(window_type);
-
-    // TODO: play chest sound + animation
-    // (0x24 BlockAction)
 }
 
 async fn raytrace_for_fluid(

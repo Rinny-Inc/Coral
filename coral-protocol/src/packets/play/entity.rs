@@ -507,9 +507,22 @@ impl PacketOut for UseBed {
 
 #[derive(Debug, Clone)]
 pub enum TileEntity {
-    Sign { lines: [String; 4] },
-    Chest { items: Vec<Option<ItemStack>> },
-    // Furnace(FurnaceData)
+    Sign {
+        lines: [String; 4],
+    },
+    Chest {
+        items: Vec<Option<ItemStack>>,
+        viewers: u8,
+    },
+    Furnace {
+        input: Option<ItemStack>,
+        fuel: Option<ItemStack>,
+        output: Option<ItemStack>,
+        burn_ticks: i16,
+        burn_ticks_total: i16,
+        cook_ticks: i16,
+        viewers: u8,
+    },
 }
 
 #[derive(Debug)]

@@ -362,7 +362,13 @@ impl WindowType {
             WindowType::Enchanting { .. } => "minecraft:enchanting_table",
             WindowType::Anvil { .. } => "minecraft:anvil",
             WindowType::Brewing { .. } => "minecraft:brewing_stand",
-            WindowType::Dispenser { .. } => "minecraft:dispenser",
+            WindowType::Dispenser { drop, .. } => {
+                if *drop {
+                    "minecraft:dropper"
+                } else {
+                    "minecraft:dispenser"
+                }
+            }
             WindowType::Hopper { .. } => "minecraft:hopper",
             WindowType::Beacon { .. } => "minecraft:beacon",
         }

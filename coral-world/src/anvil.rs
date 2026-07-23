@@ -157,7 +157,7 @@ pub fn tile_entity_to_nbt(x: i32, y: i32, z: i32, tile: &TileEntity) -> Option<N
                 NbtTag::String(format!(r#"{{"text":"{}"}}"#, escape_json(&lines[3]))),
             ),
         ])),
-        TileEntity::Chest { items } => {
+        TileEntity::Chest { items, .. } => {
             let item_list: Vec<NbtTag> = items
                 .iter()
                 .enumerate()
@@ -180,6 +180,54 @@ pub fn tile_entity_to_nbt(x: i32, y: i32, z: i32, tile: &TileEntity) -> Option<N
                 ("Items".to_string(), NbtTag::List(10, item_list)),
             ]))
         }
+        TileEntity::Furnace {
+            input,
+            fuel,
+            output,
+            burn_ticks,
+            burn_ticks_total,
+            cook_ticks,
+            ..
+        } => {
+            let mut item_list = vec![];
+            if let Some(s) = input {
+                item_list.push(NbtTag::Compound(vec![
+                    ("Slot".to_string(), NbtTag::Byte(0)),
+                    ("id".to_string(), NbtTag::Int(s.item_id as i32)),
+                    ("Count".to_string(), NbtTag::Byte(s.count as i8)),
+                    ("Damage".to_string(), NbtTag::Short(s.metadata)),
+                ]));
+            }
+            if let Some(s) = fuel {
+                item_list.push(NbtTag::Compound(vec![
+                    ("Slot".to_string(), NbtTag::Byte(1)),
+                    ("id".to_string(), NbtTag::Int(s.item_id as i32)),
+                    ("Count".to_string(), NbtTag::Byte(s.count as i8)),
+                    ("Damage".to_string(), NbtTag::Short(s.metadata)),
+                ]));
+            }
+            if let Some(s) = output {
+                item_list.push(NbtTag::Compound(vec![
+                    ("Slot".to_string(), NbtTag::Byte(2)),
+                    ("id".to_string(), NbtTag::Int(s.item_id as i32)),
+                    ("Count".to_string(), NbtTag::Byte(s.count as i8)),
+                    ("Damage".to_string(), NbtTag::Short(s.metadata)),
+                ]));
+            }
+            Some(NbtTag::Compound(vec![
+                ("id".to_string(), NbtTag::String("Furnace".to_string())),
+                ("x".to_string(), NbtTag::Int(x)),
+                ("y".to_string(), NbtTag::Int(y)),
+                ("z".to_string(), NbtTag::Int(z)),
+                ("Items".to_string(), NbtTag::List(10, item_list)),
+                ("BurnTime".to_string(), NbtTag::Short(*burn_ticks)),
+                ("CookTime".to_string(), NbtTag::Short(*cook_ticks)),
+                (
+                    "CookTimeTotal".to_string(),
+                    NbtTag::Short(*burn_ticks_total),
+                ),
+            ]))
+        }
     }
 }
 
@@ -187,6 +235,7 @@ fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+// TODO: add details for sign, chest, furnace
 pub fn nbt_to_tile_entities(nbt_data: &[u8]) -> Vec<RawTileEntity> {
     let mut reader = NbtReader::new(nbt_data);
     let (_, root) = reader.read_named_root();
