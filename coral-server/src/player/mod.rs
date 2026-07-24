@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use coral_protocol::auth::ProfileProperty;
 
-use crate::effects::ActiveEffect;
+use crate::{bounding_box::EntityBounds, effects::ActiveEffect};
 
 pub mod registry;
 
@@ -88,6 +88,20 @@ impl Player {
             is_sleeping: false,
             velocity: (0.0, 0.0, 0.0),
         }
+    }
+
+    pub fn get_head_direction(&self) -> (f64, f64, f64) {
+        let yaw_rad = self.yaw * std::f32::consts::PI / 180.0;
+        let pitch_rad = self.pitch * std::f32::consts::PI / 180.0;
+        let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
+        let dy = (-pitch_rad.sin()) as f64;
+        let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
+        (dx, dy, dz)
+    }
+
+    pub fn get_head_position(&self) -> (f64, f64, f64) {
+        let eye_height = EntityBounds::player(self.is_sneaking).height;
+        (self.x, self.y + eye_height, self.z)
     }
 
     pub fn entity_flags(&self) -> u8 {

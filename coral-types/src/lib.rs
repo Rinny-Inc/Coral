@@ -101,16 +101,6 @@ pub fn dist_sq3(x1: f64, y1: f64, z1: f64, x2: f64, y2: f64, z2: f64) -> f64 {
     dx * dx + dy * dy + dz * dz
 }
 
-#[inline]
-pub fn look_direction(yaw: f32, pitch: f32) -> (f64, f64, f64) {
-    let yaw_rad = yaw * std::f32::consts::PI / 180.0;
-    let pitch_rad = pitch * std::f32::consts::PI / 180.0;
-    let dx = (-yaw_rad.sin() * pitch_rad.cos()) as f64;
-    let dy = (-pitch_rad.sin()) as f64;
-    let dz = (yaw_rad.cos() * pitch_rad.cos()) as f64;
-    (dx, dy, dz)
-}
-
 pub fn offline_uuid(username: &str) -> Uuid {
     Uuid::new_v3(
         &Uuid::NAMESPACE_DNS,

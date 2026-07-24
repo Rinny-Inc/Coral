@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
     path::PathBuf,
     sync::{Arc, atomic::AtomicI64},
@@ -85,6 +85,7 @@ pub struct ServerContext {
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    server_loaded_chunks: Arc<RwLock<HashSet<(i32, i32)>>>,
 }
 
 type JoinLeave = (Player, bool);
@@ -221,7 +222,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tile_entities = Arc::new(RwLock::new(HashMap::new()));
 
-    tasks::spawn_furnace_task(tile_entities.clone(), channels.clone());
+    tasks::spawn_furnace_task(
+        tile_entities.clone(),
+        world_blocks.clone(),
+        generator.clone(),
+        channels.clone(),
+    );
 
     if config.world.enable_auto_save {
         tasks::spawn_world_save_task(
@@ -335,6 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         xp_orbs: Arc::new(RwLock::new(Vec::new())),
         fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
         tile_entities,
+        server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
     };
 
     tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());

@@ -19,7 +19,7 @@ use coral_server::{
 };
 use coral_types::{DespawnEntity, ItemInfo, TicksExt, dist_sq3, dist3};
 use coral_world::{
-    blocks::WorldBlocks,
+    blocks::{Block, WorldBlocks},
     generator::FlatWorldGenerator,
     weather::{Weather, WeatherState},
 };
@@ -467,6 +467,8 @@ pub fn spawn_resource_monitor_task(monitor: Arc<ResourceMonitor>) {
 }
 pub fn spawn_furnace_task(
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    world_blocks: Arc<WorldBlocks>,
+    generator: Arc<FlatWorldGenerator>,
     channels: Channels,
 ) {
     tokio::spawn(async move {
@@ -488,6 +490,8 @@ pub fn spawn_furnace_task(
                 else {
                     continue;
                 };
+
+                let was_burning = *burn_ticks > 0;
 
                 let can_smelt = input
                     .as_ref()
@@ -544,6 +548,27 @@ pub fn spawn_furnace_task(
                 } else if *cook_ticks > 0 {
                     *cook_ticks = (*cook_ticks - 2).max(0);
                     changed = true;
+                }
+
+                let now_burning = *burn_ticks > 0;
+
+                if was_burning != now_burning {
+                    let current = world_blocks
+                        .get(pos.0, pos.1 as u8, pos.2, &generator)
+                        .await;
+                    let new_id = if now_burning { 62 } else { 61 };
+                    world_blocks
+                        .set(
+                            pos.0,
+                            pos.1 as u8,
+                            pos.2,
+                            Block::new(new_id, current.metadata),
+                        )
+                        .await;
+                    channels
+                        .block_tx
+                        .send((pos.0, pos.1, pos.2, new_id as i32, current.metadata))
+                        .ok();
                 }
 
                 if changed {

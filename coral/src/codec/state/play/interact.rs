@@ -17,12 +17,11 @@ use coral_protocol::packets::play::{
     inventory::{ItemStack, SignEditorOpen},
 };
 use coral_server::{
-    bounding_box::EntityBounds,
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind},
 };
-use coral_types::{GameMode, look_direction};
+use coral_types::GameMode;
 use coral_world::{
     blocks::{
         Block, WorldBlocks,
@@ -69,20 +68,21 @@ pub async fn try_with_item(
                 .await
                 && let Some(p) = player_registry.get(&state.uuid).await
             {
-                let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
+                let (dx, dy, dz) = p.get_head_direction();
                 let speed = 1.5;
                 let hook_eid = next_entity_id();
 
+                let (eye_x, eye_y, eye_z) = p.get_head_position();
                 let proj = Projectile {
                     entity_id: hook_eid,
                     owner_entity_id: state.entity_id,
                     kind: ProjectileKind::FishingHook,
-                    x: p.x,
-                    y: p.y + 1.2,
-                    z: p.z, // TODO: change 1.2 to head_location
-                    vx: dx * speed,
-                    vy: dy * speed + 0.2,
-                    vz: dz * speed,
+                    x: eye_x,
+                    y: eye_y,
+                    z: eye_z,
+                    vx: dx + p.velocity.0 * speed,
+                    vy: dy + p.velocity.1 * speed,
+                    vz: dz + p.velocity.2 * speed,
                     ticks_alive: 0,
                     left_owner: false,
                 };
@@ -161,18 +161,8 @@ pub async fn try_with_item_on_block(
             let hit = match clicked {
                 Some(l) => Some((l.0, l.1, l.2)),
                 None => {
-                    let eye_y = p.y + EntityBounds::player(p.is_sneaking).height;
-                    raytrace_for_fluid(
-                        p.x,
-                        eye_y,
-                        p.z,
-                        p.yaw,
-                        p.pitch,
-                        6.0,
-                        world_blocks,
-                        generator,
-                    )
-                    .await
+                    let (x, y, z) = p.get_head_direction();
+                    raytrace_for_fluid(x, y, z, p.yaw, p.pitch, 6.0, world_blocks, generator).await
                 }
             };
 

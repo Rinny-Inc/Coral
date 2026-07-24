@@ -56,7 +56,7 @@ use coral_server::{
     },
     projectile::{Projectile, ProjectileKind},
 };
-use coral_types::{GameMode, ToolMaterial, dist_xz, dist3, look_direction};
+use coral_types::{GameMode, ToolMaterial, dist_xz, dist3};
 use coral_world::{
     blocks::{Block, WorldBlocks, placement_metadata},
     chunk::{ChunkData, UnloadChunk},
@@ -114,6 +114,7 @@ pub async fn play(
         world_time,
         fluid_queue,
         tile_entities,
+        server_loaded_chunks,
         ..
     } = ctx;
 
@@ -508,7 +509,7 @@ pub async fn play(
                 if new_cx != state.chunk_x || new_cz != state.chunk_z {
                     state.chunk_x = new_cx;
                     state.chunk_z = new_cz;
-                    update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
+                    update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, &server_loaded_chunks, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
                 }
 
                 state.was_on_ground = false;
@@ -962,9 +963,9 @@ pub async fn play(
 
                                         if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
-                                            let drop_x = p.x + (-yaw_rad.sin() * 0.5) as f64;
-                                            let drop_y = p.y + 1.0;
-                                            let drop_z = p.z + (yaw_rad.cos() * 0.5) as f64;
+                                            let drop_x = p.x + (-yaw_rad.sin() * 0.3) as f64;
+                                            let drop_y = p.y + 1.2;
+                                            let drop_z = p.z + (yaw_rad.cos() * 0.3) as f64;
 
                                             let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
                                             let vx = vx + p.velocity.0 * 0.3;
@@ -1009,7 +1010,7 @@ pub async fn play(
                                         let power = ((charge_secs * charge_secs + charge_secs * 2.0) / 3.0).clamp(0.0, 1.0);
 
                                         if let Some(p) = player_registry.get(&state.uuid).await {
-                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
+                                            let (dx, dy, dz) = p.get_head_direction();
                                             let speed = power as f64 * 3.0;
                                             let arrow_eid = next_entity_id();
 
@@ -1046,7 +1047,7 @@ pub async fn play(
                                         if is_splash
                                             && let Some(p) = player_registry.get(&state.uuid).await
                                         {
-                                            let (dx, dy, dz) = look_direction(p.yaw, p.pitch);
+                                            let (dx, dy, dz) = p.get_head_direction();
                                             let speed = 0.5;
                                             let proj_eid = next_entity_id();
 
@@ -1286,7 +1287,7 @@ pub async fn play(
                                         }
                                         state.chunk_x = new_chunk_x;
                                         state.chunk_z = new_chunk_z;
-                                        update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                        update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, &server_loaded_chunks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                     }
 
                                     let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
@@ -1481,6 +1482,7 @@ pub async fn play(
                                     &world_blocks,
                                     &generator,
                                     &tile_entities,
+                                    &server_loaded_chunks,
                                     spawn_cx, spawn_cz,
                                     config.server.view_distance,
                                     &mut state.loaded_chunks
@@ -2038,6 +2040,7 @@ pub async fn send_chunks(
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     center_x: i32,
     center_z: i32,
     view_distance: i32,
@@ -2048,6 +2051,22 @@ pub async fn send_chunks(
             if loaded_chunks.contains(&(cx, cz)) {
                 continue;
             }
+
+            let already_loaded = server_loaded_chunks.read().await.contains(&(cx, cz));
+            if !already_loaded {
+                if let Some(nbt) = world_blocks.get_chunk_nbt(cx, cz).await {
+                    for raw in coral_world::anvil::nbt_to_tile_entities(&nbt) {
+                        if let Some(tile) = coral_world::anvil::parse_tile_entity(&raw) {
+                            tile_entities
+                                .write()
+                                .await
+                                .insert((raw.x, raw.y, raw.z), tile);
+                        }
+                    }
+                }
+                server_loaded_chunks.write().await.insert((cx, cz));
+            }
+
             let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, generator).await;
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
@@ -2126,6 +2145,7 @@ async fn update_chunks(
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     new_chunk_x: i32,
     new_chunk_z: i32,
     view_distance: i32,
@@ -2137,6 +2157,7 @@ async fn update_chunks(
         world_blocks,
         generator,
         tile_entities,
+        server_loaded_chunks,
         new_chunk_x,
         new_chunk_z,
         view_distance,

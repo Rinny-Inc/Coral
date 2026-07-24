@@ -223,7 +223,7 @@ struct PlayerState {
     uuid: Uuid,
     entity_id: i32,
     gamemode: GameMode,
-    held_item: i16,
+    held_item: i16, // TODO: use dyn Item
     held_slot: u8,
     health: f32,
     food: i32,
@@ -247,7 +247,7 @@ struct PlayerState {
     breaking_required_ticks: u32,
     current_weather: WeatherState,
     client_brand: Option<String>,
-    skin_parts: u8,
+    skin_parts: u8, // TODO: make enum
     tick_count: i64,
     chunk_x: i32,
     chunk_z: i32,
@@ -536,7 +536,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         registry: ctx.packet_registry.clone(),
         state: EnumProtocol::Handshaking,
         encryption: None,
-        compression_threshold: -1,
+        compression_threshold: ctx.config.server.compression_threshold,
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
@@ -580,6 +580,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &ctx.world_blocks,
         &ctx.generator,
         &ctx.tile_entities,
+        &ctx.server_loaded_chunks,
         &ctx.entity_tracker,
         &ctx.config,
         &ctx.spawn_point,
@@ -613,21 +614,20 @@ async fn make_player_join(
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: &Path,
 ) {
-    if config.server.compression_threshold >= 0 {
+    if framed.codec().compression_threshold >= 0 {
         send_packet(
             framed,
             SetCompression {
-                threshold: config.server.compression_threshold,
+                threshold: framed.codec().compression_threshold,
             },
         )
         .await;
-
-        framed.codec_mut().compression_threshold = config.server.compression_threshold;
     }
 
     let JoinRequest {
@@ -806,6 +806,7 @@ async fn make_player_join(
         world_blocks,
         generator,
         tile_entities,
+        server_loaded_chunks,
         state.chunk_x,
         state.chunk_z,
         config.server.view_distance,
