@@ -12,7 +12,7 @@ members = [
 
 [workspace.dependencies]
 aes = "0.9.1"
-base64 = "0.22.1"
+base64 = "0.23.0"
 bytes = "1.12.1"
 cfb8 = "0.9.1"
 cipher = "0.5.2"
