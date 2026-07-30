@@ -28,9 +28,7 @@
 
 Built for performance and modern concurrency, Coral aims to provide a familiar Minecraft server experience without the limitations of the traditional JVM server stack.
 
-<p align="center">
 [Planned Features](#-planned-features) • [Getting Started](#-getting-started) • [Configuration](#%EF%B8%8F-configuration) • [Contributing](#-contributing)
-</p>
 
 ---
 
