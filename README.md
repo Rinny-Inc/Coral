@@ -1,16 +1,22 @@
-# 🦀🪸 Coral
-
-> ⚠️ Early development — not production ready
+<p align="center">
+  <img src=".github/assets/readme/coral-logo.png" alt="Coral logo" width="235">
+</p>
+<h1 align="center">
+  <b>Coral</b>
+</h1>
 
 <p align="center">
-<img alt="Rust" src="https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust">
-<a href="https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml"><img alt="Rust Lines of Code" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rinny-Inc/Coral/badges/line_badge.json"></a>
-<img alt="Protocol" src="https://img.shields.io/badge/Protocol-47%20(1.8.x)-blue">
-<a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
-<img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
-<a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1352833901860487299?label=Discord&logo=discord"></a>
-<img alt="License" src="https://img.shields.io/badge/License-Custom%20Restrictive-red">
+    <img alt="Rust" src="https://img.shields.io/badge/Rust-stable%20(MSRV)-orange?logo=rust">
+    <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml"><img alt="Rust Lines of Code" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rinny-Inc/Coral/badges/line_badge.json"></a>
+    <img alt="Protocol" src="https://img.shields.io/badge/Protocol-47%20(1.8.x)-blue">
+    <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
+    <img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
+    <a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1352833901860487299?label=Discord&logo=discord"></a>
+    <img alt="License" src="https://img.shields.io/badge/License-Custom%20Restrictive-red">
 </p>
+
+> [!IMPORTANT]
+> Coral is still in early development & not production ready!
 
 > ## 💬 Discord Community
 >
@@ -22,7 +28,9 @@
 
 Built for performance and modern concurrency, Coral aims to provide a familiar Minecraft server experience without the limitations of the traditional JVM server stack.
 
+<p align="center">
 [Planned Features](#-planned-features) • [Getting Started](#-getting-started) • [Configuration](#%EF%B8%8F-configuration) • [Contributing](#-contributing)
+</p>
 
 ---
 
