@@ -31,7 +31,7 @@ Built for performance and modern concurrency, Coral aims to provide a familiar M
 <p align="center"> 
     <a href="#-planned-features">Planned Features</a> • 
     <a href="#-getting-started">Getting Started</a> • 
-    <a href="#-configuration">Configuration</a> • 
+    <a href="#%EF%B8%8F-configuration">Configuration</a> • 
     <a href="#-contributing">Contributing</a> 
 </p>
 
