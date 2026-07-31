@@ -181,6 +181,8 @@ pub async fn play(
                     &config,
                     &item_spawn_times,
                     &item_positions,
+                    &world_blocks,
+                    &generator,
                     &channels,
                 ).await;
             }

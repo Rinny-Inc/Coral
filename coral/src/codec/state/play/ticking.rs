@@ -9,6 +9,10 @@ use coral_server::{
     player::registry::PlayerRegistry,
 };
 use coral_types::GameMode;
+use coral_world::{
+    blocks::WorldBlocks,
+    generator::{self, FlatWorldGenerator},
+};
 use rand::RngExt;
 use tokio::{
     net::TcpStream,
@@ -33,6 +37,8 @@ pub async fn handle_tick(
     config: &Config,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
     channels: &Channels,
 ) {
     tick_eating(framed, state, player_registry, item_registry, channels).await;
@@ -49,6 +55,16 @@ pub async fn handle_tick(
     .await;
     tick_block_breaking_progress(state, &channels.break_tx).await;
     tick_food_and_regen(framed, state, config, player_registry, &channels.chat_tx).await;
+    tick_drowning(
+        framed,
+        state,
+        player_registry,
+        world_blocks,
+        generator,
+        &channels.sound_tx,
+        &channels.chat_tx,
+    )
+    .await;
     tick_effects(framed, state, player_registry, &channels.chat_tx).await;
     tick_void_damage(framed, state, player_registry, &channels.chat_tx).await;
 }
@@ -225,6 +241,50 @@ async fn tick_eating(
         }
     }
 }
+async fn tick_drowning(
+    framed: &mut Framed<TcpStream, Codec>,
+    state: &mut PlayerState,
+    player_registry: &Arc<PlayerRegistry>,
+    world_blocks: &Arc<WorldBlocks>,
+    generator: &Arc<FlatWorldGenerator>,
+    sound_tx: &Arc<Sender<SoundEffect>>,
+    chat_tx: &Arc<Sender<String>>,
+) {
+    let Some(player) = player_registry.get(&state.uuid).await else {
+        return;
+    };
+    let submerged = player.is_head_submerged(world_blocks, generator).await;
+    let can_drown = state.gamemode == GameMode::Survival && !state.is_flying;
+    if submerged && can_drown {
+        if state.air_tick > 0 {
+            state.air_tick -= 1;
+        } else {
+            // out of air -> take damage every 20 ticks
+            if state.tick_count % 20 == 0 {
+                let died = state.damage_player(framed, 2.0, player_registry).await;
+                sound_tx
+                    .send((
+                        "damage.drown".to_string(),
+                        player.x,
+                        player.y,
+                        player.z,
+                        1.0,
+                        63,
+                    ))
+                    .ok();
+                if died {
+                    chat_tx
+                        .send(ChatBuilder::plain_json(&format!("{} drowned", state.name)))
+                        .ok();
+                }
+            }
+        }
+    } else if state.air_tick < 300 {
+        // replace 300 by max_air_tick
+        // refill quickly once head clears water
+        state.air_tick = (state.air_tick + 4).min(300);
+    }
+}
 async fn tick_food_and_regen(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
@@ -257,92 +317,92 @@ async fn tick_food_and_regen(
         } else {
             state.regen_timer = 0;
         }
-    } else {
-        if state.food_exhaustion >= 4.0 {
-            state.food_exhaustion -= 4.0;
+        return;
+    }
+    if state.food_exhaustion >= 4.0 {
+        state.food_exhaustion -= 4.0;
 
-            if state.food_saturation > 0.0 {
-                state.food_saturation = (state.food_saturation - 1.0).max(0.0);
-            } else if state.food > 0 {
-                state.food -= 1;
-                state.food_saturation = 0.0;
+        if state.food_saturation > 0.0 {
+            state.food_saturation = (state.food_saturation - 1.0).max(0.0);
+        } else if state.food > 0 {
+            state.food -= 1;
+            state.food_saturation = 0.0;
 
-                player_registry
-                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
-                    .await;
-
-                send_packet(
-                    framed,
-                    UpdateHealth {
-                        health: state.health,
-                        food: state.food,
-                        food_saturation: state.food_saturation,
-                    },
-                )
+            player_registry
+                .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                 .await;
-            }
+
+            send_packet(
+                framed,
+                UpdateHealth {
+                    health: state.health,
+                    food: state.food,
+                    food_saturation: state.food_saturation,
+                },
+            )
+            .await;
         }
-        if state.food >= 18 && state.health < 20.0 {
-            state.regen_timer += 1;
+    }
+    if state.food >= 18 && state.health < 20.0 {
+        state.regen_timer += 1;
 
-            if state.regen_timer >= 80 {
-                state.regen_timer = 0;
-                state.health = (state.health + 1.0).min(20.0);
-                state.food_exhaustion += 3.0;
-
-                player_registry
-                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
-                    .await;
-                send_packet(
-                    framed,
-                    UpdateHealth {
-                        health: state.health,
-                        food: state.food,
-                        food_saturation: state.food_saturation,
-                    },
-                )
-                .await;
-            }
-        } else {
+        if state.regen_timer >= 80 {
             state.regen_timer = 0;
-        }
+            state.health = (state.health + 1.0).min(20.0);
+            state.food_exhaustion += 3.0;
 
-        if state.food == 0 && state.tick_count % 80 == 0 {
-            let min_health = match config.world.difficulty {
-                1 => 10.0,
-                2 => 1.0,
-                3 => 0.0,
-                _ => 1.0,
-            };
-
-            if state.health > min_health {
-                state.health = (state.health - 1.0).max(min_health);
-                let just_died = state.health <= 0.0 && !state.is_dead;
-                state.is_dead = state.health <= 0.0;
-
-                if just_died {
-                    chat_tx
-                        .send(ChatBuilder::plain_json(&format!(
-                            "{} starved to death",
-                            state.name
-                        )))
-                        .ok();
-                }
-
-                player_registry
-                    .update_health(&state.uuid, state.health, state.food, state.food_saturation)
-                    .await;
-
-                send_packet(
-                    framed,
-                    UpdateHealth {
-                        health: state.health,
-                        food: state.food,
-                        food_saturation: state.food_saturation,
-                    },
-                )
+            player_registry
+                .update_health(&state.uuid, state.health, state.food, state.food_saturation)
                 .await;
+            send_packet(
+                framed,
+                UpdateHealth {
+                    health: state.health,
+                    food: state.food,
+                    food_saturation: state.food_saturation,
+                },
+            )
+            .await;
+        }
+    } else {
+        state.regen_timer = 0;
+    }
+
+    if state.food == 0 && state.tick_count % 80 == 0 {
+        let min_health = match config.world.difficulty {
+            1 => 10.0,
+            2 => 1.0,
+            3 => 0.0,
+            _ => 1.0,
+        };
+
+        if state.health > min_health {
+            state.health = (state.health - 1.0).max(min_health);
+            let just_died = state.health <= 0.0 && !state.is_dead;
+            state.is_dead = state.health <= 0.0;
+
+            if just_died {
+                chat_tx
+                    .send(ChatBuilder::plain_json(&format!(
+                        "{} starved to death",
+                        state.name
+                    )))
+                    .ok();
             }
+
+            player_registry
+                .update_health(&state.uuid, state.health, state.food, state.food_saturation)
+                .await;
+
+            send_packet(
+                framed,
+                UpdateHealth {
+                    health: state.health,
+                    food: state.food,
+                    food_saturation: state.food_saturation,
+                },
+            )
+            .await;
         }
     }
 }

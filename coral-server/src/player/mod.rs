@@ -1,4 +1,10 @@
+use std::sync::Arc;
+
 use coral_types::GameMode;
+use coral_world::{
+    blocks::{WorldBlocks, fluid::Fluid},
+    generator::FlatWorldGenerator,
+};
 use uuid::Uuid;
 
 use coral_protocol::auth::ProfileProperty;
@@ -102,6 +108,24 @@ impl Player {
     pub fn get_head_position(&self) -> (f64, f64, f64) {
         let eye_height = EntityBounds::player(self.is_sneaking).height;
         (self.x, self.y + eye_height, self.z)
+    }
+
+    pub async fn is_head_submerged(
+        &self,
+        wb: &Arc<WorldBlocks>,
+        generator: &Arc<FlatWorldGenerator>,
+    ) -> bool {
+        let (bx, by, bz) = self.get_head_position();
+        let bx = bx.floor() as i32;
+        let by = by.floor() as i32;
+        let bz = bz.floor() as i32;
+
+        if !(0..=255).contains(&by) {
+            return false;
+        }
+
+        let block = wb.get(bx, by as u8, bz, generator);
+        Fluid::is_water(block.await.id)
     }
 
     pub fn entity_flags(&self) -> u8 {
