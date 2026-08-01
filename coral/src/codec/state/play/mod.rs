@@ -20,8 +20,8 @@ use coral_protocol::packets::play::{
         ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
         EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook,
         EntityLookAndMove, EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity,
-        SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign, UseBed, UseEntity,
-        UseEntityAction,
+        MetadataValue, SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign,
+        UseBed, UseEntity, UseEntityAction,
     },
     game::{
         ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
@@ -572,8 +572,10 @@ pub async fn play(
                 }
                 send_packet(framed, EntityMetadata {
                     entity_id: eid,
-                    entity_flags,
-                    skin_parts
+                    entries: vec![
+                        (0, MetadataValue::Byte(entity_flags)),
+                        (10, MetadataValue::Byte(skin_parts)),
+                    ]
                 }).await;
             }
             Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
@@ -1986,8 +1988,10 @@ pub async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &P
         framed,
         EntityMetadata {
             entity_id: player.entity_id,
-            entity_flags: player.entity_flags(),
-            skin_parts: player.skin_parts,
+            entries: vec![
+                (0, MetadataValue::Byte(player.entity_flags())),
+                (10, MetadataValue::Byte(player.skin_parts)),
+            ],
         },
     )
     .await;

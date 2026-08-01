@@ -45,10 +45,8 @@ impl BoundingBox {
 pub struct EntityBounds;
 impl EntityBounds {
     pub fn player(sneaking: bool) -> BoundingBox {
-        if sneaking {
-            return BoundingBox::new(0.6, 1.65);
-        }
-        BoundingBox::new(0.6, 1.8)
+        let height = if sneaking { 1.65 } else { 1.8 };
+        BoundingBox::new(0.6, height)
     }
 
     pub fn item() -> BoundingBox {

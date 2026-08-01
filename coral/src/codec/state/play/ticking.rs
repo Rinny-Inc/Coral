@@ -9,10 +9,7 @@ use coral_server::{
     player::registry::PlayerRegistry,
 };
 use coral_types::GameMode;
-use coral_world::{
-    blocks::WorldBlocks,
-    generator::{self, FlatWorldGenerator},
-};
+use coral_world::{blocks::WorldBlocks, generator::FlatWorldGenerator};
 use rand::RngExt;
 use tokio::{
     net::TcpStream,

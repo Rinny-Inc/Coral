@@ -501,16 +501,16 @@ pub fn spawn_furnace_task(
                         Some(o) => o.item_id == rid && o.metadata == rmeta && o.count < 64,
                     })
                     .unwrap_or(false);
-                if *burn_ticks == 0 && can_smelt {
-                    if let Some(f) = fuel
-                        && let Some(burn) = fuel_burn_ticks(f.item_id)
-                    {
-                        *burn_ticks = burn;
-                        *burn_ticks_total = burn;
-                        f.count -= 1;
-                        if f.count == 0 {
-                            *fuel = None;
-                        }
+                if *burn_ticks == 0
+                    && can_smelt
+                    && let Some(f) = fuel
+                    && let Some(burn) = fuel_burn_ticks(f.item_id)
+                {
+                    *burn_ticks = burn;
+                    *burn_ticks_total = burn;
+                    f.count -= 1;
+                    if f.count == 0 {
+                        *fuel = None;
                     }
                 }
 

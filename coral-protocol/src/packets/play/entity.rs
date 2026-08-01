@@ -7,6 +7,7 @@ use crate::{
         play::{block::BlockPosition, inventory::ItemStack},
     },
     reader::Reader,
+    writer::Writer,
 };
 
 #[derive(Debug)]
@@ -308,11 +309,43 @@ pub struct EntityVelocity {
     pub vz: f64,
 }
 
+#[derive(Debug, Clone)]
+pub enum MetadataValue {
+    Byte(u8),
+    Short(i16),
+    Int(i32),
+    Float(f32),
+    // TODO: to extend String, Slot...
+}
+impl MetadataValue {
+    fn type_tag(&self) -> u8 {
+        match self {
+            MetadataValue::Byte(_) => 0,
+            MetadataValue::Short(_) => 1,
+            MetadataValue::Int(_) => 2,
+            MetadataValue::Float(_) => 3,
+        }
+    }
+    fn write(&self, writer: &mut Writer) {
+        match self {
+            MetadataValue::Byte(v) => writer.write_byte(*v),
+            MetadataValue::Short(v) => writer.write_i16(*v),
+            MetadataValue::Int(v) => writer.write_i32(*v),
+            MetadataValue::Float(v) => writer.write_f32(*v),
+        }
+    }
+}
 #[derive(Debug)]
 pub struct EntityMetadata {
     pub entity_id: i32,
-    pub entity_flags: u8, // bit 1 = sneaking, bit 3 = sprinting
-    pub skin_parts: u8,
+    pub entries: Vec<(u8, MetadataValue)>, // (index, value)
+                                           // index 0 BYTE -> on fire, crouch, sprint, invisible, eating/blocking
+                                           // index 1 BYTE -> air tick
+                                           // index 6 FLOAT -> health
+                                           // index 7 INT -> potion effect color
+                                           // index 8 BYTE -> potion effect ambiant
+                                           // index 9 BYTE -> arrows in entity
+                                           // index 10 BYTE -> skin parts
 }
 
 impl PacketIn for EntityAction {
@@ -382,15 +415,12 @@ impl PacketOut for EntityMetadata {
         writer.write_varint(0x1C);
         writer.write_varint(self.entity_id);
 
-        // index 0
-        writer.write_byte(0x00);
-        writer.write_byte(self.entity_flags);
+        for (index, value) in &self.entries {
+            let key = (value.type_tag() << 5) | (index & 0x1F);
+            writer.write_byte(key);
+            value.write(writer);
+        }
 
-        // index 10 - skin layers
-        writer.write_byte(0x0A);
-        writer.write_byte(self.skin_parts);
-
-        // end
         writer.write_byte(0x7F);
         Ok(())
     }

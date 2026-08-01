@@ -28,7 +28,7 @@ use coral_protocol::packets::login::SetCompression;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
-use coral_protocol::packets::play::entity::{EntityMetadata, TileEntity};
+use coral_protocol::packets::play::entity::{EntityMetadata, MetadataValue, TileEntity};
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
 use coral_protocol::packets::play::inventory::{
     Inventory, ItemStack, SetSlot, WindowItems, WindowType,
@@ -877,8 +877,10 @@ async fn make_player_join(
         framed,
         EntityMetadata {
             entity_id: player.entity_id,
-            entity_flags: 0x00,
-            skin_parts: state.skin_parts,
+            entries: vec![
+                (0, MetadataValue::Byte(0x00)),
+                (10, MetadataValue::Byte(state.skin_parts)),
+            ],
         },
     )
     .await;

@@ -116,13 +116,13 @@ impl Player {
         generator: &Arc<FlatWorldGenerator>,
     ) -> bool {
         let (bx, by, bz) = self.get_head_position();
-        let bx = bx.floor() as i32;
         let by = by.floor() as i32;
-        let bz = bz.floor() as i32;
 
         if !(0..=255).contains(&by) {
             return false;
         }
+        let bx = bx.floor() as i32;
+        let bz = bz.floor() as i32;
 
         let block = wb.get(bx, by as u8, bz, generator);
         Fluid::is_water(block.await.id)
