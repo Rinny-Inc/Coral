@@ -566,17 +566,11 @@ pub async fn play(
                     animation: anim
                 }).await;
             }
-            Ok((eid, entity_flags, skin_parts)) = meta_rx.recv() => {
-                if eid == state.entity_id {
+            Ok(update) = meta_rx.recv() => {
+                if update.entity_id == state.entity_id {
                     continue;
                 }
-                send_packet(framed, EntityMetadata {
-                    entity_id: eid,
-                    entries: vec![
-                        (0, MetadataValue::Byte(entity_flags)),
-                        (10, MetadataValue::Byte(skin_parts)),
-                    ]
-                }).await;
+                send_packet(framed, update).await;
             }
             Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
                 send_packet(framed, BlockChange {
@@ -1551,7 +1545,7 @@ pub async fn play(
                                 }
 
                                 if let Some(player) = player_registry.get(&state.uuid).await {
-                                    channels.meta_tx.send((state.entity_id, player.entity_flags(), player.skin_parts)).ok();
+                                    state.watcher.set(0, MetadataValue::Byte(player.entity_flags()));
                                 }
                             }
                             continue;
@@ -1698,7 +1692,7 @@ pub async fn play(
                         if let Some(settings) = packet.as_any().downcast_ref::<ClientSettings>() {
                             state.skin_parts = settings.skin_parts;
                             player_registry.update_skin_parts(&state.uuid, settings.skin_parts).await;
-                            channels.meta_tx.send((state.entity_id, 0x00, settings.skin_parts)).ok();
+                            state.watcher.set(10, MetadataValue::Byte(settings.skin_parts));
                             continue;
                         }
 
@@ -1990,6 +1984,7 @@ pub async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &P
             entity_id: player.entity_id,
             entries: vec![
                 (0, MetadataValue::Byte(player.entity_flags())),
+                (1, MetadataValue::Short(player.air_tick)),
                 (10, MetadataValue::Byte(player.skin_parts)),
             ],
         },

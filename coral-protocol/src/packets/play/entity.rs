@@ -335,7 +335,7 @@ impl MetadataValue {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EntityMetadata {
     pub entity_id: i32,
     pub entries: Vec<(u8, MetadataValue)>, // (index, value)

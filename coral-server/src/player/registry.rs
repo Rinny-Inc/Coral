@@ -125,6 +125,12 @@ impl PlayerRegistry {
         }
     }
 
+    pub async fn update_air_tick(&self, uuid: &Uuid, air_tick: i16) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
+            player.air_tick = air_tick;
+        }
+    }
+
     pub async fn update_skin_parts(&self, uuid: &Uuid, skin_parts: u8) {
         if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.skin_parts = skin_parts;

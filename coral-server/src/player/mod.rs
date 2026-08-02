@@ -44,6 +44,7 @@ pub struct Player {
     pub boots: i16,
     pub active_effects: Vec<ActiveEffect>,
     pub is_sleeping: bool,
+    pub air_tick: i16,
 }
 
 impl Player {
@@ -93,6 +94,7 @@ impl Player {
             active_effects: vec![],
             is_sleeping: false,
             velocity: (0.0, 0.0, 0.0),
+            air_tick: 300,
         }
     }
 

@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use coral_config::Config;
 use coral_protocol::packets::play::{
-    chat::builder::ChatBuilder, game::UpdateHealth, inventory::SetSlot,
+    chat::builder::ChatBuilder, entity::MetadataValue, game::UpdateHealth, inventory::SetSlot,
 };
 use coral_server::{
     bounding_box::EntityBounds, effects::EffectKind, items::ItemRegistry,
@@ -64,6 +64,9 @@ pub async fn handle_tick(
     .await;
     tick_effects(framed, state, player_registry, &channels.chat_tx).await;
     tick_void_damage(framed, state, player_registry, &channels.chat_tx).await;
+    if let Some(update) = state.watcher.take_dirty(state.entity_id) {
+        channels.meta_tx.send(update).ok();
+    }
 }
 
 async fn tick_block_breaking_progress(
@@ -255,6 +258,10 @@ async fn tick_drowning(
     if submerged && can_drown {
         if state.air_tick > 0 {
             state.air_tick -= 1;
+            state.watcher.set(1, MetadataValue::Short(state.air_tick));
+            player_registry
+                .update_air_tick(&state.uuid, state.air_tick)
+                .await;
         } else {
             // out of air -> take damage every 20 ticks
             if state.tick_count % 20 == 0 {
@@ -280,6 +287,10 @@ async fn tick_drowning(
         // replace 300 by max_air_tick
         // refill quickly once head clears water
         state.air_tick = (state.air_tick + 4).min(300);
+        state.watcher.set(1, MetadataValue::Short(state.air_tick));
+        player_registry
+            .update_air_tick(&state.uuid, state.air_tick)
+            .await;
     }
 }
 async fn tick_food_and_regen(

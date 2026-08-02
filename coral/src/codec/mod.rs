@@ -6,6 +6,7 @@ use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use coral_protocol::packets::play::ResourcePackSend;
+use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::ActiveEffect;
 use coral_server::items::ItemRegistry;
 use coral_server::projectile::Projectile;
@@ -28,7 +29,7 @@ use coral_protocol::packets::login::SetCompression;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
-use coral_protocol::packets::play::entity::{EntityMetadata, MetadataValue, TileEntity};
+use coral_protocol::packets::play::entity::{MetadataValue, TileEntity};
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
 use coral_protocol::packets::play::inventory::{
     Inventory, ItemStack, SetSlot, WindowItems, WindowType,
@@ -273,6 +274,7 @@ struct PlayerState {
     last_position_tick: Instant,
     velocity: (f64, f64, f64), // blocks per tick, smoothed
     air_tick: i16,
+    watcher: DataWatcher,
 }
 impl PlayerState {
     fn new(uuid: Uuid, name: String) -> Self {
@@ -330,6 +332,7 @@ impl PlayerState {
             last_position_tick: Instant::now(),
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,
+            watcher: DataWatcher::new(),
         }
     }
 
@@ -875,17 +878,11 @@ async fn make_player_join(
         send_spawn_player(framed, &p).await;
     }
 
-    send_packet(
-        framed,
-        EntityMetadata {
-            entity_id: player.entity_id,
-            entries: vec![
-                (0, MetadataValue::Byte(0x00)),
-                (10, MetadataValue::Byte(state.skin_parts)),
-            ],
-        },
-    )
-    .await;
+    state.watcher.set(0, MetadataValue::Byte(0x00)); // no flags yet
+    state.watcher.set(1, MetadataValue::Short(300)); // full air
+    state.watcher.set(10, MetadataValue::Byte(state.skin_parts));
+
+    send_packet(framed, state.watcher.full_snapshot(entity_id)).await;
 
     send_packet(
         framed,

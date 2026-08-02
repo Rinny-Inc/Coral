@@ -10,7 +10,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use coral_protocol::packets::{
     PacketRegistry,
     play::{
-        entity::{EntityAnimationType, TileEntity},
+        entity::{EntityAnimationType, EntityMetadata, TileEntity},
         game::EntityStatusType,
         movement::MovementBroadcast,
     },
@@ -18,9 +18,9 @@ use coral_protocol::packets::{
 use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, ChestAnimation, DamageEvent, DespawnEntity,
     EntityVelocityUpdate, EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup,
-    KickRequest, MetadataUpdate, ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove,
-    SignUpdate, SoundEffect, SplashEffect, TeleportRequest, TicksExt, TimeUpdate, XpOrbMove,
-    XpOrbSpawn, XpPickup,
+    KickRequest, ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate,
+    SoundEffect, SplashEffect, TeleportRequest, TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn,
+    XpPickup,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -103,7 +103,7 @@ pub struct Channels {
     block_tx: Arc<Sender<BlockUpdate>>,
     break_tx: Arc<Sender<BreakAnimation>>,
     anim_tx: Arc<Sender<AnimationUpdate>>,
-    meta_tx: Arc<Sender<MetadataUpdate>>,
+    meta_tx: Arc<Sender<EntityMetadata>>,
     dmg_tx: Arc<Sender<DamageEvent>>,
     item_tx: Arc<Sender<ItemDrop>>,
     despawn_tx: Arc<Sender<DespawnEntity>>,
@@ -143,7 +143,7 @@ impl Channels {
             block_tx: Arc::new(channel::<BlockUpdate>(100).0),
             break_tx: Arc::new(channel::<BreakAnimation>(100).0),
             anim_tx: Arc::new(channel::<AnimationUpdate>(100).0),
-            meta_tx: Arc::new(channel::<MetadataUpdate>(100).0),
+            meta_tx: Arc::new(channel::<EntityMetadata>(100).0),
             dmg_tx: Arc::new(channel::<DamageEvent>(100).0),
             item_tx: Arc::new(channel::<ItemDrop>(1000).0),
             despawn_tx: Arc::new(channel::<DespawnEntity>(50).0),
