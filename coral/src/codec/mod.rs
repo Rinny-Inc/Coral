@@ -538,7 +538,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         registry: ctx.packet_registry.clone(),
         state: EnumProtocol::Handshaking,
         encryption: None,
-        compression_threshold: ctx.config.server.compression_threshold,
+        compression_threshold: -1,
         decrypted_buf: BytesMut::new(),
     };
     let peer_ip = socket.peer_addr().ok();
@@ -622,14 +622,16 @@ async fn make_player_join(
     spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: &Path,
 ) {
-    if framed.codec().compression_threshold >= 0 {
+    if config.server.compression_threshold >= 0 {
         send_packet(
             framed,
             SetCompression {
-                threshold: framed.codec().compression_threshold,
+                threshold: config.server.compression_threshold,
             },
         )
         .await;
+
+        framed.codec_mut().compression_threshold = config.server.compression_threshold;
     }
 
     let JoinRequest {
