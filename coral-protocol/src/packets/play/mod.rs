@@ -17,6 +17,7 @@ pub mod join_game;
 pub mod keepalive;
 pub mod movement;
 pub mod player_list;
+pub mod scoreboard;
 
 // 0x05
 #[derive(Debug)]
@@ -361,5 +362,21 @@ impl PacketIn for ResourcePackStatus {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[derive(Debug)]
+pub struct Statistics {
+    pub entries: Vec<(String, i32)>, // (stat/achievement key, value)
+}
+impl PacketOut for Statistics {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x37);
+        writer.write_varint(self.entries.len() as i32);
+        for (key, value) in &self.entries {
+            writer.write_string(key);
+            writer.write_varint(*value);
+        }
+        Ok(())
     }
 }
