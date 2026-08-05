@@ -6,10 +6,15 @@ use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
 use coral_protocol::packets::play::ResourcePackSend;
+use coral_protocol::packets::play::scoreboard::{
+    DisplayScoreboard, ScoreboardObjective, TeamPacket, UpdateScore,
+};
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::ActiveEffect;
 use coral_server::items::ItemRegistry;
 use coral_server::projectile::Projectile;
+use coral_server::scoreboard::ScoreboardManager;
+use coral_server::scoreboard::team::TeamManager;
 use coral_types::GameMode;
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::load_player_data;
@@ -590,6 +595,8 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &ctx.config,
         &ctx.spawn_point,
         &ctx.world_dir,
+        &ctx.scoreboard,
+        &ctx.teams,
     )
     .await;
 
@@ -624,6 +631,8 @@ async fn make_player_join(
     config: &Config,
     spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: &Path,
+    scoreboard: &Arc<ScoreboardManager>,
+    teams: &Arc<TeamManager>,
 ) {
     if config.server.compression_threshold >= 0 {
         send_packet(
@@ -876,6 +885,60 @@ async fn make_player_join(
             continue;
         }
         send_spawn_player(framed, &p).await;
+    }
+
+    let (objectives, scores, sidebar) = scoreboard.full_state_packets().await;
+    for (name, display_name, render_type) in objectives {
+        send_packet(
+            framed,
+            ScoreboardObjective {
+                name,
+                mode: 0,
+                display_name,
+                render_type,
+            },
+        )
+        .await;
+    }
+    for (holder, objective, value) in scores {
+        send_packet(
+            framed,
+            UpdateScore {
+                name: holder,
+                action: 0,
+                objective,
+                value,
+            },
+        )
+        .await;
+    }
+    if let Some(obj) = sidebar {
+        send_packet(
+            framed,
+            DisplayScoreboard {
+                position: 1,
+                objective: obj,
+            },
+        )
+        .await;
+    }
+
+    for team in teams.all_teams().await {
+        send_packet(
+            framed,
+            TeamPacket {
+                name: team.name,
+                mode: 0,
+                display_name: team.display_name,
+                prefix: team.prefix,
+                suffix: team.suffix,
+                friendly_fire: if team.friendly_fire { 1 } else { 0 },
+                name_tag_visibility: "always".to_string(),
+                color: team.color,
+                players: team.players,
+            },
+        )
+        .await;
     }
 
     state.watcher.set(0, MetadataValue::Byte(0x00)); // no flags yet

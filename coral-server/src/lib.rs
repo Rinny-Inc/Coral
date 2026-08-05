@@ -13,3 +13,4 @@ pub mod projectile;
 pub mod scoreboard;
 pub mod smelting;
 pub mod whitelist;
+pub mod statistics;

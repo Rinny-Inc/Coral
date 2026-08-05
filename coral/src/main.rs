@@ -45,6 +45,8 @@ use coral_server::{
     ops::OpsFile,
     player::{Player, registry::PlayerRegistry},
     projectile::{Projectile, ProjectileKind},
+    scoreboard::{ScoreboardManager, team::TeamManager},
+    statistics::StatTracker,
     whitelist::WhitelistFile,
 };
 use coral_world::{
@@ -86,6 +88,9 @@ pub struct ServerContext {
     fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     server_loaded_chunks: Arc<RwLock<HashSet<(i32, i32)>>>,
+    scoreboard: Arc<ScoreboardManager>,
+    teams: Arc<TeamManager>,
+    stats: Arc<StatTracker>,
 }
 
 type JoinLeave = (Player, bool);
@@ -342,6 +347,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
         tile_entities,
         server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
+        scoreboard: Arc::new(ScoreboardManager::new()),
+        teams: Arc::new(TeamManager::new()),
+        stats: Arc::new(StatTracker::new()),
     };
 
     tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
