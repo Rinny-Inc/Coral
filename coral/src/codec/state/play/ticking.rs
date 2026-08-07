@@ -258,10 +258,6 @@ async fn tick_drowning(
     if submerged && can_drown {
         if state.air_tick > 0 {
             state.air_tick -= 1;
-            state.watcher.set(1, MetadataValue::Short(state.air_tick));
-            player_registry
-                .update_air_tick(&state.uuid, state.air_tick)
-                .await;
         } else {
             // out of air -> take damage every 20 ticks
             if state.tick_count % 20 == 0 {
@@ -287,6 +283,9 @@ async fn tick_drowning(
         // replace 300 by max_air_tick
         // refill quickly once head clears water
         state.air_tick = (state.air_tick + 4).min(300);
+    }
+    if state.air_tick != state.last_sent_air_tick {
+        state.last_sent_air_tick = state.air_tick;
         state.watcher.set(1, MetadataValue::Short(state.air_tick));
         player_registry
             .update_air_tick(&state.uuid, state.air_tick)

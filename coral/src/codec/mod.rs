@@ -279,7 +279,10 @@ struct PlayerState {
     last_position_tick: Instant,
     velocity: (f64, f64, f64), // blocks per tick, smoothed
     air_tick: i16,
+    last_sent_air_tick: i16,
+    fire_tick: i16,
     watcher: DataWatcher,
+    in_lava: bool,
 }
 impl PlayerState {
     fn new(uuid: Uuid, name: String) -> Self {
@@ -337,7 +340,10 @@ impl PlayerState {
             last_position_tick: Instant::now(),
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,
+            last_sent_air_tick: 300,
+            fire_tick: 0,
             watcher: DataWatcher::new(),
+            in_lava: false,
         }
     }
 
