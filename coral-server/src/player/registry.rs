@@ -69,6 +69,12 @@ impl PlayerRegistry {
         }
     }
 
+    pub async fn update_on_fire(&self, uuid: &Uuid, on_fire: bool) {
+        if let Some(player) = self.players.write().await.get_mut(uuid) {
+            player.on_fire = on_fire;
+        }
+    }
+
     pub async fn update_held_slot(&self, uuid: &Uuid, held_slot: u8) {
         if let Some(player) = self.players.write().await.get_mut(uuid) {
             player.held_slot = held_slot;

@@ -10,12 +10,13 @@ use coral_protocol::packets::play::scoreboard::{
     DisplayScoreboard, ScoreboardObjective, TeamPacket, UpdateScore,
 };
 use coral_server::data_watcher::DataWatcher;
-use coral_server::effects::ActiveEffect;
+use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::items::ItemRegistry;
 use coral_server::projectile::Projectile;
 use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
-use coral_types::GameMode;
+use coral_types::{GameMode, SoundEffect};
+use coral_world::blocks::fluid::Fluid;
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::load_player_data;
 use futures::SinkExt;
@@ -280,7 +281,7 @@ struct PlayerState {
     velocity: (f64, f64, f64), // blocks per tick, smoothed
     air_tick: i16,
     last_sent_air_tick: i16,
-    fire_tick: i16,
+    fire_ticks: i16,
     watcher: DataWatcher,
     in_lava: bool,
 }
@@ -341,7 +342,7 @@ impl PlayerState {
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,
             last_sent_air_tick: 300,
-            fire_tick: 0,
+            fire_ticks: 0,
             watcher: DataWatcher::new(),
             in_lava: false,
         }
@@ -544,6 +545,128 @@ impl PlayerState {
         self.inventory.slots[hotbar_slot] = Some(new_item);
         self.sync_hotbar_slot(framed, player_registry, channels)
             .await;
+    }
+
+    async fn check_fire_lava_damage(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        player: &Player,
+        world_blocks: &Arc<WorldBlocks>,
+        generator: &Arc<FlatWorldGenerator>,
+        player_registry: &Arc<PlayerRegistry>,
+        chat_tx: &Arc<Sender<String>>,
+        sound_tx: &Arc<Sender<SoundEffect>>,
+    ) {
+        if self.gamemode != GameMode::Survival && self.gamemode != GameMode::Adventure {
+            return;
+        }
+        let bx = player.x.floor() as i32;
+        let bz = player.z.floor() as i32;
+        let by_feet = player.y.floor().clamp(0.0, 255.0) as u8;
+        let by_body = (player.y + 1.0).floor().clamp(0.0, 255.0) as u8;
+
+        let feet = world_blocks.get(bx, by_feet, bz, generator).await;
+        let body = world_blocks.get(bx, by_body, bz, generator).await;
+
+        let touching_lava = Fluid::is_lava(feet.id) || Fluid::is_lava(body.id);
+        let touching_fire = feet.id == 51 || body.id == 51;
+
+        self.in_lava = touching_lava;
+
+        let has_fire_resistance = self
+            .active_effects
+            .iter()
+            .any(|e| e.kind == EffectKind::FireResistance);
+
+        if touching_lava {
+            if !has_fire_resistance {
+                if self.tick_count % 10 == 0 {
+                    let died = self.damage_player(framed, 4.0, player_registry).await;
+                    sound_tx
+                        .send((
+                            "damage.fireburn".to_string(),
+                            player.x,
+                            player.y,
+                            player.z,
+                            1.0,
+                            63,
+                        ))
+                        .ok();
+                    if died {
+                        chat_tx
+                            .send(ChatBuilder::plain_json(&format!(
+                                "{} tried to swim in lava",
+                                self.name,
+                            )))
+                            .ok();
+                    }
+                }
+            }
+            self.fire_ticks = if has_fire_resistance {
+                0
+            } else {
+                self.fire_ticks.max(300)
+            };
+        } else if touching_fire {
+            if !has_fire_resistance {
+                if self.tick_count % 20 == 0 {
+                    let died = self.damage_player(framed, 1.0, player_registry).await;
+                    if died {
+                        chat_tx
+                            .send(ChatBuilder::plain_json(&format!(
+                                "{} went up in flames",
+                                self.name
+                            )))
+                            .ok();
+                    }
+                }
+            }
+            self.fire_ticks = if has_fire_resistance {
+                0
+            } else {
+                self.fire_ticks.max(160)
+            };
+        }
+
+        if has_fire_resistance {
+            self.fire_ticks = 0;
+        } else if self.fire_ticks > 0 {
+            self.fire_ticks -= 1;
+            if self.tick_count % 20 == 0 {
+                let died = self.damage_player(framed, 1.0, player_registry).await;
+                if died {
+                    chat_tx
+                        .send(ChatBuilder::plain_json(&format!(
+                            "{} burned to death",
+                            self.name
+                        )))
+                        .ok();
+                }
+            }
+            if Fluid::is_water(feet.id) || Fluid::is_water(body.id) {
+                self.fire_ticks = 0;
+            }
+        }
+
+        self.watcher
+            .set(0, MetadataValue::Byte(self.entity_flags()));
+        player_registry
+            .update_on_fire(&self.uuid, self.fire_ticks > 0)
+            .await;
+    }
+
+    pub fn entity_flags(&self) -> u8 {
+        let mut flags = 0u8;
+        if self.fire_ticks > 0 {
+            flags |= 0x01;
+        }
+        if self.is_sneaking {
+            flags |= 0x02;
+        }
+        if self.is_sprinting {
+            flags |= 0x08;
+        }
+        flags
     }
 }
 
@@ -947,7 +1070,9 @@ async fn make_player_join(
         .await;
     }
 
-    state.watcher.set(0, MetadataValue::Byte(0x00)); // no flags yet
+    state
+        .watcher
+        .set(0, MetadataValue::Byte(state.entity_flags()));
     state.watcher.set(1, MetadataValue::Short(300)); // full air
     state.watcher.set(10, MetadataValue::Byte(state.skin_parts));
 

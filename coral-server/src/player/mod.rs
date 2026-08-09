@@ -45,6 +45,7 @@ pub struct Player {
     pub active_effects: Vec<ActiveEffect>,
     pub is_sleeping: bool,
     pub air_tick: i16,
+    pub on_fire: bool,
 }
 
 impl Player {
@@ -95,6 +96,7 @@ impl Player {
             is_sleeping: false,
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,
+            on_fire: false,
         }
     }
 
@@ -132,6 +134,9 @@ impl Player {
 
     pub fn entity_flags(&self) -> u8 {
         let mut flags = 0u8;
+        if self.on_fire {
+            flags |= 0x01;
+        }
         if self.is_sneaking {
             flags |= 0x02;
         }

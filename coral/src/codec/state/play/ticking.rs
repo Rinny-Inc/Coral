@@ -64,6 +64,19 @@ pub async fn handle_tick(
     .await;
     tick_effects(framed, state, player_registry, &channels.chat_tx).await;
     tick_void_damage(framed, state, player_registry, &channels.chat_tx).await;
+    if let Some(player) = player_registry.get(&state.uuid).await {
+        state
+            .check_fire_lava_damage(
+                framed,
+                &player,
+                world_blocks,
+                generator,
+                player_registry,
+                &channels.chat_tx,
+                &channels.sound_tx,
+            )
+            .await;
+    }
     if let Some(update) = state.watcher.take_dirty(state.entity_id) {
         channels.meta_tx.send(update).ok();
     }

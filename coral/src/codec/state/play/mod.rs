@@ -1543,10 +1543,7 @@ pub async fn play(
                                     state.is_sprinting = value;
                                     player_registry.update_sprinting(&state.uuid, value).await;
                                 }
-
-                                if let Some(player) = player_registry.get(&state.uuid).await {
-                                    state.watcher.set(0, MetadataValue::Byte(player.entity_flags()));
-                                }
+                                state.watcher.set(0, MetadataValue::Byte(state.entity_flags()));
                             }
                             continue;
                         }
