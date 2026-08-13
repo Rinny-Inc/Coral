@@ -2,6 +2,7 @@ pub mod armor;
 pub mod drop_physics;
 pub mod drops;
 pub mod food;
+pub mod ids;
 pub mod potions;
 pub mod registry;
 pub mod swords;
@@ -60,6 +61,19 @@ pub trait Item: Send + Sync {
     }
     fn armor_slot(&self) -> Option<ArmorSlot> {
         None
+    }
+}
+
+pub struct EmptyHand;
+impl Item for EmptyHand {
+    fn id(&self) -> i16 {
+        -1
+    }
+    fn max_stack_size(&self) -> u8 {
+        1
+    }
+    fn attack_damage(&self) -> f32 {
+        1.0
     }
 }
 

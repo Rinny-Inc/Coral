@@ -247,6 +247,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spawn_point = Arc::new(RwLock::new(spawn_point));
     let world_dir = Arc::new(world_dir.to_path_buf());
 
+    let world_time = Arc::new(AtomicI64::new(0));
+
     let dispatcher = Arc::new(CommandDispatcher::new());
     dispatcher.register(list::version::command()).await;
     dispatcher
@@ -317,6 +319,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dispatcher
         .register(list::ping::command(player_registry.clone()))
         .await;
+    dispatcher
+        .register(list::time::command(world_time.clone()))
+        .await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 
@@ -333,7 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         projectiles: Arc::new(RwLock::new(Vec::new())),
         channels,
         world_blocks,
-        world_time: Arc::new(AtomicI64::new(0)),
+        world_time,
         generator,
         player_registry,
         private_key: Arc::new(private_key),

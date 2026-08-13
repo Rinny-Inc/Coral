@@ -46,7 +46,7 @@ pub async fn try_with_item(
     projectiles: &Arc<RwLock<Vec<Projectile>>>,
     channels: &Channels,
 ) -> bool {
-    if let Some((_hunger, _saturation)) = item_registry.food_value(state.held_item)
+    if let Some((_hunger, _saturation)) = item_registry.food_value(state.held_item.id())
         && state.food < 20
         && state.eating.is_none()
     {
@@ -57,7 +57,8 @@ pub async fn try_with_item(
             .ok();
     }
 
-    match state.held_item {
+    match state.held_item.id() {
+        // FIXME: DONT USE MAGIC NUMBER
         261 => {
             state.bow_charging = Some(Instant::now());
             true
@@ -139,6 +140,7 @@ pub async fn try_with_item_on_block(
     place: &PlayerBlockPlacement,
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
+    item_registry: &Arc<ItemRegistry>,
     world_blocks: &Arc<WorldBlocks>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     generator: &Arc<FlatWorldGenerator>,
@@ -213,6 +215,7 @@ pub async fn try_with_item_on_block(
                             durability: 0,
                         },
                         player_registry,
+                        item_registry,
                         channels,
                     )
                     .await;
@@ -286,7 +289,7 @@ pub async fn try_with_item_on_block(
 
             if state.gamemode == GameMode::Survival {
                 state
-                    .consume_held_one(framed, player_registry, channels)
+                    .consume_held_one(framed, player_registry, item_registry, channels)
                     .await;
             }
 
@@ -346,6 +349,7 @@ pub async fn try_with_item_on_block(
                         durability: 0,
                     },
                     player_registry,
+                    item_registry,
                     channels,
                 )
                 .await;
@@ -372,6 +376,7 @@ pub async fn try_with_block(
     place: &PlayerBlockPlacement,
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
+    item_registry: &Arc<ItemRegistry>,
     world_blocks: &Arc<WorldBlocks>,
     world_time: &Arc<AtomicI64>,
     generator: &Arc<FlatWorldGenerator>,
@@ -389,6 +394,7 @@ pub async fn try_with_block(
         place,
         state,
         player_registry,
+        item_registry,
         world_blocks,
         tile_entities,
         generator,

@@ -43,6 +43,7 @@ pub async fn handle_tick(
         framed,
         state,
         player_registry,
+        item_registry,
         item_positions,
         item_spawn_times,
         &channels.pickup_tx,
@@ -122,6 +123,7 @@ async fn tick_item_pickup(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
+    item_registry: &Arc<ItemRegistry>,
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     pickup_tx: &Arc<Sender<ItemPickup>>,
@@ -174,7 +176,7 @@ async fn tick_item_pickup(
                     .await;
 
                     if internal_idx == state.held_slot as usize {
-                        state.held_item = *item_id;
+                        state.held_item = item_registry.resolve(*item_id);
                         player_registry
                             .update_held_item(&state.uuid, *item_id)
                             .await;
@@ -206,7 +208,7 @@ async fn tick_eating(
     {
         state.eating = None;
 
-        if state.held_item == 373 {
+        if state.held_item.id() == 373 {
             let meta = state.inventory.slots[state.held_slot as usize]
                 .as_ref()
                 .map(|s| s.metadata)
@@ -216,14 +218,14 @@ async fn tick_eating(
                 apply_potion_effect(framed, state, player_registry, pe).await;
             }
             state
-                .consume_held_one(framed, player_registry, channels)
+                .consume_held_one(framed, player_registry, item_registry, channels)
                 .await;
-        } else if let Some((hunger, saturation)) = item_registry.food_value(state.held_item) {
+        } else if let Some((hunger, saturation)) = item_registry.food_value(state.held_item.id()) {
             state.food = (state.food + hunger).min(20);
             state.food_saturation = (state.food_saturation + saturation).min(state.food as f32);
 
             state
-                .consume_held_one(framed, player_registry, channels)
+                .consume_held_one(framed, player_registry, item_registry, channels)
                 .await;
             player_registry
                 .update_health(&state.uuid, state.health, state.food, state.food_saturation)

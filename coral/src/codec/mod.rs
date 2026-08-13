@@ -11,7 +11,8 @@ use coral_protocol::packets::play::scoreboard::{
 };
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
-use coral_server::items::ItemRegistry;
+use coral_server::items::ids::EMPTY_HAND;
+use coral_server::items::{Item, ItemRegistry};
 use coral_server::projectile::Projectile;
 use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
@@ -230,7 +231,7 @@ struct PlayerState {
     uuid: Uuid,
     entity_id: i32,
     gamemode: GameMode,
-    held_item: i16, // TODO: use dyn Item
+    held_item: Arc<dyn Item>,
     held_slot: u8,
     health: f32,
     food: i32,
@@ -286,12 +287,12 @@ struct PlayerState {
     in_lava: bool,
 }
 impl PlayerState {
-    fn new(uuid: Uuid, name: String) -> Self {
+    fn new(uuid: Uuid, name: String, item_registry: &ItemRegistry) -> Self {
         Self {
             uuid,
             entity_id: 0,
             gamemode: GameMode::Survival,
-            held_item: -1,
+            held_item: item_registry.resolve(EMPTY_HAND),
             held_slot: 0,
             health: 20.0,
             food: 20,
@@ -380,7 +381,7 @@ impl PlayerState {
         slot.metadata += cost;
         if slot.metadata >= max_dur {
             self.inventory.slots[slot_idx] = None;
-            self.held_item = -1;
+            self.held_item = item_registry.resolve(EMPTY_HAND);
             return true;
         }
         false
@@ -481,9 +482,10 @@ impl PlayerState {
         &mut self,
         item_id: i16,
         player_registry: &Arc<PlayerRegistry>,
+        item_registry: &Arc<ItemRegistry>,
         channels: &Channels,
     ) {
-        self.held_item = item_id;
+        self.held_item = item_registry.resolve(item_id);
         player_registry.update_held_item(&self.uuid, item_id).await;
         self.send_held_equip(&channels.equip_tx);
     }
@@ -492,14 +494,15 @@ impl PlayerState {
         &mut self,
         framed: &mut Framed<TcpStream, Codec>,
         player_registry: &Arc<PlayerRegistry>,
+        item_registry: &Arc<ItemRegistry>,
         channels: &Channels,
     ) {
         self.send_hotbar_slot_packet(framed).await;
         let item_id = self.inventory.slots[self.held_slot as usize]
             .as_ref()
             .map(|s| s.item_id)
-            .unwrap_or(-1);
-        self.sync_held_item_registry(item_id, player_registry, channels)
+            .unwrap_or(EMPTY_HAND);
+        self.sync_held_item_registry(item_id, player_registry, item_registry, channels)
             .await;
     }
 
@@ -507,12 +510,13 @@ impl PlayerState {
         &mut self,
         framed: &mut Framed<TcpStream, Codec>,
         player_registry: &Arc<PlayerRegistry>,
+        item_registry: &Arc<ItemRegistry>,
         channels: &Channels,
         broke: bool,
     ) {
         self.send_hotbar_slot_packet(framed).await;
         if broke {
-            self.sync_held_item_registry(-1, player_registry, channels)
+            self.sync_held_item_registry(EMPTY_HAND, player_registry, item_registry, channels)
                 .await;
         }
     }
@@ -521,6 +525,7 @@ impl PlayerState {
         &mut self,
         framed: &mut Framed<TcpStream, Codec>,
         player_registry: &Arc<PlayerRegistry>,
+        item_registry: &Arc<ItemRegistry>,
         channels: &Channels,
     ) {
         let hotbar_slot = self.held_slot as usize;
@@ -530,7 +535,7 @@ impl PlayerState {
                 self.inventory.slots[hotbar_slot] = None;
             }
         }
-        self.sync_hotbar_slot(framed, player_registry, channels)
+        self.sync_hotbar_slot(framed, player_registry, item_registry, channels)
             .await;
     }
 
@@ -539,11 +544,12 @@ impl PlayerState {
         framed: &mut Framed<TcpStream, Codec>,
         new_item: ItemStack,
         player_registry: &Arc<PlayerRegistry>,
+        item_registry: &Arc<ItemRegistry>,
         channels: &Channels,
     ) {
         let hotbar_slot = self.held_slot as usize;
         self.inventory.slots[hotbar_slot] = Some(new_item);
-        self.sync_hotbar_slot(framed, player_registry, channels)
+        self.sync_hotbar_slot(framed, player_registry, item_registry, channels)
             .await;
     }
 
@@ -579,27 +585,25 @@ impl PlayerState {
             .any(|e| e.kind == EffectKind::FireResistance);
 
         if touching_lava {
-            if !has_fire_resistance {
-                if self.tick_count % 10 == 0 {
-                    let died = self.damage_player(framed, 4.0, player_registry).await;
-                    sound_tx
-                        .send((
-                            "damage.fireburn".to_string(),
-                            player.x,
-                            player.y,
-                            player.z,
-                            1.0,
-                            63,
-                        ))
+            if !has_fire_resistance && self.tick_count % 10 == 0 {
+                let died = self.damage_player(framed, 4.0, player_registry).await;
+                sound_tx
+                    .send((
+                        "damage.fireburn".to_string(),
+                        player.x,
+                        player.y,
+                        player.z,
+                        1.0,
+                        63,
+                    ))
+                    .ok();
+                if died {
+                    chat_tx
+                        .send(ChatBuilder::plain_json(&format!(
+                            "{} tried to swim in lava",
+                            self.name,
+                        )))
                         .ok();
-                    if died {
-                        chat_tx
-                            .send(ChatBuilder::plain_json(&format!(
-                                "{} tried to swim in lava",
-                                self.name,
-                            )))
-                            .ok();
-                    }
                 }
             }
             self.fire_ticks = if has_fire_resistance {
@@ -608,17 +612,15 @@ impl PlayerState {
                 self.fire_ticks.max(300)
             };
         } else if touching_fire {
-            if !has_fire_resistance {
-                if self.tick_count % 20 == 0 {
-                    let died = self.damage_player(framed, 1.0, player_registry).await;
-                    if died {
-                        chat_tx
-                            .send(ChatBuilder::plain_json(&format!(
-                                "{} went up in flames",
-                                self.name
-                            )))
-                            .ok();
-                    }
+            if !has_fire_resistance && self.tick_count % 20 == 0 {
+                let died = self.damage_player(framed, 1.0, player_registry).await;
+                if died {
+                    chat_tx
+                        .send(ChatBuilder::plain_json(&format!(
+                            "{} went up in flames",
+                            self.name
+                        )))
+                        .ok();
                 }
             }
             self.fire_ticks = if has_fire_resistance {
@@ -707,13 +709,14 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
 
     let client_protocol = req.client_protocol;
     // uuid and name are known at this point
-    let mut state = PlayerState::new(uuid, req.profile.username.clone());
+    let mut state = PlayerState::new(uuid, req.profile.username.clone(), &ctx.item_registry);
 
     make_player_join(
         &mut framed,
         &mut state,
         req,
         &ctx.player_registry,
+        &ctx.item_registry,
         &ctx.channels.join_tx,
         &ctx.channels.chat_tx,
         &ctx.world_blocks,
@@ -750,6 +753,7 @@ async fn make_player_join(
     state: &mut PlayerState,
     req: JoinRequest,
     player_registry: &Arc<PlayerRegistry>,
+    item_registry: &Arc<ItemRegistry>,
     join_tx: &Arc<Sender<JoinLeave>>,
     chat_tx: &Arc<Sender<String>>,
     world_blocks: &Arc<WorldBlocks>,
@@ -1103,10 +1107,12 @@ async fn make_player_join(
 
     state.entity_id = entity_id;
     state.gamemode = pgm;
-    state.held_item = state.inventory.slots[state.held_slot as usize]
-        .as_ref()
-        .map(|s| s.item_id)
-        .unwrap_or(-1);
+    state.held_item = item_registry.resolve(
+        state.inventory.slots[state.held_slot as usize]
+            .as_ref()
+            .map(|s| s.item_id)
+            .unwrap_or(EMPTY_HAND),
+    );
     state.health = phealth;
     state.food = pfood;
     state.food_saturation = psat;

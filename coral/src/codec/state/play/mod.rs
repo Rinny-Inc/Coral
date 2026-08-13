@@ -47,6 +47,7 @@ use coral_server::{
         armor::{apply_armor_reduction, total_defense},
         drop_physics::{break_drop_velocity, manual_drop_velocity},
         drops::block_drop,
+        ids::EMPTY_HAND,
         potions::PotionEffect,
     },
     mining::break_time_ticks,
@@ -765,13 +766,14 @@ pub async fn play(
                             let internal_idx = Inventory::packet_to_internal(36 + slot as i16)
                                 .unwrap_or(slot as usize);
 
-                            state.held_item = state.inventory.slots[internal_idx]
+                            state.held_item = item_registry.resolve(state.inventory.slots[internal_idx]
                                 .as_ref()
                                 .map(|s| s.item_id)
-                                .unwrap_or(-1);
+                                .unwrap_or(EMPTY_HAND)
+                            );
 
                             player_registry.update_held_slot(&state.uuid, slot).await;
-                            player_registry.update_held_item(&state.uuid, state.held_item).await;
+                            player_registry.update_held_item(&state.uuid, state.held_item.id()).await;
 
                             state.send_held_equip(&channels.equip_tx);
 
@@ -803,7 +805,7 @@ pub async fn play(
                                     let required = break_time_ticks(
                                         &item_registry,
                                         &block_registry,
-                                        state.held_item,
+                                        state.held_item.id(),
                                         block.id,
                                         false,
                                         state.was_on_ground,
@@ -829,7 +831,7 @@ pub async fn play(
                                         let required_ticks = break_time_ticks(
                                             &item_registry,
                                             &block_registry,
-                                            state.held_item,
+                                            state.held_item.id(),
                                             block.id,
                                             false,
                                             state.was_on_ground,
@@ -869,7 +871,7 @@ pub async fn play(
 
                                         if !block.is_air() && block.id > 0 {
                                             let can_drop = if let Some(req_mat) = block_registry.required_material(block.id) {
-                                                item_registry.get(state.held_item)
+                                                item_registry.get(state.held_item.id())
                                                     .and_then(|item| item.tool_material())
                                                     .map(|mat| material_meets(mat, req_mat))
                                                     .unwrap_or(false)
@@ -927,7 +929,7 @@ pub async fn play(
                                         }
                                     }
                                     let broke = state.damage_item(1, &item_registry);
-                                    state.sync_held_slot_after_damage(framed, &player_registry, &channels, broke).await;
+                                    state.sync_held_slot_after_damage(framed, &player_registry, &item_registry, &channels, broke).await;
                                 }
                                 DigStatus::DropItem(is_itemstack) => {
                                     let hotbar_slot = state.held_slot as usize;
@@ -957,7 +959,7 @@ pub async fn play(
                                     };
 
                                     if let Some(dropped) = item {
-                                        state.sync_hotbar_slot(framed, &player_registry, &channels).await;
+                                        state.sync_hotbar_slot(framed, &player_registry, &item_registry, &channels).await;
 
                                         if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
                                             let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
@@ -997,7 +999,7 @@ pub async fn play(
                                 }
                                 DigStatus::ShootOrFinishEating => {
                                     if let Some(charge_start) = state.bow_charging.take()
-                                        && state.held_item == 261 // TODO: In the future identify magic numbers!
+                                        && state.held_item.id() == 261 // TODO: In the future identify magic numbers!
                                     {
                                         let charge_secs = charge_start.elapsed().as_secs_f32().min(1.0);
 
@@ -1039,7 +1041,7 @@ pub async fn play(
                                         }
                                         continue;
                                     }
-                                    if state.held_item == 373 {
+                                    if state.held_item.id() == 373 {
                                         let meta = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.metadata).unwrap_or(0);
                                         let is_splash = (meta & 0x4000i16) != 0;
                                         if is_splash
@@ -1069,7 +1071,7 @@ pub async fn play(
                                                 proj.vx, proj.vy, proj.vz
                                             )).ok();
 
-                                            state.consume_held_one(framed, &player_registry, &channels).await;
+                                            state.consume_held_one(framed, &player_registry, &item_registry, &channels).await;
                                         }
                                     }
                                 }
@@ -1082,13 +1084,13 @@ pub async fn play(
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
-                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &world_blocks, &tile_entities, &generator, &fluid_queue, &channels, None).await {
+                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &item_registry, &world_blocks, &tile_entities, &generator, &fluid_queue, &channels, None).await {
                                     continue;
                                 }
                                 continue;
                             };
-                            if interact::try_with_block(framed, place, state, &player_registry, &world_blocks, &world_time, &generator, &tile_entities, &fluid_queue, &channels).await
-                                || place.held_item_id == -1
+                            if interact::try_with_block(framed, place, state, &player_registry, &item_registry, &world_blocks, &world_time, &generator, &tile_entities, &fluid_queue, &channels).await
+                                || place.held_item_id == EMPTY_HAND
                                 || state.gamemode >= GameMode::Adventure
                             {
                                 continue;
@@ -1121,7 +1123,7 @@ pub async fn play(
                             };
 
                             if state.gamemode == GameMode::Survival {
-                                state.consume_held_one(framed, &player_registry, &channels).await;
+                                state.consume_held_one(framed, &player_registry, &item_registry, &channels).await;
                             }
 
                             world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
@@ -1402,7 +1404,7 @@ pub async fn play(
 
                             let internal = Inventory::packet_to_internal(creative.slot);
                             if let Some(idx) = internal {
-                                if creative.item_id == -1 {
+                                if creative.item_id == EMPTY_HAND {
                                     state.inventory.slots[idx] = None;
                                 } else {
                                     state.inventory.slots[idx] = Some(ItemStack {
@@ -1415,7 +1417,7 @@ pub async fn play(
                                 if idx < 9
                                     && idx == state.held_slot as usize
                                 {
-                                    state.sync_held_item_registry(creative.item_id, &player_registry, &channels).await;
+                                    state.sync_held_item_registry(creative.item_id, &player_registry, &item_registry, &channels).await;
                                 }
 
                                 if (5..=8).contains(&idx) {
@@ -1454,6 +1456,13 @@ pub async fn play(
                                 state.is_dead = false;
 
                                 player_registry.update_health(&state.uuid, state.health, state.food, state.food_saturation).await;
+
+                                send_packet(framed, Respawn {
+                                    dimension: -1,
+                                    difficulty: config.world.difficulty,
+                                    gamemode: u8::from(state.gamemode),
+                                    level_type: "flat".to_string()
+                                }).await;
 
                                 send_packet(framed, Respawn {
                                     dimension: 0,
@@ -1580,7 +1589,7 @@ pub async fn play(
                                                 .map(|e| 0.5 * (e.amplifier + 1) as f32)
                                                 .unwrap_or(0.0);
 
-                                            let base_damage = item_registry.attack_damage(state.held_item)
+                                            let base_damage = item_registry.attack_damage(state.held_item.id())
                                                 + strength_bonus - weakness_penalty;
                                             let is_critical = !me.on_ground && state.fall_distance > 0.0;
                                             let raw_damage = (base_damage.max(0.0)) * if is_critical { 1.5 } else { 1.0 };
@@ -1627,7 +1636,7 @@ pub async fn play(
                                             channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
 
                                             let broke = state.damage_item(2, &item_registry);
-                                            state.sync_held_slot_after_damage(framed, &player_registry, &channels, broke).await;
+                                            state.sync_held_slot_after_damage(framed, &player_registry, &item_registry, &channels, broke).await;
 
                                             channels.sound_tx.send((
                                                 "game.player.hurt".to_string(),
@@ -2216,7 +2225,7 @@ async fn send_player_equipment(
         (1, boots),
     ];
     for (slot, item_id) in slots {
-        if item_id == -1 {
+        if item_id == EMPTY_HAND {
             continue;
         }
         send_packet(

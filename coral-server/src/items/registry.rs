@@ -1,4 +1,4 @@
-use crate::items::armor::ArmorSlot;
+use crate::items::{EmptyHand, armor::ArmorSlot, ids::EMPTY_HAND};
 
 use super::{Item, UseAction};
 use std::{collections::HashMap, sync::Arc};
@@ -11,6 +11,7 @@ impl ItemRegistry {
     pub fn new() -> Self {
         let mut items: HashMap<i16, Arc<dyn Item>> = HashMap::new(); // TODO: size it once all items are done
 
+        items.insert(EMPTY_HAND, Arc::new(EmptyHand));
         for s in super::swords::all() {
             items.insert(s.id(), Arc::new(s));
         }
@@ -24,6 +25,14 @@ impl ItemRegistry {
             items.insert(a.id(), Arc::new(a));
         }
         Self { items }
+    }
+
+    pub fn resolve(&self, item_id: i16) -> Arc<dyn Item> {
+        self.get(item_id).cloned().unwrap_or_else(|| {
+            self.get(EMPTY_HAND)
+                .cloned()
+                .expect("EmptyHand must be registerd")
+        })
     }
 
     pub fn get(&self, item_id: i16) -> Option<&Arc<dyn Item>> {
