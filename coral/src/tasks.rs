@@ -19,8 +19,10 @@ use coral_server::{
 };
 use coral_types::{DespawnEntity, ItemInfo, TicksExt, dist_sq3, dist3};
 use coral_world::{
+    anvil::tile_entity_to_nbt,
     blocks::{Block, WorldBlocks},
     generator::FlatWorldGenerator,
+    nbt::NbtTag,
     weather::{Weather, WeatherState},
 };
 use tokio::{
@@ -52,8 +54,19 @@ pub fn spawn_shutdown_task(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         println!("Saving world..");
+
+        let tile_entities_by_chunk: HashMap<(i32, i32), Vec<NbtTag>> = {
+            let all_tiles = tile_entities.read().await;
+            let mut map: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
+            for ((x, y, z), tile) in all_tiles.iter() {
+                if let Some(nbt) = tile_entity_to_nbt(*x, *y, *z, tile) {
+                    map.entry((x >> 4, z >> 4)).or_default().push(nbt);
+                }
+            }
+            map
+        };
         world_blocks
-            .save(&world_dir, &generator, &tile_entities)
+            .save(&world_dir, &generator, &tile_entities_by_chunk)
             .await;
         println!("World saved. Server closed.");
         std::process::exit(0);
@@ -202,8 +215,18 @@ pub fn spawn_world_save_task(
         let mut interval = interval(Duration::from_secs(auto_save_interval));
         loop {
             interval.tick().await;
+            let tile_entities_by_chunk: HashMap<(i32, i32), Vec<NbtTag>> = {
+                let all_tiles = tile_entities.read().await;
+                let mut map: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
+                for ((x, y, z), tile) in all_tiles.iter() {
+                    if let Some(nbt) = tile_entity_to_nbt(*x, *y, *z, tile) {
+                        map.entry((x >> 4, z >> 4)).or_default().push(nbt);
+                    }
+                }
+                map
+            };
             world_blocks
-                .save(&world_dir, &generator, &tile_entities)
+                .save(&world_dir, &generator, &tile_entities_by_chunk)
                 .await;
             println!("[World] Auto-Saved.");
         }

@@ -1,10 +1,10 @@
 use crate::{
-    anvil::{chunk_to_nbt, nbt_to_blocks_raw, tile_entity_to_nbt},
+    anvil::{chunk_to_nbt, nbt_to_blocks_raw},
     generator::FlatWorldGenerator,
     nbt::NbtTag,
     region::RegionFile,
 };
-use coral_protocol::packets::play::{block::BlockFace, entity::TileEntity};
+use coral_protocol::packets::play::block::BlockFace;
 use coral_types::{ToolKind, ToolMaterial};
 use std::{
     collections::{HashMap, HashSet},
@@ -173,6 +173,7 @@ impl WorldBlocks {
 
         self.blocks.write().await.insert((x, y, z), block);
         self.dirty_chunks.write().await.insert((cx, cz));
+        self.decoded_cache.write().await.remove(&(cx, cz));
     }
 
     pub async fn evict_stale_chunks(&self, max_age: Duration) {
@@ -227,12 +228,11 @@ impl WorldBlocks {
         );
     }
 
-    #[allow(clippy::mut_range_bound)]
     pub async fn save(
         &self,
         world_dir: &Path,
         generator: &FlatWorldGenerator,
-        tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+        tile_entities_by_chunk: &HashMap<(i32, i32), Vec<NbtTag>>,
     ) {
         let dirty = {
             let d = self.dirty_chunks.read().await;
@@ -248,6 +248,7 @@ impl WorldBlocks {
         let world_dir = world_dir.to_path_buf();
         let region_dir = world_dir.join("region");
 
+        // group dirty chunks by region file
         let mut region_map: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
         for (cx, cz) in &dirty {
             region_map
@@ -258,16 +259,23 @@ impl WorldBlocks {
 
         tokio::fs::create_dir_all(&region_dir).await.ok();
 
-        // build merged block maps per chunk BEFORE spawn_blocking
+        // group ALL diffs by chunk ONCE
+        let mut diffs_by_chunk: HashMap<(i32, i32), Vec<((i32, u8, i32), Block)>> = HashMap::new();
+        for (&(x, y, z), block) in &player_blocks {
+            diffs_by_chunk
+                .entry((x >> 4, z >> 4))
+                .or_default()
+                .push(((x, y, z), block.clone()));
+        }
+
+        // build merged block maps + is_new flags for each dirty chunk
         let mut chunk_block_maps: HashMap<(i32, i32), HashMap<(i32, u8, i32), Block>> =
             HashMap::new();
         let mut chunk_is_new: HashMap<(i32, i32), bool> = HashMap::new();
-        let mut chunk_tile_entities: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
 
-        // TODO: make a function instead of a block
         {
             let cache = self.chunk_cache.read().await;
-            let all_tiles = tile_entities.read().await;
+
             for (cx, cz) in &dirty {
                 let (base, is_new) = if let Some((nbt, _)) = cache.get(&(*cx, *cz)) {
                     let mut m = HashMap::new();
@@ -277,26 +285,20 @@ impl WorldBlocks {
                     (HashMap::new(), true)
                 };
 
-                // overlay player diffs on top of base
+                // diffs always win over base
                 let mut final_blocks = base;
-                for ((x, y, z), block) in &player_blocks {
-                    if (x >> 4) == *cx && (z >> 4) == *cz {
-                        final_blocks.insert((*x, *y, *z), block.clone());
+                if let Some(diffs) = diffs_by_chunk.get(&(*cx, *cz)) {
+                    for (pos, block) in diffs {
+                        final_blocks.insert(*pos, block.clone());
                     }
                 }
 
                 chunk_block_maps.insert((*cx, *cz), final_blocks);
                 chunk_is_new.insert((*cx, *cz), is_new);
-
-                let tiles_here: Vec<NbtTag> = all_tiles
-                    .iter()
-                    .filter(|((x, _, z), _)| (x >> 4) == *cx && (z >> 4) == *cz)
-                    .filter_map(|((x, y, z), tile)| tile_entity_to_nbt(*x, *y, *z, tile))
-                    .collect();
-                chunk_tile_entities.insert((*cx, *cz), tiles_here);
             }
         }
 
+        // read existing region files async, before the blocking compression step
         let mut region_data: Vec<(i32, i32, Vec<(i32, i32)>, Vec<u8>)> = vec![];
         for ((rx, rz), chunks) in region_map {
             let region_path = region_dir.join(format!("r.{}.{}.mca", rx, rz));
@@ -308,6 +310,7 @@ impl WorldBlocks {
 
         let region_dir_clone = region_dir.clone();
         let dirty_count = dirty.len();
+        let tile_entities_by_chunk = tile_entities_by_chunk.clone();
 
         let results = tokio::task::spawn_blocking(move || {
             let mut outputs: Vec<(std::path::PathBuf, Vec<u8>)> = vec![];
@@ -322,7 +325,11 @@ impl WorldBlocks {
                         continue;
                     };
                     let is_new = *chunk_is_new.get(&(*cx, *cz)).unwrap_or(&true);
-                    let tiles = chunk_tile_entities.remove(&(*cx, *cz)).unwrap_or_default();
+                    let tiles = tile_entities_by_chunk
+                        .get(&(*cx, *cz))
+                        .cloned()
+                        .unwrap_or_default();
+
                     let nbt = chunk_to_nbt(*cx, *cz, final_blocks, &generator, tiles, is_new);
 
                     let compressed = {
