@@ -58,20 +58,12 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
     let (_, root) = reader.read_named_root();
 
     let pos = root.get("Pos").and_then(|t| t.as_list())?;
-    let x = if let NbtTag::Double(v) = &pos[0] {
-        *v
+    let (x, y, z) = if let (NbtTag::Double(x), NbtTag::Double(y), NbtTag::Double(z)) =
+        (&pos[0], &pos[1], &pos[2])
+    {
+        (*x, *y, *z)
     } else {
-        0.5
-    };
-    let y = if let NbtTag::Double(v) = &pos[1] {
-        *v
-    } else {
-        4.5
-    };
-    let z = if let NbtTag::Double(v) = &pos[2] {
-        *v
-    } else {
-        0.5
+        (0.5, 4.5, 0.5)
     };
 
     let rotation = root.get("Rotation").and_then(|t| t.as_list());

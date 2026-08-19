@@ -1507,6 +1507,9 @@ pub async fn play(
                                     on_ground: false
                                 }).await;
 
+                                state.fall_distance = 0.0;
+                                state.was_on_ground = true;
+
                                 send_packet(framed, UpdateHealth {
                                     health: state.health,
                                     food: state.food,

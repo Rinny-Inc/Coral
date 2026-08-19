@@ -801,6 +801,7 @@ async fn make_player_join(
 
     let saved = load_player_data(world_dir, &state.uuid).await;
     let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm, xp_total) = if let Some(d) = &saved {
+        println!("PlayerData exist and used");
         (
             d.x,
             d.y,
@@ -814,6 +815,7 @@ async fn make_player_join(
             d.xp_total,
         )
     } else {
+        println!("PlayerData doesnt exist and not used");
         let (sx, sy, sz, syaw, spitch) = *spawn_point.read().await;
         (
             sx,
@@ -835,6 +837,7 @@ async fn make_player_join(
         pgm
     };
     let gamemodeu8 = u8::from(gamemode);
+    println!("gamemode is {}", gamemodeu8);
 
     send_packet(
         framed,
@@ -850,7 +853,7 @@ async fn make_player_join(
     )
     .await;
 
-    send_packet(framed, ChangeGameState::set_gamemode(u8::from(gamemode))).await;
+    send_packet(framed, ChangeGameState::set_gamemode(gamemodeu8)).await;
 
     if client_protocol == 47 {
         send_packet(
@@ -975,6 +978,9 @@ async fn make_player_join(
         },
     )
     .await;
+
+    state.fall_distance = 0.0;
+    state.was_on_ground = true;
 
     let player = Player::new(
         entity_id,
@@ -1106,7 +1112,7 @@ async fn make_player_join(
     join_tx.send((player, true)).ok();
 
     state.entity_id = entity_id;
-    state.gamemode = pgm;
+    state.gamemode = gamemode;
     state.held_item = item_registry.resolve(
         state.inventory.slots[state.held_slot as usize]
             .as_ref()
