@@ -136,6 +136,7 @@ pub struct Channels {
     velocity_broadcast_tx: Arc<Sender<EntityVelocityUpdate>>,
     chest_anim_tx: Arc<Sender<ChestAnimation>>,
     furnace_update_tx: Arc<Sender<(i32, i32, i32)>>,
+    difficulty_tx: Arc<Sender<u8>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -176,6 +177,7 @@ impl Channels {
             velocity_broadcast_tx: Arc::new(channel::<EntityVelocityUpdate>(100).0),
             chest_anim_tx: Arc::new(channel::<ChestAnimation>(30).0),
             furnace_update_tx: Arc::new(channel::<(i32, i32, i32)>(100).0),
+            difficulty_tx: Arc::new(channel::<u8>(4).0),
         }
     }
 }

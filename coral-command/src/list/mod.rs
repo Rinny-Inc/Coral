@@ -1,4 +1,5 @@
 pub mod deop;
+pub mod difficulty;
 pub mod gamemode;
 pub mod kick;
 pub mod kill;

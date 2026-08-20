@@ -155,6 +155,7 @@ pub async fn play(
     let mut velocity_broadcast_rx = channels.velocity_broadcast_tx.subscribe();
     let mut chest_anim_rx = channels.chest_anim_tx.subscribe();
     let mut furnace_update_rx = channels.furnace_update_tx.subscribe();
+    let mut difficulty_rx = channels.difficulty_tx.subscribe();
 
     let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
 
@@ -308,6 +309,9 @@ pub async fn play(
                     entity_id: eid,
                     status,
                 }).await;
+            }
+            Ok(difficulty) = difficulty_rx.recv() => {
+                // TODO SEND 0x41 Server -> Client
             }
             Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
                 // TODO: filter sounds that are sent client side & skip sound maker

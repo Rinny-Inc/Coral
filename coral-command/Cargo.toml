@@ -8,6 +8,7 @@ coral-server = { path = "../coral-server" }
 coral-world = { path = "../coral-world" }
 coral-protocol = { path = "../coral-protocol" }
 coral-types = { path = "../coral-types" }
+coral-config = { path = "../coral-config" }
 tokio.workspace = true
 uuid.workspace = true
 sysinfo.workspace = true
