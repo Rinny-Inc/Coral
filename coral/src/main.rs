@@ -19,8 +19,8 @@ use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, ChestAnimation, DamageEvent, DespawnEntity,
     EntityVelocityUpdate, EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup,
     KickRequest, ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate,
-    SoundEffect, SplashEffect, TeleportRequest, TicksExt, TimeUpdate, XpOrbMove, XpOrbSpawn,
-    XpPickup,
+    SoundEffect, SplashEffect, TeleportRequest, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup,
+    ext::TicksExt,
 };
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -323,6 +323,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     dispatcher
         .register(list::time::command(world_time.clone()))
+        .await;
+    dispatcher
+        .register(list::difficulty::command(channels.difficulty_tx.clone()))
         .await;
 
     let (private_key, public_key_der) = generate_rsa_key();

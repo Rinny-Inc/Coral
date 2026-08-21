@@ -17,7 +17,7 @@ use coral_server::{
     projectile::{Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, smelt_result},
 };
-use coral_types::{DespawnEntity, ItemInfo, TicksExt, dist_sq3, dist3};
+use coral_types::{DespawnEntity, ItemInfo, dist_sq3, dist3, ext::TicksExt};
 use coral_world::{
     anvil::tile_entity_to_nbt,
     blocks::{Block, WorldBlocks},

@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
+use coral_types::ext::TicksExt;
 use coral_world::blocks::{Block, WorldBlocks};
 use tokio::sync::RwLock;
 use tokio::time::interval;
@@ -9,7 +10,7 @@ use tokio::time::interval;
 use coral_world::blocks::fluid::{Fluid, FluidKind, is_replaceable};
 use coral_world::generator::FlatWorldGenerator;
 
-use crate::{Channels, TicksExt};
+use crate::Channels;
 
 const DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 

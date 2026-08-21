@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+coral-types = { path = "../coral-types" }
 aes.workspace = true
 bytes.workspace = true
 cfb8.workspace = true
