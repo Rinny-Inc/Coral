@@ -32,7 +32,10 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_bytes(&mut self, length: usize) -> Vec<u8> {
-        let end = self.position + length;
+        // length is attacker-controlled (from a VarInt on the wire); never read
+        // past the end of the buffer. Clamp to what is actually available, the
+        // same lenient behaviour read_byte and read_string already use.
+        let end = self.position.saturating_add(length).min(self.data.len());
         let bytes = self.data[self.position..end].to_vec();
         self.position = end;
         bytes
@@ -115,10 +118,9 @@ impl<'a> Reader<'a> {
         let string_bytes = &self.data[self.position..end];
         self.position = end;
 
-        match String::from_utf8(string_bytes.to_vec()) {
-            Ok(s) => s,
-            Err(e) => panic!("Invalid UTF-8 string: {}", e),
-        }
+        // Invalid UTF-8 from the wire must not crash the server; decode
+        // lossily instead of panicking.
+        String::from_utf8_lossy(string_bytes).into_owned()
     }
 
     pub fn read_long(&mut self) -> i64 {
