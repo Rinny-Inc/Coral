@@ -20,7 +20,6 @@ use coral_types::{
     EntityVelocityUpdate, EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup,
     KickRequest, ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate,
     SoundEffect, SplashEffect, TeleportRequest, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup,
-    ext::TicksExt,
 };
 use rsa::RsaPrivateKey;
 use tokio::{

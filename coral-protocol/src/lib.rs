@@ -1,5 +1,7 @@
 pub mod auth;
 pub mod encryption;
+pub mod framing;
+pub mod limits;
 pub mod packets;
 pub mod reader;
 pub mod writer;

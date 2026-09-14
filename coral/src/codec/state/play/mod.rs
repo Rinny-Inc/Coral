@@ -2131,6 +2131,14 @@ async fn handle_landing(
 
         if damage_eligible && state.fall_distance > 3.0 {
             let damage = (state.fall_distance - 3.0).round();
+            println!(
+                "[FALL] landing: fall_distance={}, was_on_ground={}, y={}, gamemode={:?}, first_pos={}",
+                state.fall_distance,
+                state.was_on_ground,
+                y,
+                state.gamemode,
+                state.first_position_received
+            );
             let died = state.damage_player(framed, damage, player_registry).await;
             let sound = if state.fall_distance > 7.0 {
                 "game.player.hurt.fall.big"

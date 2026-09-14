@@ -5,6 +5,11 @@ use std::time::Instant;
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral_protocol::framing::{
+    CompressionEnvelope, decompress_checked, validate_compression_envelope, validate_packet_length,
+    validate_uncompressed_size,
+};
+use coral_protocol::limits::MAX_COMPRESSED_PACKET_SIZE;
 use coral_protocol::packets::play::ResourcePackSend;
 use coral_protocol::packets::play::scoreboard::{
     DisplayScoreboard, ScoreboardObjective, TeamPacket, UpdateScore,
@@ -78,14 +83,6 @@ fn zlib_compress(data: &[u8]) -> Vec<u8> {
     encoder.write_all(data).unwrap();
     encoder.finish().unwrap()
 }
-fn zlib_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    use flate2::read::ZlibDecoder;
-    use std::io::Read;
-    let mut decoder = ZlibDecoder::new(data);
-    let mut out = Vec::new();
-    decoder.read_to_end(&mut out)?;
-    Ok(out)
-}
 
 impl Decoder for Codec {
     type Item = Box<dyn PacketIn>;
@@ -111,10 +108,20 @@ impl Decoder for Codec {
             return Ok(None);
         }
 
+        if self.decrypted_buf.len() > MAX_COMPRESSED_PACKET_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "inbound buffer exceeded maximum packet size",
+            ));
+        }
+
         // parse length from decrypted buffer
         let mut reader = Reader::new(&self.decrypted_buf);
-        let length = reader.read_varint() as usize;
+        let raw_length = reader.read_varint();
+        reader.finish()?;
         let length_prefix_size = reader.position;
+
+        let length = validate_packet_length(raw_length)?;
 
         if self.decrypted_buf.len() < length_prefix_size + length {
             return Ok(None);
@@ -126,14 +133,19 @@ impl Decoder for Codec {
         let inner: Bytes = if self.compression_threshold >= 0 {
             let mut r = Reader::new(&payload);
             let data_length = r.read_varint();
+            r.finish()?;
             let header_size = r.position;
             let rest = &payload[header_size..];
+            let threshold = self.compression_threshold as usize;
 
-            if data_length == 0 {
-                Bytes::from(rest.to_vec())
-            } else {
-                let decompressed = zlib_decompress(rest)?;
-                Bytes::from(decompressed)
+            match validate_compression_envelope(data_length, threshold)? {
+                CompressionEnvelope::Uncompressed => {
+                    validate_uncompressed_size(rest.len(), threshold)?;
+                    Bytes::from(rest.to_vec())
+                }
+                CompressionEnvelope::Compressed { uncompressed_size } => {
+                    Bytes::from(decompress_checked(rest, uncompressed_size)?)
+                }
             }
         } else {
             Bytes::from(payload.to_vec())
@@ -144,6 +156,7 @@ impl Decoder for Codec {
         let id = {
             let mut inner_reader = Reader::new(&bytes);
             let id = inner_reader.read_varint();
+            inner_reader.finish()?;
             bytes.advance(inner_reader.position);
             id
         };
