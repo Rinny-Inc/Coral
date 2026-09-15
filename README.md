@@ -10,6 +10,11 @@
     <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/line_counter.yml"><img alt="Rust Lines of Code" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Rinny-Inc/Coral/badges/line_badge.json"></a>
     <img alt="Protocol" src="https://img.shields.io/badge/Protocol-47%20(1.8.x)-blue">
     <a href="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml"><img alt="Build" src="https://github.com/Rinny-Inc/Coral/actions/workflows/build.yml/badge.svg"></a>
+    <a href="https://github.com/Rinny-Inc/Coral/releases">
+        <img src="https://img.shields.io/github/v/release/Rinny-Inc/Coral" alt="Release"/>
+        <img src="https://img.shields.io/github/downloads/Rinny-Inc/Coral/total" alt="Downloads"/>
+    </a>
+    <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platform"/>
     <img alt="Status" src="https://img.shields.io/badge/Status-In%20Development-yellow">
     <a href="https://discord.com/invite/B2BgjwDX8m"><img alt="Discord" src="https://img.shields.io/discord/1352833901860487299?label=Discord&logo=discord"></a>
     <img alt="License" src="https://img.shields.io/badge/License-Custom%20Restrictive-red">
