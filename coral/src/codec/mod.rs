@@ -14,6 +14,7 @@ use coral_protocol::packets::play::ResourcePackSend;
 use coral_protocol::packets::play::scoreboard::{
     DisplayScoreboard, ScoreboardObjective, TeamPacket, UpdateScore,
 };
+use coral_protocol::reader::ReadError;
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::items::ids::EMPTY_HAND;
@@ -118,9 +119,14 @@ impl Decoder for Codec {
         // parse length from decrypted buffer
         let mut reader = Reader::new(&self.decrypted_buf);
         let raw_length = reader.read_varint();
-        reader.finish()?;
-        let length_prefix_size = reader.position;
 
+        match reader.error {
+            Some(ReadError::UnexpectedEof) => return Ok(None),
+            Some(ref e) => return Err(e.clone().into()),
+            None => {}
+        }
+
+        let length_prefix_size = reader.position;
         let length = validate_packet_length(raw_length)?;
 
         if self.decrypted_buf.len() < length_prefix_size + length {

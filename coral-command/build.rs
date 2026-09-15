@@ -1,6 +1,5 @@
 use std::process::Command;
 
-// TODO: make so that we dont need .git folder for the hash to not be Unknown
 fn main() {
     let hash = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
