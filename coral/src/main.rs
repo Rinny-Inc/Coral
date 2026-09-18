@@ -1,12 +1,13 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
-    path::{Component, Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, atomic::AtomicI64},
     time::Instant,
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use coral::world_path;
 use coral_protocol::packets::{
     PacketRegistry,
     play::{
@@ -88,24 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         });
 
-    let ops = Arc::new(RwLock::new(OpsFile::load()));
-    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
-
-    let world_path = Path::new(&config.world.world_name);
-
-    if world_path.components().count() != 1
-        || !matches!(world_path.components().next(), Some(Component::Normal(_)))
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Invalid world name {:?}: world_name must be a single directory name",
-                config.world.world_name
-            ),
-        )
-        .into());
-    }
-
+    let world_path = world_path(&config.world.world_name)?;
     let world_dir = cwd.join(&config.world.world_name);
 
     let spawn_point = read_spawn_point(world_path)
@@ -139,8 +123,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         player_registry: Arc::new(PlayerRegistry::new()),
         private_key: Arc::new(private_key),
         public_key_der: Arc::new(public_key_der),
-        ops,
-        whitelist,
+        ops: Arc::new(RwLock::new(OpsFile::load())),
+        whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
         banlist: Arc::new(RwLock::new(BanList::load())),
         spawn_point: Arc::new(RwLock::new(spawn_point)),
         world_dir: Arc::new(world_dir),
