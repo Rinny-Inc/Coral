@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::{Arc, atomic::AtomicI64},
     time::Instant,
 };
@@ -58,6 +58,265 @@ use coral_world::{
 mod codec;
 mod fluid_sim;
 mod tasks;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let resource_monitor = Arc::new(ResourceMonitor::new());
+    let config = Arc::new(coral_config::Config::load());
+    let addr = format!("0.0.0.0:{}", config.server.port);
+    let listener = match TcpListener::bind(&addr).await {
+        Ok(l) => {
+            println!("Minecraft Server 1.8.x started at {}", addr);
+            l
+        }
+        Err(e) => {
+            if e.kind() == ErrorKind::AddrInUse {
+                eprintln!("Port {} is already in use!", config.server.port);
+            } else {
+                eprintln!("Failed to bind a port to {}: {}", addr, e);
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let cwd = std::env::current_dir()?;
+
+    let server_icon = load_server_icon_file(&cwd)
+        .inspect(|_| println!("Server icon loaded successfully"))
+        .or_else(|| {
+            println!("No server icon found or invalid size");
+            None
+        });
+
+    let ops = Arc::new(RwLock::new(OpsFile::load()));
+    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
+
+    let world_path = Path::new(&config.world.world_name);
+
+    if world_path.components().count() != 1
+        || !matches!(world_path.components().next(), Some(Component::Normal(_)))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "Invalid world name {:?}: world_name must be a single directory name",
+                config.world.world_name
+            ),
+        )
+        .into());
+    }
+
+    let world_dir = cwd.join(&config.world.world_name);
+
+    let spawn_point = read_spawn_point(world_path)
+        .await
+        .unwrap_or((0.5, 5.0, 0.5, 0.0, 0.0));
+
+    let world_blocks = Arc::new(WorldBlocks::new());
+    let generator = Arc::new(FlatWorldGenerator::new());
+    world_blocks.load(world_path, &generator).await;
+
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(world_path, "world");
+    }
+    let (private_key, public_key_der) = generate_rsa_key();
+
+    let ctx = ServerContext {
+        packet_registry: Arc::new(PacketRegistry::new()),
+        server_icon: Arc::new(server_icon),
+        item_registry: Arc::new(ItemRegistry::new()),
+        block_registry: Arc::new(BlockRegistry::new()),
+        config: config.clone(),
+        dispatcher: Arc::new(CommandDispatcher::new()),
+        entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
+        item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
+        item_positions: Arc::new(RwLock::new(HashMap::new())),
+        projectiles: Arc::new(RwLock::new(Vec::new())),
+        channels: Channels::new(),
+        world_blocks,
+        world_time: Arc::new(AtomicI64::new(0)),
+        generator,
+        player_registry: Arc::new(PlayerRegistry::new()),
+        private_key: Arc::new(private_key),
+        public_key_der: Arc::new(public_key_der),
+        ops,
+        whitelist,
+        banlist: Arc::new(RwLock::new(BanList::load())),
+        spawn_point: Arc::new(RwLock::new(spawn_point)),
+        world_dir: Arc::new(world_dir),
+        xp_orbs: Arc::new(RwLock::new(Vec::new())),
+        fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
+        tile_entities: Arc::new(RwLock::new(HashMap::new())),
+        server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
+        scoreboard: Arc::new(ScoreboardManager::new()),
+        teams: Arc::new(TeamManager::new()),
+        stats: Arc::new(StatTracker::new()),
+    };
+
+    tasks::spawn_furnace_task(
+        ctx.tile_entities.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.channels.clone(),
+    );
+
+    if config.world.enable_auto_save {
+        tasks::spawn_world_save_task(
+            ctx.world_blocks.clone(),
+            ctx.generator.clone(),
+            ctx.world_dir.to_path_buf(),
+            ctx.tile_entities.clone(),
+            config.world.auto_save_interval,
+        );
+    }
+
+    ctx.dispatcher.register(list::version::command()).await;
+    ctx.dispatcher
+        .register(list::player_list::command(ctx.player_registry.clone()))
+        .await;
+    ctx.dispatcher
+        .register(list::gamemode::command(
+            ctx.player_registry.clone(),
+            ctx.channels.gm_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::kill::command(
+            ctx.player_registry.clone(),
+            ctx.channels.dmg_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::op::command(
+            ctx.player_registry.clone(),
+            ctx.ops.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::deop::command(
+            ctx.player_registry.clone(),
+            ctx.ops.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::whitelist::command(
+            ctx.player_registry.clone(),
+            ctx.whitelist.clone(),
+        ))
+        .await;
+    ctx.dispatcher.register(list::say::command()).await;
+    ctx.dispatcher
+        .register(list::msg::command(
+            ctx.player_registry.clone(),
+            ctx.channels.private_msg_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::reply::command(
+            ctx.player_registry.clone(),
+            ctx.channels.private_msg_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::usage::command(resource_monitor.clone()))
+        .await;
+    ctx.dispatcher
+        .register(
+            list::setworldspawn::command(
+                ctx.player_registry.clone(),
+                ctx.spawn_point.clone(),
+                ctx.world_dir.clone(),
+            )
+            .await,
+        )
+        .await;
+    ctx.dispatcher
+        .register(list::teleport::command(
+            ctx.player_registry.clone(),
+            ctx.channels.teleport_rq_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::kick::command(
+            ctx.player_registry.clone(),
+            ctx.channels.kick_rq_tx.clone(),
+        ))
+        .await;
+    ctx.dispatcher
+        .register(list::ping::command(ctx.player_registry.clone()))
+        .await;
+    ctx.dispatcher
+        .register(list::time::command(ctx.world_time.clone()))
+        .await;
+    ctx.dispatcher
+        .register(list::difficulty::command(
+            ctx.channels.difficulty_tx.clone(),
+        ))
+        .await;
+
+    tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
+    tasks::spawn_shutdown_task(
+        ctx.channels.shutdown_tx.clone(),
+        ctx.player_registry.clone(),
+        ctx.world_blocks.clone(),
+        ctx.world_dir.to_path_buf(),
+        ctx.tile_entities.clone(),
+        ctx.generator.clone(),
+    );
+    tasks::spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
+    tasks::spawn_world_time_task(
+        ctx.channels.time_tx.clone(),
+        ctx.player_registry.clone(),
+        ctx.channels.wake_tx.clone(),
+    );
+
+    if !config.world.disable_weather {
+        tasks::spawn_weather_task(ctx.channels.weather_tx.clone());
+    }
+
+    tasks::spawn_item_despawn_task(
+        ctx.channels.despawn_tx.clone(),
+        config.world.item_despawn_seconds,
+        ctx.item_spawn_times.clone(),
+        ctx.item_positions.clone(),
+    );
+
+    tasks::spawn_projectile_task(
+        ctx.projectiles.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.player_registry.clone(),
+        ctx.channels.clone(),
+    );
+
+    tasks::spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
+
+    tasks::spawn_xp_orb_task(
+        ctx.xp_orbs.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.player_registry.clone(),
+        ctx.channels.clone(),
+    );
+
+    fluid_sim::spawn_fluid_task(
+        ctx.fluid_queue.clone(),
+        ctx.world_blocks.clone(),
+        ctx.generator.clone(),
+        ctx.channels.clone(),
+    );
+
+    tasks::spawn_resource_monitor_task(resource_monitor.clone());
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let ctx = ctx.clone();
+
+        tokio::spawn(async move {
+            codec::process(socket, ctx).await;
+        });
+    }
+}
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -181,252 +440,7 @@ impl Channels {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let resource_monitor = Arc::new(ResourceMonitor::new());
-    let config = Arc::new(coral_config::Config::load());
-    let addr = format!("0.0.0.0:{}", config.server.port);
-    let listener = match TcpListener::bind(&addr).await {
-        Ok(l) => {
-            println!("Minecraft Server 1.8.x started at {}", addr);
-            l
-        }
-        Err(e) => {
-            if e.kind() == ErrorKind::AddrInUse {
-                eprintln!("Port {} is already in use!", config.server.port);
-            } else {
-                eprintln!("Failed to bind a port to {}: {}", addr, e);
-            }
-            std::process::exit(1);
-        }
-    };
-
-    let server_icon = load_server_icon_file()
-        .inspect(|_| println!("Server icon loaded successfully"))
-        .or_else(|| {
-            println!("No server icon found or invalid size");
-            None
-        });
-
-    let player_registry = Arc::new(PlayerRegistry::new());
-    let channels = Channels::new();
-    let ops = Arc::new(RwLock::new(OpsFile::load()));
-    let whitelist = Arc::new(RwLock::new(WhitelistFile::load()));
-    let world_dir = std::path::Path::new(&config.world.world_name);
-    let spawn_point = read_spawn_point(world_dir)
-        .await
-        .unwrap_or((0.5, 5.0, 0.5, 0.0, 0.0));
-
-    let world_blocks = Arc::new(WorldBlocks::new());
-    let generator = Arc::new(FlatWorldGenerator::new());
-
-    world_blocks.load(world_dir, &generator).await;
-
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_dir, "world");
-    }
-
-    let tile_entities = Arc::new(RwLock::new(HashMap::new()));
-
-    tasks::spawn_furnace_task(
-        tile_entities.clone(),
-        world_blocks.clone(),
-        generator.clone(),
-        channels.clone(),
-    );
-
-    if config.world.enable_auto_save {
-        tasks::spawn_world_save_task(
-            world_blocks.clone(),
-            generator.clone(),
-            world_dir.to_path_buf(),
-            tile_entities.clone(),
-            config.world.auto_save_interval,
-        );
-    }
-
-    let spawn_point = Arc::new(RwLock::new(spawn_point));
-    let world_dir = Arc::new(world_dir.to_path_buf());
-
-    let world_time = Arc::new(AtomicI64::new(0));
-
-    let dispatcher = Arc::new(CommandDispatcher::new());
-    dispatcher.register(list::version::command()).await;
-    dispatcher
-        .register(list::player_list::command(player_registry.clone()))
-        .await;
-    dispatcher
-        .register(list::gamemode::command(
-            player_registry.clone(),
-            channels.gm_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::kill::command(
-            player_registry.clone(),
-            channels.dmg_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::op::command(player_registry.clone(), ops.clone()))
-        .await;
-    dispatcher
-        .register(list::deop::command(player_registry.clone(), ops.clone()))
-        .await;
-    dispatcher
-        .register(list::whitelist::command(
-            player_registry.clone(),
-            whitelist.clone(),
-        ))
-        .await;
-    dispatcher.register(list::say::command()).await;
-    dispatcher
-        .register(list::msg::command(
-            player_registry.clone(),
-            channels.private_msg_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::reply::command(
-            player_registry.clone(),
-            channels.private_msg_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::usage::command(resource_monitor.clone()))
-        .await;
-    dispatcher
-        .register(
-            list::setworldspawn::command(
-                player_registry.clone(),
-                spawn_point.clone(),
-                world_dir.clone(),
-            )
-            .await,
-        )
-        .await;
-    dispatcher
-        .register(list::teleport::command(
-            player_registry.clone(),
-            channels.teleport_rq_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::kick::command(
-            player_registry.clone(),
-            channels.kick_rq_tx.clone(),
-        ))
-        .await;
-    dispatcher
-        .register(list::ping::command(player_registry.clone()))
-        .await;
-    dispatcher
-        .register(list::time::command(world_time.clone()))
-        .await;
-    dispatcher
-        .register(list::difficulty::command(channels.difficulty_tx.clone()))
-        .await;
-
-    let (private_key, public_key_der) = generate_rsa_key();
-
-    let ctx = ServerContext {
-        packet_registry: Arc::new(PacketRegistry::new()),
-        server_icon: Arc::new(server_icon),
-        item_registry: Arc::new(ItemRegistry::new()),
-        block_registry: Arc::new(BlockRegistry::new()),
-        config: config.clone(),
-        dispatcher,
-        entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
-        item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
-        item_positions: Arc::new(RwLock::new(HashMap::new())),
-        projectiles: Arc::new(RwLock::new(Vec::new())),
-        channels,
-        world_blocks,
-        world_time,
-        generator,
-        player_registry,
-        private_key: Arc::new(private_key),
-        public_key_der: Arc::new(public_key_der),
-        ops,
-        whitelist,
-        banlist: Arc::new(RwLock::new(BanList::load())),
-        spawn_point,
-        world_dir: world_dir.clone(),
-        xp_orbs: Arc::new(RwLock::new(Vec::new())),
-        fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
-        tile_entities,
-        server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
-        scoreboard: Arc::new(ScoreboardManager::new()),
-        teams: Arc::new(TeamManager::new()),
-        stats: Arc::new(StatTracker::new()),
-    };
-
-    tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
-    tasks::spawn_shutdown_task(
-        ctx.channels.shutdown_tx.clone(),
-        ctx.player_registry.clone(),
-        ctx.world_blocks.clone(),
-        world_dir.to_path_buf(),
-        ctx.tile_entities.clone(),
-        ctx.generator.clone(),
-    );
-    tasks::spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
-    tasks::spawn_world_time_task(
-        ctx.channels.time_tx.clone(),
-        ctx.player_registry.clone(),
-        ctx.channels.wake_tx.clone(),
-    );
-
-    if !config.world.disable_weather {
-        tasks::spawn_weather_task(ctx.channels.weather_tx.clone());
-    }
-
-    tasks::spawn_item_despawn_task(
-        ctx.channels.despawn_tx.clone(),
-        config.world.item_despawn_seconds,
-        ctx.item_spawn_times.clone(),
-        ctx.item_positions.clone(),
-    );
-
-    tasks::spawn_projectile_task(
-        ctx.projectiles.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
-        ctx.player_registry.clone(),
-        ctx.channels.clone(),
-    );
-
-    tasks::spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
-
-    tasks::spawn_xp_orb_task(
-        ctx.xp_orbs.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
-        ctx.player_registry.clone(),
-        ctx.channels.clone(),
-    );
-
-    fluid_sim::spawn_fluid_task(
-        ctx.fluid_queue.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
-        ctx.channels.clone(),
-    );
-
-    tasks::spawn_resource_monitor_task(resource_monitor.clone());
-
-    loop {
-        let (socket, _) = listener.accept().await?;
-        let ctx = ctx.clone();
-
-        tokio::spawn(async move {
-            codec::process(socket, ctx).await;
-        });
-    }
-}
-
-fn load_server_icon_file() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
+fn load_server_icon_file(cwd: &PathBuf) -> Option<String> {
     let icon_path = cwd.join("server-icon.png");
     let bytes = std::fs::read(&icon_path).ok()?;
 
