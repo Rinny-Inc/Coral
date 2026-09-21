@@ -14,8 +14,7 @@ pub fn world_path(name: &str) -> std::io::Result<&Path> {
                 "Invalid world name {:?}: world_name must be a single directory name",
                 name
             ),
-        )
-        .into());
+        ));
     }
     Ok(world_path)
 }

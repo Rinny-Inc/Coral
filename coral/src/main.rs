@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicI64},
     time::Instant,
 };
@@ -424,7 +424,7 @@ impl Channels {
     }
 }
 
-fn load_server_icon_file(cwd: &PathBuf) -> Option<String> {
+fn load_server_icon_file(cwd: &Path) -> Option<String> {
     let icon_path = cwd.join("server-icon.png");
     let bytes = std::fs::read(&icon_path).ok()?;
 

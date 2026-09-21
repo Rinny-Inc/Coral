@@ -118,6 +118,9 @@ pub async fn pre_play(
                                                 }
                                             }
                                         }
+                                        if !framed.codec().state.can_swap_to(&handshake.requested_protocol) {
+                                            return None;
+                                        }
                                         framed.codec_mut().state = handshake.requested_protocol.clone();
                                     }
                                 }

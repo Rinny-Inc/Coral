@@ -67,4 +67,16 @@ impl EnumProtocol {
     pub fn to_id(&self) -> i8 {
         self.clone() as i8
     }
+
+    pub fn can_swap_to(&self, to: &EnumProtocol) -> bool {
+        match self {
+            EnumProtocol::Handshaking
+                if to == &EnumProtocol::Status || to == &EnumProtocol::Login =>
+            {
+                true
+            }
+            EnumProtocol::Login if to == &EnumProtocol::Play => true,
+            _ => false,
+        }
+    }
 }
