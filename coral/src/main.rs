@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     world_blocks.load(world_path, &generator).await;
 
     if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_path, "world");
+        write_level_dat(world_path, &config.world.world_name);
     }
     let (private_key, public_key_der) = generate_rsa_key();
 
