@@ -92,6 +92,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let world_path = world_path(&config.world.world_name)?;
     let world_dir = cwd.join(&config.world.world_name);
 
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(world_path, &config.world.world_name);
+    }
+
     let spawn_point = read_spawn_point(world_path)
         .await
         .unwrap_or((0.5, 5.0, 0.5, 0.0, 0.0));
@@ -100,9 +104,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generator = Arc::new(FlatWorldGenerator::new());
     world_blocks.load(world_path, &generator).await;
 
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_path, &config.world.world_name);
-    }
     let (private_key, public_key_der) = generate_rsa_key();
 
     let ctx = ServerContext {

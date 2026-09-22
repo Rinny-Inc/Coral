@@ -19,7 +19,7 @@ pub fn write_level_dat(world_dir: &Path, world_name: &str) {
             ("DataVersion".to_string(), NbtTag::Int(0)),
             ("RandomSeed".to_string(), NbtTag::Long(0)),
             ("SpawnX".to_string(), NbtTag::Int(0)),
-            ("SpawnY".to_string(), NbtTag::Int(0)),
+            ("SpawnY".to_string(), NbtTag::Int(5)),
             ("SpawnZ".to_string(), NbtTag::Int(0)),
             ("SpawnYaw".to_string(), NbtTag::Float(0.0)),
             ("SpawnPitch".to_string(), NbtTag::Float(90.0)),
