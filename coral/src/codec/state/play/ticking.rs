@@ -5,8 +5,10 @@ use coral_protocol::packets::play::{
     chat::builder::ChatBuilder, entity::MetadataValue, game::UpdateHealth, inventory::SetSlot,
 };
 use coral_server::{
-    bounding_box::EntityBounds, effects::EffectKind, items::ItemRegistry,
-    player::registry::PlayerRegistry,
+    bounding_box::EntityBounds,
+    effects::EffectKind,
+    items::ItemRegistry,
+    player::{Player, registry::PlayerRegistry},
 };
 use coral_types::GameMode;
 use coral_world::{blocks::WorldBlocks, generator::FlatWorldGenerator};
@@ -38,10 +40,29 @@ pub async fn handle_tick(
     generator: &Arc<FlatWorldGenerator>,
     channels: &Channels,
 ) {
-    tick_eating(framed, state, player_registry, item_registry, channels).await;
+    tick_effects(framed, state, player_registry, &channels.chat_tx).await;
+    tick_block_breaking_progress(state, &channels.break_tx).await;
+    tick_food_and_regen(framed, state, config, player_registry, &channels.chat_tx).await;
+    if let Some(update) = state.watcher.take_dirty(state.entity_id) {
+        channels.meta_tx.send(update).ok();
+    }
+    let Some(player) = player_registry.get(&state.uuid).await else {
+        return;
+    };
+
+    tick_eating(
+        framed,
+        state,
+        &player,
+        player_registry,
+        item_registry,
+        channels,
+    )
+    .await;
     tick_item_pickup(
         framed,
         state,
+        &player,
         player_registry,
         item_registry,
         item_positions,
@@ -51,11 +72,10 @@ pub async fn handle_tick(
         &channels.sound_tx,
     )
     .await;
-    tick_block_breaking_progress(state, &channels.break_tx).await;
-    tick_food_and_regen(framed, state, config, player_registry, &channels.chat_tx).await;
     tick_drowning(
         framed,
         state,
+        &player,
         player_registry,
         world_blocks,
         generator,
@@ -63,24 +83,18 @@ pub async fn handle_tick(
         &channels.chat_tx,
     )
     .await;
-    tick_effects(framed, state, player_registry, &channels.chat_tx).await;
-    tick_void_damage(framed, state, player_registry, &channels.chat_tx).await;
-    if let Some(player) = player_registry.get(&state.uuid).await {
-        state
-            .check_fire_lava_damage(
-                framed,
-                &player,
-                world_blocks,
-                generator,
-                player_registry,
-                &channels.chat_tx,
-                &channels.sound_tx,
-            )
-            .await;
-    }
-    if let Some(update) = state.watcher.take_dirty(state.entity_id) {
-        channels.meta_tx.send(update).ok();
-    }
+    tick_void_damage(framed, state, &player, player_registry, &channels.chat_tx).await;
+    state
+        .check_fire_lava_damage(
+            framed,
+            &player,
+            world_blocks,
+            generator,
+            player_registry,
+            &channels.chat_tx,
+            &channels.sound_tx,
+        )
+        .await;
 }
 
 async fn tick_block_breaking_progress(
@@ -100,13 +114,11 @@ async fn tick_block_breaking_progress(
 async fn tick_void_damage(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
+    player: &Player,
     player_registry: &Arc<PlayerRegistry>,
     chat_tx: &Arc<Sender<String>>,
 ) {
-    if state.tick_count % 10 == 0
-        && let Some(p) = player_registry.get(&state.uuid).await
-        && p.y < -64.0
-    {
+    if state.tick_count % 10 == 0 && player.y < -64.0 {
         let died = state.damage_player(framed, 4.0, player_registry).await;
         if died {
             chat_tx
@@ -122,6 +134,7 @@ async fn tick_void_damage(
 async fn tick_item_pickup(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
+    player: &Player,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
@@ -130,75 +143,81 @@ async fn tick_item_pickup(
     equip_tx: &Arc<Sender<EquipmentUpdate>>,
     sound_tx: &Arc<Sender<SoundEffect>>,
 ) {
-    if let Some(p) = player_registry.get(&state.uuid).await {
-        let mut items = item_positions.write().await;
-        let mut picked_up = vec![];
+    let mut items = item_positions.write().await;
+    let mut picked_up = vec![];
 
-        for (eid, (_item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-            let player_bb = EntityBounds::player(state.is_sneaking);
+    for (eid, (_item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
+        let player_bb = EntityBounds::player(state.is_sneaking);
 
-            let item_bb = EntityBounds::item();
+        let item_bb = EntityBounds::item();
 
-            if player_bb.intersects(p.x, p.y, p.z, &item_bb, *ix, *iy, *iz) {
-                let age = {
-                    let spawn_time = item_spawn_times.read().await;
-                    spawn_time
-                        .get(eid)
-                        .map(|t| t.elapsed().as_secs_f32())
-                        .unwrap_or(0.0)
-                };
+        if player_bb.intersects(player.x, player.y, player.z, &item_bb, *ix, *iy, *iz) {
+            let age = {
+                let spawn_time = item_spawn_times.read().await;
+                spawn_time
+                    .get(eid)
+                    .map(|t| t.elapsed().as_secs_f32())
+                    .unwrap_or(0.0)
+            };
 
-                if age < 0.5 {
-                    continue;
-                }
+            if age < 0.5 {
+                continue;
+            }
 
-                let slot_index = state
-                    .inventory
-                    .add_item_get_slot(*item_id, *count, *metadata);
-                if let Some((packet_slot, internal_idx)) = slot_index {
-                    picked_up.push(*eid);
+            let slot_index = state
+                .inventory
+                .add_item_get_slot(*item_id, *count, *metadata);
+            if let Some((packet_slot, internal_idx)) = slot_index {
+                picked_up.push(*eid);
 
-                    let actual_count = state.inventory.slots[internal_idx]
-                        .as_ref()
-                        .map(|s| s.count)
-                        .unwrap_or(*count);
+                let actual_count = state.inventory.slots[internal_idx]
+                    .as_ref()
+                    .map(|s| s.count)
+                    .unwrap_or(*count);
 
-                    send_packet(
-                        framed,
-                        SetSlot {
-                            window_id: 0,
-                            slot: packet_slot,
-                            item_id: *item_id,
-                            count: actual_count,
-                            metadata: *metadata,
-                        },
-                    )
-                    .await;
+                send_packet(
+                    framed,
+                    SetSlot {
+                        window_id: 0,
+                        slot: packet_slot,
+                        item_id: *item_id,
+                        count: actual_count,
+                        metadata: *metadata,
+                    },
+                )
+                .await;
 
-                    if internal_idx == state.held_slot as usize {
-                        state.held_item = item_registry.resolve(*item_id);
-                        player_registry
-                            .update_held_item(&state.uuid, *item_id)
-                            .await;
-                        state.send_held_equip(equip_tx);
-                    }
+                if internal_idx == state.held_slot as usize {
+                    state.held_item = item_registry.resolve(*item_id);
+                    player_registry
+                        .update_held_item(&state.uuid, *item_id)
+                        .await;
+                    state.send_held_equip(equip_tx);
                 }
             }
         }
-        for eid in picked_up {
-            items.remove(&eid);
-            item_spawn_times.write().await.remove(&eid);
-            pickup_tx.send((state.entity_id, state.uuid, eid)).ok();
-            let pitch = 63 + (rand::rng().random_range(-12i8..=12) as i16) as u8;
-            sound_tx
-                .send(("random.pop".to_string(), p.x, p.y, p.z, 0.2, pitch))
-                .ok();
-        }
+    }
+    for eid in picked_up {
+        items.remove(&eid);
+        item_spawn_times.write().await.remove(&eid);
+        pickup_tx.send((state.entity_id, state.uuid, eid)).ok();
+        let pitch = 63 + (rand::rng().random_range(-12i8..=12) as i16) as u8;
+        sound_tx
+            .send((
+                "random.pop".to_string(),
+                player.x,
+                player.y,
+                player.z,
+                0.2,
+                pitch,
+            ))
+            .ok();
     }
 }
 async fn tick_eating(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
+    player: &Player,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
     channels: &Channels,
@@ -240,34 +259,30 @@ async fn tick_eating(
             )
             .await;
 
-            if let Some(player) = player_registry.get(&state.uuid).await {
-                channels
-                    .sound_tx
-                    .send((
-                        "random.burp".to_string(),
-                        player.x,
-                        player.y,
-                        player.z,
-                        0.5,
-                        63,
-                    ))
-                    .ok();
-            }
+            channels
+                .sound_tx
+                .send((
+                    "random.burp".to_string(),
+                    player.x,
+                    player.y,
+                    player.z,
+                    0.5,
+                    63,
+                ))
+                .ok();
         }
     }
 }
 async fn tick_drowning(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
+    player: &Player,
     player_registry: &Arc<PlayerRegistry>,
     world_blocks: &Arc<WorldBlocks>,
     generator: &Arc<FlatWorldGenerator>,
     sound_tx: &Arc<Sender<SoundEffect>>,
     chat_tx: &Arc<Sender<String>>,
 ) {
-    let Some(player) = player_registry.get(&state.uuid).await else {
-        return;
-    };
     let submerged = player.is_head_submerged(world_blocks, generator).await;
     let can_drown = state.gamemode == GameMode::Survival && !state.is_flying;
     if submerged && can_drown {
