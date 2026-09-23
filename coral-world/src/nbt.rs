@@ -131,6 +131,13 @@ impl NbtTag {
             None
         }
     }
+    pub fn as_f32(&self) -> Option<f32> {
+        if let NbtTag::Float(v) = self {
+            Some(*v)
+        } else {
+            None
+        }
+    }
     pub fn as_byte_array(&self) -> Option<&Vec<u8>> {
         if let NbtTag::ByteArray(v) = self {
             Some(v)

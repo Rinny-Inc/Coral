@@ -62,6 +62,8 @@ jobs:
           key: ${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build release
+        env:
+          CORAL_VERSION: ${{ github.ref_name }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
@@ -128,4 +130,4 @@ jobs:
 
             Download the archive for your platform below, extract, and run the `coral` binary.
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}

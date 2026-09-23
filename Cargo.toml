@@ -11,16 +11,16 @@ members = [
 ]
 
 [workspace.dependencies]
-aes = "0.9.2"
+aes = "0.9.3"
 base64 = "0.23.1"
 bytes = "1.12.1"
 cfb8 = "0.9.1"
 cipher = "0.5.2"
-flate2 = "1.1.9"
+flate2 = "1.1.10"
 futures = "0.3.34"
 num-bigint = "0.5.1"
-rand = "0.10.2"
-reqwest = { version = "0.13.4", features = ["json"] }
+rand = "0.10.3"
+reqwest = { version = "0.13.5", features = ["json"] }
 rsa = "=0.10.0-rc.18"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -28,6 +28,6 @@ sha1 = "0.11.0"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["full"] }
 tokio-util = { version = "0.7.19", features = ["codec"] }
-toml = "1.1.4+spec-1.1.0"
-uuid = { version = "1.26.0", features = ["v3", "v4"] }
+toml = "1.1.6+spec-1.1.0"
+uuid = { version = "1.26.1", features = ["v3", "v4"] }
 sysinfo = "0.39.6"

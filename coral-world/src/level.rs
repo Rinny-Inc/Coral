@@ -22,7 +22,7 @@ pub fn write_level_dat(world_dir: &Path, world_name: &str) {
             ("SpawnY".to_string(), NbtTag::Int(5)),
             ("SpawnZ".to_string(), NbtTag::Int(0)),
             ("SpawnYaw".to_string(), NbtTag::Float(0.0)),
-            ("SpawnPitch".to_string(), NbtTag::Float(90.0)),
+            ("SpawnPitch".to_string(), NbtTag::Float(0.0)),
             ("Time".to_string(), NbtTag::Long(0)),
             ("DayTime".to_string(), NbtTag::Long(6000)),
             ("GameType".to_string(), NbtTag::Int(0)),
@@ -100,8 +100,47 @@ pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64, f32, f
     let y = data.get("SpawnY").and_then(|t| t.as_i32())? as f64;
     let z = data.get("SpawnZ").and_then(|t| t.as_i32())? as f64 + 0.5;
 
-    let yaw = data.get("SpawnYaw").and_then(|t| t.as_i32())? as f32;
-    let pitch = data.get("SpawnPitch").and_then(|t| t.as_i32())? as f32;
+    let yaw = data.get("SpawnYaw").and_then(|t| t.as_f32()).unwrap_or(0.0);
+    let pitch = data
+        .get("SpawnPitch")
+        .and_then(|t| t.as_f32())
+        .unwrap_or(0.0);
 
     Some((x, y, z, yaw, pitch))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("coral-level-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        d
+    }
+
+    #[tokio::test]
+    async fn fresh_level_dat_matches_runtime_default() {
+        let dir = tmp("fresh");
+        write_level_dat(&dir, "world");
+        assert_eq!(
+            read_spawn_point(&dir).await,
+            Some((0.5, 5.0, 0.5, 0.0, 0.0))
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn setworldspawn_survives_reload() {
+        let dir = tmp("set");
+        write_level_dat(&dir, "world");
+        write_spawn_point(&dir, 100, 64, -200, 90.0, -15.0)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_spawn_point(&dir).await,
+            Some((100.5, 64.0, -199.5, 90.0, -15.0))
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
