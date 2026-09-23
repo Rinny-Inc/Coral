@@ -25,7 +25,7 @@ pub fn command(player_registry: Arc<PlayerRegistry>) -> Command {
 
                 let names = players
                     .iter()
-                    .map(|p| p.username.clone())
+                    .map(|p| p.username.to_string())
                     .collect::<Vec<String>>();
 
                 let msg = ChatAppender::new()

@@ -897,8 +897,8 @@ async fn make_player_join(
                 framed,
                 PlayerListItemAdd {
                     uuid: p.uuid,
-                    username: p.username.clone(),
-                    properties: p.properties.clone(),
+                    username: p.username.to_string(),
+                    properties: p.properties.to_vec(),
                     gamemode: p.gamemode as i32,
                     ping: p.latency_ms,
                 },

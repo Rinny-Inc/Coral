@@ -17,8 +17,8 @@ pub mod registry;
 pub struct Player {
     pub entity_id: i32,
     pub uuid: Uuid,
-    pub username: String,
-    pub properties: Vec<ProfileProperty>,
+    pub username: Arc<String>,
+    pub properties: Arc<[ProfileProperty]>,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -68,8 +68,8 @@ impl Player {
         Self {
             entity_id,
             uuid,
-            username,
-            properties,
+            username: username.into(),
+            properties: properties.into(),
             x,
             y,
             z,
@@ -144,5 +144,79 @@ impl Player {
             flags |= 0x08;
         }
         flags
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::registry::PlayerRegistry;
+    use coral_protocol::auth::ProfileProperty;
+
+    fn player(name: &str) -> Player {
+        Player::new(
+            1,
+            Uuid::new_v4(),
+            name.to_string(),
+            vec![ProfileProperty {
+                name: "textures".to_string(),
+                value: "x".repeat(400),
+                signature: Some("s".repeat(684)),
+            }],
+            0.5,
+            64.0,
+            0.5,
+            0.0,
+            0.0,
+            GameMode::Survival,
+            20.0,
+            20,
+            5.0,
+        )
+    }
+
+    #[test]
+    fn clone_shares_the_immutable_fields() {
+        let a = player("Noksio");
+        let b = a.clone();
+        assert!(
+            Arc::ptr_eq(&a.username, &b.username),
+            "cloning a Player must not copy the username"
+        );
+        assert!(
+            Arc::ptr_eq(&a.properties, &b.properties),
+            "cloning a Player must not copy the skin properties"
+        );
+        assert_eq!(&*b.username, "Noksio");
+        assert_eq!(b.properties.len(), 1);
+    }
+
+    #[test]
+    fn clones_are_still_independent_for_mutable_state() {
+        let a = player("Noksio");
+        let mut b = a.clone();
+        b.health = 3.0;
+        b.x = 100.0;
+        assert_eq!(a.health, 20.0);
+        assert_eq!(a.x, 0.5);
+    }
+
+    #[tokio::test]
+    async fn registry_reads_share_with_the_stored_player() {
+        let registry = PlayerRegistry::new();
+        let p = player("Noksio");
+        let uuid = p.uuid;
+        let username = p.username.clone();
+        registry.add(p).await;
+
+        let got = registry.get(&uuid).await.expect("player is registered");
+        assert!(
+            Arc::ptr_eq(&got.username, &username),
+            "registry.get must hand back a shared username, not a copy"
+        );
+
+        let all = registry.get_all().await;
+        assert_eq!(all.len(), 1);
+        assert!(Arc::ptr_eq(&all[0].properties, &got.properties));
     }
 }

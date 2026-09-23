@@ -609,14 +609,14 @@ pub async fn play(
                     if client_protocol == 47 {
                         send_packet(framed, PlayerListItemAdd {
                             uuid: player.uuid,
-                            username: player.username.clone(),
-                            properties: player.properties.clone(),
+                            username: player.username.to_string(),
+                            properties: player.properties.to_vec(),
                             gamemode: player.gamemode as i32,
                             ping: player.latency_ms
                         }).await;
                     } else {
                         send_packet(framed, PlayerListItem17 {
-                            username: player.username.clone(),
+                            username: player.username.to_string(),
                             online: true,
                             ping: player.latency_ms as i16
                         }).await;
@@ -1197,7 +1197,7 @@ pub async fn play(
                                 player_registry.get_all().await
                                     .iter()
                                     .filter(|p| p.username.to_lowercase().starts_with(&text.to_lowercase()))
-                                    .map(|p| p.username.clone())
+                                    .map(|p| p.username.to_string())
                                     .collect()
                             };
 
@@ -1981,7 +1981,7 @@ pub async fn send_spawn_player(framed: &mut Framed<TcpStream, Codec>, player: &P
             entity_id: player.entity_id,
             uuid: player.uuid,
             //username: p.username.clone(),
-            properties: player.properties.clone(),
+            properties: player.properties.to_vec(),
             x: player.x,
             y: player.y,
             z: player.z,

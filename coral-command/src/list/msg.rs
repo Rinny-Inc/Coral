@@ -41,7 +41,7 @@ pub fn command(
                 }
                 tx.send((
                     ctx.sender.clone(),
-                    target_player.username.clone(),
+                    target_player.username.to_string(),
                     message.clone(),
                 ))
                 .ok();
