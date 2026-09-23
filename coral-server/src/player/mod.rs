@@ -92,7 +92,7 @@ impl Player {
             chestplate: -1,
             leggings: -1,
             boots: -1,
-            active_effects: vec![],
+            active_effects: Vec::new(),
             is_sleeping: false,
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,

@@ -224,7 +224,7 @@ pub async fn play(
                 }).await;*/
             }
             Ok((from, to, message)) = private_msg_rx.recv() => {
-                if state.name != to {
+                if state.name.to_string() != to {
                     continue;
                 }
 
@@ -1157,7 +1157,7 @@ pub async fn play(
                                 }
 
                                 let ctx = CommandContext {
-                                    sender: state.name.clone(),
+                                    sender: state.name.to_string(),
                                     args,
                                     reply_target: state.last_message_from.clone(),
                                     is_op: state.is_op
