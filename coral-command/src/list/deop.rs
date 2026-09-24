@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
 use coral_server::{ops::OpsFile, player::registry::PlayerRegistry};
 use tokio::sync::RwLock;
 
@@ -32,10 +33,14 @@ pub fn command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) 
 
                 ops.write().await.remove(&target.uuid);
 
-                CommandResult::Success(format!(
-                    "Made {} no longer a server operator",
-                    target.username
-                ))
+                CommandResult::Success(
+                    ChatAppender::new()
+                        .add(ChatBuilder::new(format!(
+                            "Made {} no longer a server operator",
+                            target.username
+                        )))
+                        .build(),
+                )
             }
         }),
     }

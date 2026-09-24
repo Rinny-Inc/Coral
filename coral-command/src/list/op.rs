@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
 use coral_server::{ops::OpsFile, player::registry::PlayerRegistry};
 use tokio::sync::RwLock;
 
@@ -32,7 +33,14 @@ pub fn command(player_registry: Arc<PlayerRegistry>, ops: Arc<RwLock<OpsFile>>) 
 
                 ops.write().await.add(target.uuid, &target.username, 4);
 
-                CommandResult::Success(format!("Made {} a server operator", target.username))
+                CommandResult::Success(
+                    ChatAppender::new()
+                        .add(ChatBuilder::new(format!(
+                            "Made {} a server operator",
+                            target.username
+                        )))
+                        .build(),
+                )
             }
         }),
     }

@@ -1,5 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
 use coral_server::player::registry::PlayerRegistry;
 use tokio::sync::RwLock;
 
@@ -66,10 +67,14 @@ pub async fn command(
                     ));
                 }
 
-                CommandResult::Success(format!(
-                    "Set the world spawn point to ({}, {}, {}, {}, {})",
-                    x as i32, y as i32, z as i32, yaw, pitch
-                ))
+                CommandResult::Success(
+                    ChatAppender::new()
+                        .add(ChatBuilder::new(format!(
+                            "Set the world spawn point to ({}, {}, {}, {}, {})",
+                            x as i32, y as i32, z as i32, yaw, pitch
+                        )))
+                        .build(),
+                )
             }
         }),
     }

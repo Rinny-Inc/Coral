@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
 use coral_server::player::registry::PlayerRegistry;
 use coral_types::KickRequest;
 use tokio::sync::broadcast::Sender;
@@ -38,7 +39,14 @@ pub fn command(
                 };
 
                 tx.send((target.uuid, reason.clone())).ok();
-                CommandResult::Success(format!("Kicked {}: {}", target.username, reason))
+                CommandResult::Success(
+                    ChatAppender::new()
+                        .add(ChatBuilder::new(format!(
+                            "Kicked {}: {}",
+                            target.username, reason
+                        )))
+                        .build(),
+                )
             }
         }),
     }

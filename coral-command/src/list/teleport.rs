@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
 use coral_server::player::registry::PlayerRegistry;
 use coral_types::TeleportRequest;
 use tokio::sync::broadcast::Sender;
@@ -29,8 +30,8 @@ pub fn command(
                 };
 
                 match ctx.args.len() {
-                    // /tp <x> <y> <z>  → teleport self to coords
-                    // /tp <player>     → teleport self to that player
+                    // /tp <x> <y> <z> -> teleport self to coords
+                    // /tp <player>    -> teleport self to that player
                     2 => {
                         let arg = ctx.arg(1).unwrap();
                         // is it a player name?
@@ -41,12 +42,19 @@ pub fn command(
                                 );
                             };
                             tx.send((sender.uuid, target.x, target.y, target.z)).ok();
-                            CommandResult::Success(format!("Teleported you to {}", target.username))
+                            CommandResult::Success(
+                                ChatAppender::new()
+                                    .add(ChatBuilder::new(format!(
+                                        "Teleported you to {}",
+                                        target.username
+                                    )))
+                                    .build(),
+                            )
                         } else {
                             CommandResult::Error(format!("Player not found: {}", arg))
                         }
                     }
-                    // /tp <x> <y> <z>  → self to coords
+                    // /tp <x> <y> <z> -> self to coords
                     4 => {
                         let parse = |s: &str| s.parse::<f64>().ok();
                         match (
@@ -62,12 +70,16 @@ pub fn command(
                                     );
                                 };
                                 tx.send((sender.uuid, x, y, z)).ok();
-                                CommandResult::Success(format!(
-                                    "Teleported you to {} {} {}",
-                                    x as i32, y as i32, z as i32
-                                ))
+                                CommandResult::Success(
+                                    ChatAppender::new()
+                                        .add(ChatBuilder::new(format!(
+                                            "Teleported you to {} {} {}",
+                                            x as i32, y as i32, z as i32
+                                        )))
+                                        .build(),
+                                )
                             }
-                            // /tp <player> <target>  → player to target
+                            // /tp <player> <target> -> player to target
                             _ => {
                                 let (Some(moved), Some(dest)) =
                                     (find(ctx.arg(1).unwrap()), find(ctx.arg(2).unwrap()))
@@ -75,10 +87,14 @@ pub fn command(
                                     return CommandResult::Error("Invalid arguments. Use /tp <player> <target> or /tp <x> <y> <z>".to_string());
                                 };
                                 tx.send((moved.uuid, dest.x, dest.y, dest.z)).ok();
-                                CommandResult::Success(format!(
-                                    "Teleported {} to {}",
-                                    moved.username, dest.username
-                                ))
+                                CommandResult::Success(
+                                    ChatAppender::new()
+                                        .add(ChatBuilder::new(format!(
+                                            "Teleported {} to {}",
+                                            moved.username, dest.username
+                                        )))
+                                        .build(),
+                                )
                             }
                         }
                     }
@@ -91,10 +107,14 @@ pub fn command(
                             return CommandResult::Error("Player not found".to_string());
                         };
                         tx.send((moved.uuid, dest.x, dest.y, dest.z)).ok();
-                        CommandResult::Success(format!(
-                            "Teleported {} to {}",
-                            moved.username, dest.username
-                        ))
+                        CommandResult::Success(
+                            ChatAppender::new()
+                                .add(ChatBuilder::new(format!(
+                                    "Teleported {} to {}",
+                                    moved.username, dest.username
+                                )))
+                                .build(),
+                        )
                     }
                     _ => CommandResult::Error(
                         "Usage: /tp <player> | /tp <player> <target> | /tp <x> <y> <z>".to_string(),
