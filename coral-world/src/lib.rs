@@ -6,5 +6,6 @@ pub mod level;
 pub mod nbt;
 pub mod playerdata;
 pub mod region;
+pub mod spawn;
 pub mod time;
 pub mod weather;

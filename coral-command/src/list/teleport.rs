@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
+use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_server::player::registry::PlayerRegistry;
 use coral_types::TeleportRequest;
 use tokio::sync::broadcast::Sender;
@@ -42,14 +42,10 @@ pub fn command(
                                 );
                             };
                             tx.send((sender.uuid, target.x, target.y, target.z)).ok();
-                            CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new(format!(
-                                        "Teleported you to {}",
-                                        target.username
-                                    )))
-                                    .build(),
-                            )
+                            CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                "Teleported you to {}",
+                                target.username
+                            )))
                         } else {
                             CommandResult::Error(format!("Player not found: {}", arg))
                         }
@@ -70,14 +66,10 @@ pub fn command(
                                     );
                                 };
                                 tx.send((sender.uuid, x, y, z)).ok();
-                                CommandResult::Success(
-                                    ChatAppender::new()
-                                        .add(ChatBuilder::new(format!(
-                                            "Teleported you to {} {} {}",
-                                            x as i32, y as i32, z as i32
-                                        )))
-                                        .build(),
-                                )
+                                CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                    "Teleported you to {} {} {}",
+                                    x as i32, y as i32, z as i32
+                                )))
                             }
                             // /tp <player> <target> -> player to target
                             _ => {
@@ -87,14 +79,10 @@ pub fn command(
                                     return CommandResult::Error("Invalid arguments. Use /tp <player> <target> or /tp <x> <y> <z>".to_string());
                                 };
                                 tx.send((moved.uuid, dest.x, dest.y, dest.z)).ok();
-                                CommandResult::Success(
-                                    ChatAppender::new()
-                                        .add(ChatBuilder::new(format!(
-                                            "Teleported {} to {}",
-                                            moved.username, dest.username
-                                        )))
-                                        .build(),
-                                )
+                                CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                    "Teleported {} to {}",
+                                    moved.username, dest.username
+                                )))
                             }
                         }
                     }
@@ -107,14 +95,10 @@ pub fn command(
                             return CommandResult::Error("Player not found".to_string());
                         };
                         tx.send((moved.uuid, dest.x, dest.y, dest.z)).ok();
-                        CommandResult::Success(
-                            ChatAppender::new()
-                                .add(ChatBuilder::new(format!(
-                                    "Teleported {} to {}",
-                                    moved.username, dest.username
-                                )))
-                                .build(),
-                        )
+                        CommandResult::Success(ChatBuilder::plain_json(&format!(
+                            "Teleported {} to {}",
+                            moved.username, dest.username
+                        )))
                     }
                     _ => CommandResult::Error(
                         "Usage: /tp <player> | /tp <player> <target> | /tp <x> <y> <z>".to_string(),

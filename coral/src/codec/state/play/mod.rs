@@ -63,6 +63,7 @@ use coral_world::{
     chunk::{ChunkData, UnloadChunk},
     generator::FlatWorldGenerator,
     playerdata::{PlayerData, save_player_data},
+    spawn,
     time::TimeUpdate,
     weather::WeatherState,
 };
@@ -224,7 +225,7 @@ pub async fn play(
                 }).await;*/
             }
             Ok((from, to, message)) = private_msg_rx.recv() => {
-                if state.name.to_string() != to {
+                if state.name != to {
                     continue;
                 }
 
@@ -497,6 +498,7 @@ pub async fn play(
                     continue;
                 }
 
+                state.await_teleport(x, y, z);
                 send_packet(framed, PlayerPositionAndLook {
                     x, y, z,
                     yaw: 0.0, pitch: 0.0,
@@ -511,6 +513,7 @@ pub async fn play(
                     head_yaw: Some(0.0),
                 }).ok();
 
+                let (new_cx, new_cz) = spawn::spawn_chunk(x, z);
                 let new_cx = (x as i32) >> 4;
                 let new_cz = (x as i32) >> 4;
                 if new_cx != state.chunk_x || new_cz != state.chunk_z {
@@ -1228,6 +1231,51 @@ pub async fn play(
                             let prev_velocity = state.velocity;
                             let position_changed = dx != 0 || dy != 0 || dz != 0;
 
+                            if let Some((tx, ty, tz)) = state.pending_teleport {
+                                let expired = state.pending_teleport_at.is_none_or(|t| t.elapsed() > Duration::from_secs(5));
+                                let arrived = mv.position.is_some_and(|(cx, cy, cz)| {
+                                   (cx - tx).abs() < 1.0
+                                        && (cy - ty).abs() < 1.0
+                                        && (cz - tz).abs() < 1.0
+                                });
+
+                                if !arrived && !expired {
+                                    continue;
+                                }
+
+                                if expired && !arrived {
+                                    println!(
+                                        "[WARN] {} never confirmed a teleport to ({tx:.1}, {ty:.1}, {tz:.1}); accepting ({x:.1}, {y:.1}, {z:.1})",
+                                        state.name
+                                    );
+                                }
+
+                                state.pending_teleport = None;
+                                state.pending_teleport_at = None;
+                                state.first_position_received = true;
+                                state.fall_distance = 0.0;
+                                state.velocity = (0.0, 0.0, 0.0);
+                                state.was_on_ground = mv.on_ground;
+                                state.last_position = (x, y, z);
+                                state.last_position_tick = Instant::now();
+                                (state.chunk_x, state.chunk_z) = spawn::spawn_chunk(x, z);
+
+                                player_registry
+                                    .update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground)
+                                    .await;
+                                player_registry.update_velocity(&state.uuid, state.velocity).await;
+                                entity_tracker.write().await.update_position(state.entity_id, x, y, z);
+                                channels.pos_tx.send(MovementBroadcast {
+                                    uuid: state.uuid,
+                                    entity_id: state.entity_id,
+                                    kind: MoveKind::Teleport {
+                                        x, y, z, yaw, pitch,
+                                        on_ground: mv.on_ground
+                                    },
+                                    head_yaw: Some(yaw)
+                                }).ok();
+                            }
+
                             if mv.position.is_some() {
                                 if !mv.on_ground && y < p.y {
                                     state.fall_distance += (p.y - y) as f32;
@@ -1274,21 +1322,6 @@ pub async fn play(
                                     let new_chunk_z = (z as i32) >> 4;
 
                                     if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
-                                        if !state.first_position_received {
-                                            state.first_position_received = true;
-                                            player_registry.update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground).await;
-                                            channels.pos_tx.send(MovementBroadcast {
-                                                uuid: state.uuid,
-                                                entity_id: state.entity_id,
-                                                kind: MoveKind::Teleport {
-                                                    x, y, z, yaw, pitch,
-                                                    on_ground: mv.on_ground
-                                                },
-                                                head_yaw: Some(yaw)
-                                            }).ok();
-                                            handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
-                                            continue;
-                                        }
                                         state.chunk_x = new_chunk_x;
                                         state.chunk_z = new_chunk_z;
                                         update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, &server_loaded_chunks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
@@ -1475,16 +1508,12 @@ pub async fn play(
                                     level_type: "flat".to_string()
                                 }).await;
 
-                                let (sx, sy, sz, syaw, spitch) = if let Some((bx, by, bz)) = state.bed_spawn {
-                                    (bx as f64 + 0.5, by as f64 + 1.0, bz as f64 + 0.5, 0.0, 0.0)
-                                } else {
-                                    *spawn_point.read().await
-                                };
+                                let world_spawn = *spawn_point.read().await;
+                                let (sx, sy, sz, syaw, spitch) = spawn::respawn_position(state.bed_spawn, world_spawn);
 
                                 player_registry.update_position(&state.uuid, sx, sy, sz, syaw, spitch, false).await;
 
-                                let spawn_cx = (sx as i32) >> 4;
-                                let spawn_cz = (sz as i32) >> 4;
+                                let (spawn_cx, spawn_cz) = spawn::spawn_chunk(sx, sz);
 
                                 state.loaded_chunks.clear();
                                 send_chunks(
@@ -1502,16 +1531,16 @@ pub async fn play(
                                 state.chunk_x = spawn_cx;
                                 state.chunk_z = spawn_cz;
 
+                                state.await_teleport(sx, sy, sz);
                                 send_packet(framed, PlayerPositionAndLook {
                                     x: sx,
                                     y: sy,
                                     z: sz,
-                                    yaw: 0.0,
-                                    pitch: 0.0,
+                                    yaw: syaw,
+                                    pitch: spitch,
                                     on_ground: false
                                 }).await;
 
-                                state.fall_distance = 0.0;
                                 state.was_on_ground = true;
 
                                 send_packet(framed, UpdateHealth {
@@ -1893,6 +1922,7 @@ async fn remove_effect(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     kind: EffectKind,
+    player_registry: &Arc<PlayerRegistry>,
 ) {
     use coral_protocol::packets::play::game::RemoveEntityEffect;
 
@@ -1905,6 +1935,10 @@ async fn remove_effect(
         },
     )
     .await;
+
+    player_registry
+        .update_effects(&state.uuid, state.active_effects.clone())
+        .await;
 }
 
 pub async fn send_weather(framed: &mut Framed<TcpStream, Codec>, weather: WeatherState) {

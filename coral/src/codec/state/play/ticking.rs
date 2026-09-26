@@ -527,12 +527,9 @@ async fn tick_effects(
     }
 
     for kind in expired {
-        remove_effect(framed, state, kind.clone()).await;
+        remove_effect(framed, state, kind.clone(), player_registry).await;
         if kind == EffectKind::Absorption {
             state.absorption_hp = 0.0;
         }
     }
-    player_registry
-        .update_effects(&state.uuid, state.active_effects.clone())
-        .await;
 }
