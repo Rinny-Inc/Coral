@@ -1274,6 +1274,7 @@ pub async fn play(
                                     },
                                     head_yaw: Some(yaw)
                                 }).ok();
+                                continue;
                             }
 
                             if mv.position.is_some() {
