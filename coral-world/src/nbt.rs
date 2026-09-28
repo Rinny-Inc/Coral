@@ -124,19 +124,37 @@ impl NbtTag {
         }
     }
 
-    pub fn as_i32(&self) -> Option<i32> {
-        if let NbtTag::Int(v) = self {
-            Some(*v)
-        } else {
-            None
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            NbtTag::Byte(v) => Some(*v as i64),
+            NbtTag::Short(v) => Some(*v as i64),
+            NbtTag::Int(v) => Some(*v as i64),
+            NbtTag::Long(v) => Some(*v),
+            _ => None,
         }
     }
-    pub fn as_f32(&self) -> Option<f32> {
-        if let NbtTag::Float(v) = self {
-            Some(*v)
-        } else {
-            None
+
+    pub fn as_i32(&self) -> Option<i32> {
+        self.as_i64().map(|v| v as i32)
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            NbtTag::Float(v) => Some(*v as f64),
+            NbtTag::Double(v) => Some(*v),
+            _ => self.as_i64().map(|v| v as f64),
         }
+    }
+
+    pub fn as_f32(&self) -> Option<f32> {
+        self.as_f64().map(|v| v as f32)
+    }
+
+    pub fn as_i8(&self) -> Option<i8> {
+        self.as_i64().map(|v| v as i8)
+    }
+    pub fn as_i16_val(&self) -> Option<i16> {
+        self.as_i64().map(|v| v as i16)
     }
     pub fn as_byte_array(&self) -> Option<&Vec<u8>> {
         if let NbtTag::ByteArray(v) = self {
@@ -148,20 +166,6 @@ impl NbtTag {
     pub fn as_list(&self) -> Option<&Vec<NbtTag>> {
         if let NbtTag::List(_, v) = self {
             Some(v)
-        } else {
-            None
-        }
-    }
-    pub fn as_i8(&self) -> Option<i8> {
-        if let NbtTag::Byte(v) = self {
-            Some(*v)
-        } else {
-            None
-        }
-    }
-    pub fn as_i16_val(&self) -> Option<i16> {
-        if let NbtTag::Short(v) = self {
-            Some(*v)
         } else {
             None
         }
@@ -280,4 +284,40 @@ impl<'a> NbtReader<'a> {
         (name, tag)
     }
     // todo
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_accessors_widen_across_tag_types() {
+        for tag in [
+            NbtTag::Byte(1),
+            NbtTag::Short(1),
+            NbtTag::Int(1),
+            NbtTag::Long(1),
+        ] {
+            assert_eq!(tag.as_i32(), Some(1), "{tag:?} did not read as i32");
+            assert_eq!(tag.as_i64(), Some(1));
+            assert_eq!(tag.as_i16_val(), Some(1));
+            assert_eq!(tag.as_i8(), Some(1));
+        }
+    }
+
+    #[test]
+    fn float_accessors_widen_across_tag_types() {
+        assert_eq!(NbtTag::Float(2.5).as_f64(), Some(2.5));
+        assert_eq!(NbtTag::Double(2.5).as_f32(), Some(2.5));
+        assert_eq!(NbtTag::Int(64).as_f32(), Some(64.0));
+    }
+
+    #[test]
+    fn non_numeric_tags_are_still_rejected() {
+        let s = NbtTag::String("1".into());
+        assert_eq!(s.as_i32(), None);
+        assert_eq!(s.as_f32(), None);
+        assert_eq!(NbtTag::List(1, vec![]).as_i32(), None);
+        assert_eq!(NbtTag::Compound(vec![]).as_f64(), None);
+    }
 }

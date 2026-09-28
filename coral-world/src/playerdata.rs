@@ -324,7 +324,7 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
         ),
         (
             "playerGameType".to_string(),
-            NbtTag::Byte(data.gamemode as i8),
+            NbtTag::Int(data.gamemode as i32),
         ),
         ("Inventory".to_string(), NbtTag::List(10, inventory_list)),
         ("XpTotal".to_string(), NbtTag::Int(data.xp_total)),
@@ -354,4 +354,100 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
         tokio::fs::create_dir_all(parent).await.ok();
     }
     tokio::fs::write(&path, &compressed).await.ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("coral-pdata-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        d
+    }
+
+    fn uuid() -> Uuid {
+        Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)
+    }
+
+    #[tokio::test]
+    async fn gamemode_survives_a_round_trip() {
+        let dir = tmp("gm");
+        for gm in 0..=3u8 {
+            let data = PlayerData {
+                gamemode: gm,
+                ..Default::default()
+            };
+            save_player_data(&dir, &uuid(), &data).await;
+            let back = load_player_data(&dir, &uuid()).await.expect("saved data");
+            assert_eq!(back.gamemode, gm, "gamemode {gm} did not survive a save");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn every_field_survives_a_round_trip() {
+        let dir = tmp("all");
+        let data = PlayerData {
+            x: 128.5,
+            y: 71.0,
+            z: -33.5,
+            yaw: 137.25,
+            pitch: -42.5,
+            health: 13.5,
+            food: 17,
+            food_saturation: 2.5,
+            gamemode: 1,
+            inventory: vec![(36, 278, 1, 12), (8, 1, 64, 0)],
+            xp_total: 4271,
+            bed_spawn: Some((-100, 64, 250)),
+        };
+        save_player_data(&dir, &uuid(), &data).await;
+        let back = load_player_data(&dir, &uuid()).await.expect("saved data");
+
+        assert_eq!((back.x, back.y, back.z), (data.x, data.y, data.z));
+        assert_eq!((back.yaw, back.pitch), (data.yaw, data.pitch));
+        assert_eq!(back.health, data.health);
+        assert_eq!(back.food, data.food);
+        assert_eq!(back.food_saturation, data.food_saturation);
+        assert_eq!(back.gamemode, data.gamemode);
+        assert_eq!(back.xp_total, data.xp_total);
+        assert_eq!(back.bed_spawn, data.bed_spawn);
+        assert_eq!(back.inventory, data.inventory);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_player_with_no_bed_loads_without_one() {
+        let dir = tmp("nobed");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+        assert_eq!(
+            load_player_data(&dir, &uuid()).await.unwrap().bed_spawn,
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_legacy_byte_gamemode_still_loads() {
+        let dir = tmp("legacy");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+
+        let path = player_path(&dir, &uuid());
+        let compressed = std::fs::read(&path).unwrap();
+        let mut nbt_bytes = Vec::new();
+        GzDecoder::new(&compressed[..])
+            .read_to_end(&mut nbt_bytes)
+            .unwrap();
+        let (name, mut root) = NbtReader::new(&nbt_bytes).read_named_root();
+        root.set("playerGameType", NbtTag::Byte(1));
+        let mut out = Vec::new();
+        NbtTag::write_named_root(&name, &root, &mut out);
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&out).unwrap();
+        std::fs::write(&path, enc.finish().unwrap()).unwrap();
+
+        assert_eq!(load_player_data(&dir, &uuid()).await.unwrap().gamemode, 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
