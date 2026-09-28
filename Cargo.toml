@@ -29,5 +29,6 @@ tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["full"] }
 tokio-util = { version = "0.7.19", features = ["codec"] }
 toml = "1.1.6+spec-1.1.0"
+toml_edit = "0.25.15+spec-1.1.0"
 uuid = { version = "1.26.1", features = ["v3", "v4"] }
 sysinfo = "0.39.6"
