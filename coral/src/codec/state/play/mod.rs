@@ -232,9 +232,9 @@ pub async fn play(
                 state.last_message_from = Some(from.clone());
 
                 let json = ChatAppender::new()
-                    .add(ChatBuilder::new(format!("{} -> You: ", from))
+                    .push(ChatBuilder::new(format!("{} -> You: ", from))
                         .color(ChatColor::Gray).italic())
-                    .add(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
+                    .push(ChatBuilder::new(&message).color(ChatColor::Gray).italic())
                     .build();
                 send_packet(framed, ChatMessageOut::from_json(&json)).await;
             }
@@ -726,9 +726,10 @@ pub async fn play(
                     ping
                 }).await;
             }
-            Ok((_uuid, gamemode)) = gm_rx.recv() => {
-                // FIXME: where did i put this???
-                // if state.uuid.is_some() {
+            Ok((uuid, gamemode)) = gm_rx.recv() => {
+                if uuid != state.uuid {
+                    continue;
+                }
                 state.gamemode = gamemode;
                 let gm_u8 = u8::from(gamemode);
                 send_packet(framed, ChangeGameState::set_gamemode(gm_u8)).await;
