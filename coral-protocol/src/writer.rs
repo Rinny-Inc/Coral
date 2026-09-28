@@ -81,3 +81,8 @@ impl Writer {
         self.write_long(lsb);
     }
 }
+impl Default for Writer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

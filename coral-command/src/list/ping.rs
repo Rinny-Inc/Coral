@@ -43,8 +43,8 @@ pub fn command(player_registry: Arc<PlayerRegistry>) -> Command {
                 };
 
                 let msg = ChatAppender::new()
-                    .add(ChatBuilder::new(&label).color(ChatColor::Gray))
-                    .add(ChatBuilder::new(format!("{}ms", ping)).color(color).bold())
+                    .push(ChatBuilder::new(&label).color(ChatColor::Gray))
+                    .push(ChatBuilder::new(format!("{}ms", ping)).color(color).bold())
                     .build();
 
                 CommandResult::Success(msg)

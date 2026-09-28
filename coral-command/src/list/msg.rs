@@ -47,13 +47,13 @@ pub fn command(
                 .ok();
 
                 let echo = ChatAppender::new()
-                    .add(ChatBuilder::new("(To ").color(ChatColor::LightPurple))
-                    .add(
+                    .push(ChatBuilder::new("(To ").color(ChatColor::LightPurple))
+                    .push(
                         ChatBuilder::new(target_player.username.to_string())
                             .color(ChatColor::Green),
                     )
-                    .add(ChatBuilder::new("): ").color(ChatColor::LightPurple))
-                    .add(ChatBuilder::new(message).color(ChatColor::LightPurple))
+                    .push(ChatBuilder::new("): ").color(ChatColor::LightPurple))
+                    .push(ChatBuilder::new(message).color(ChatColor::LightPurple))
                     .build();
                 CommandResult::Success(echo)
             }

@@ -245,6 +245,11 @@ impl Inventory {
         }
     }
 }
+impl Default for Inventory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Debug)]
 pub struct WindowItems {

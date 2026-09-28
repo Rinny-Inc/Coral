@@ -108,7 +108,7 @@ pub fn command(monitor: Arc<ResourceMonitor>) -> Command {
                 ];
 
                 let mut appender = ChatAppender::new();
-                appender = appender.add(
+                appender = appender.push(
                     ChatBuilder::new("Resource Usage\n")
                         .color(ChatColor::Gold)
                         .bold(),
@@ -118,11 +118,11 @@ pub fn command(monitor: Arc<ResourceMonitor>) -> Command {
                     match monitor.average(window).await {
                         None => {
                             appender = appender
-                                .add(
+                                .push(
                                     ChatBuilder::new(format!("{:>4}  ", label))
                                         .color(ChatColor::Yellow),
                                 )
-                                .add(
+                                .push(
                                     ChatBuilder::new("no data yet\n")
                                         .color(ChatColor::DarkGray)
                                         .italic(),
@@ -130,26 +130,26 @@ pub fn command(monitor: Arc<ResourceMonitor>) -> Command {
                         }
                         Some((cpu, avg_mem, peak_mem, full)) => {
                             appender = appender
-                                .add(
+                                .push(
                                     ChatBuilder::new(format!("{:>4}  ", label))
                                         .color(ChatColor::Yellow),
                                 )
-                                .add(
+                                .push(
                                     ChatBuilder::new(format!("CPU {:>5.1}%  ", cpu))
                                         .color(ChatColor::White),
                                 )
-                                .add(
+                                .push(
                                     ChatBuilder::new(format!("MEM {}  ", fmt_bytes(avg_mem)))
                                         .color(ChatColor::White),
                                 )
-                                .add(
+                                .push(
                                     ChatBuilder::new(format!("(peak {})", fmt_bytes(peak_mem)))
                                         .color(ChatColor::Gray),
                                 );
 
                             // mark windows that don't have full history yet
                             if !full {
-                                appender = appender.add(
+                                appender = appender.push(
                                     ChatBuilder::new(" *")
                                         .color(ChatColor::DarkGray)
                                         .hover_text(
@@ -157,7 +157,8 @@ pub fn command(monitor: Arc<ResourceMonitor>) -> Command {
                                         ),
                                 );
                             }
-                            appender = appender.add(ChatBuilder::new("\n").color(ChatColor::White));
+                            appender =
+                                appender.push(ChatBuilder::new("\n").color(ChatColor::White));
                         }
                     }
                 }

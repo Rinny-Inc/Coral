@@ -270,13 +270,13 @@ impl ChatAppender {
         }
     }
 
-    pub fn add(mut self, segment: ChatBuilder) -> Self {
+    pub fn push(mut self, segment: ChatBuilder) -> Self {
         self.segments.push(segment);
         self
     }
 
     pub fn text(self, text: impl Into<String>) -> Self {
-        self.add(ChatBuilder::new(text))
+        self.push(ChatBuilder::new(text))
     }
 
     pub fn build_value(self) -> Value {
