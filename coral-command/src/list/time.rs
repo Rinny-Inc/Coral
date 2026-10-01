@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
 };
 
-use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
+use coral_protocol::packets::play::chat::builder::ChatBuilder;
 
 use crate::{Command, CommandResult, make_handler};
 
@@ -28,11 +28,10 @@ pub fn command(world_time: Arc<AtomicI64>) -> Command {
                 match sub.to_lowercase().as_str() {
                     "query" => {
                         let t = world_time.load(Ordering::Relaxed);
-                        CommandResult::Success(
-                            ChatAppender::new()
-                                .add(ChatBuilder::new(format!("The time is {}", t)))
-                                .build(),
-                        )
+                        CommandResult::Success(ChatBuilder::plain_json(&format!(
+                            "The time is {}",
+                            t
+                        )))
                     }
                     "set" => {
                         let Some(value_arg) = ctx.arg(2) else {
@@ -56,11 +55,10 @@ pub fn command(world_time: Arc<AtomicI64>) -> Command {
                             },
                         };
                         world_time.store(new_time, Ordering::Relaxed);
-                        CommandResult::Success(
-                            ChatAppender::new()
-                                .add(ChatBuilder::new(format!("Set the time to {}", new_time)))
-                                .build(),
-                        )
+                        CommandResult::Success(ChatBuilder::plain_json(&format!(
+                            "Set the time to {}",
+                            new_time
+                        )))
                     }
                     "add" => {
                         let Some(amount_str) = ctx.arg(2) else {
@@ -72,11 +70,10 @@ pub fn command(world_time: Arc<AtomicI64>) -> Command {
                         let current = world_time.load(Ordering::Relaxed);
                         let new_time = (current + amount).rem_euclid(24000);
                         world_time.store(new_time, Ordering::Relaxed);
-                        CommandResult::Success(
-                            ChatAppender::new()
-                                .add(ChatBuilder::new(format!("Added {} to the time", amount)))
-                                .build(),
-                        )
+                        CommandResult::Success(ChatBuilder::plain_json(&format!(
+                            "Added {} to the time",
+                            amount
+                        )))
                     }
                     _ => CommandResult::Error("Usage: /time <query|set|add> <value>".to_string()),
                 }

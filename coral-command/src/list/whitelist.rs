@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use coral_protocol::packets::play::chat::builder::{ChatAppender, ChatBuilder};
+use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_server::{player::registry::PlayerRegistry, whitelist::WhitelistFile};
 use coral_types::offline_uuid;
 use tokio::sync::RwLock;
@@ -30,21 +30,15 @@ pub fn command(
                     "list" => {
                         let names = whitelist.read().await.usernames();
                         if names.is_empty() {
-                            CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new("There are no whitelisted players."))
-                                    .build(),
-                            )
+                            CommandResult::Success(ChatBuilder::plain_json(
+                                "There are no whitelisted players.",
+                            ))
                         } else {
-                            CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new(format!(
-                                        "There are {} whitelisted players: {}",
-                                        names.len(),
-                                        names.join(", ")
-                                    )))
-                                    .build(),
-                            )
+                            CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                "There are {} whitelisted players: {}",
+                                names.len(),
+                                names.join(", ")
+                            )))
                         }
                     }
                     "add" => {
@@ -61,21 +55,16 @@ pub fn command(
                             .map(|p| p.uuid)
                             .unwrap_or_else(|| offline_uuid(name));
                         if whitelist.read().await.is_whitelisted(uuid) {
-                            return CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new(format!(
-                                        "{} is already whitelisted",
-                                        name
-                                    )))
-                                    .build(),
-                            );
+                            return CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                "{} is already whitelisted",
+                                name
+                            )));
                         }
                         whitelist.write().await.add(uuid, name.to_string());
-                        CommandResult::Success(
-                            ChatAppender::new()
-                                .add(ChatBuilder::new(format!("Added {} to the whitelist", name)))
-                                .build(),
-                        )
+                        CommandResult::Success(ChatBuilder::plain_json(&format!(
+                            "Added {} to the whitelist",
+                            name
+                        )))
                     }
                     "remove" => {
                         let Some(name) = ctx.arg(2) else {
@@ -85,20 +74,15 @@ pub fn command(
                         };
 
                         if whitelist.write().await.remove_by_name(name) {
-                            CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new(format!(
-                                        "Removed {} from the whitelist",
-                                        name
-                                    )))
-                                    .build(),
-                            )
+                            CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                "Removed {} from the whitelist",
+                                name
+                            )))
                         } else {
-                            CommandResult::Success(
-                                ChatAppender::new()
-                                    .add(ChatBuilder::new(format!("{} is not whitelisted", name)))
-                                    .build(),
-                            )
+                            CommandResult::Success(ChatBuilder::plain_json(&format!(
+                                "{} is not whitelisted",
+                                name
+                            )))
                         }
                     }
                     _ => CommandResult::Error(

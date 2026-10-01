@@ -1,3 +1,4 @@
+use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use std::sync::Arc;
 use tokio::sync::broadcast::Sender;
 
@@ -28,7 +29,10 @@ pub fn command(difficulty_tx: Arc<Sender<u8>>) -> Command {
 
                 tx.send(value).ok();
 
-                CommandResult::Success(format!("Set the difficulty to {}", name))
+                CommandResult::Success(ChatBuilder::plain_json(&format!(
+                    "Set the difficulty to {}",
+                    name
+                )))
             }
         }),
     }

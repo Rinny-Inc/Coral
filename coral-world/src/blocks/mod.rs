@@ -544,3 +544,78 @@ fn yaw_to_facing(yaw: f32) -> BlockFace {
         _ => BlockFace::West,
     }
 }
+
+pub async fn surface_y(
+    world_block: &WorldBlocks,
+    generator: &FlatWorldGenerator,
+    x: i32,
+    z: i32,
+) -> Option<u8> {
+    for y in (0..=255u8).rev() {
+        if !world_block.get(x, y, z, generator).await.is_air() {
+            return y.checked_add(1);
+        }
+    }
+    None
+}
+
+pub async fn is_floating_spawn(
+    world_block: &WorldBlocks,
+    generator: &FlatWorldGenerator,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> bool {
+    let (bx, bz) = (x.floor() as i32, z.floor() as i32);
+    let feet = y.floor().clamp(0.0, 255.0) as u8;
+    if feet > 0 && !world_block.get(bx, feet - 1, bz, generator).await.is_air() {
+        return false;
+    }
+    if !world_block.get(bx, feet, bz, generator).await.is_air() {
+        return false;
+    }
+    match surface_y(world_block, generator, bx, bz).await {
+        Some(surface) => (feet as i32) - (surface as i32) > 1,
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn surface_is_one_above_the_highest_solid_block() {
+        let w = WorldBlocks::new();
+        let flat = FlatWorldGenerator::new();
+        assert_eq!(surface_y(&w, &flat, 0, 0).await, Some(4));
+
+        w.set(0, 70, 0, Block::new(1, 0)).await;
+        assert_eq!(surface_y(&w, &flat, 0, 0).await, Some(71));
+    }
+
+    #[tokio::test]
+    async fn a_spawn_high_above_the_surface_is_floating() {
+        let w = WorldBlocks::new();
+        let flat = FlatWorldGenerator::new();
+        assert!(is_floating_spawn(&w, &flat, 0.5, 64.0, 0.5).await);
+        assert!(!is_floating_spawn(&w, &flat, 0.5, 4.0, 0.5).await);
+        assert!(!is_floating_spawn(&w, &flat, 0.5, 5.0, 0.5).await);
+    }
+
+    #[tokio::test]
+    async fn a_spawn_standing_on_real_terrain_is_not_floating() {
+        let w = WorldBlocks::new();
+        let flat = FlatWorldGenerator::new();
+        w.set(10, 70, 10, Block::new(1, 0)).await;
+        assert!(!is_floating_spawn(&w, &flat, 10.5, 71.0, 10.5).await);
+    }
+
+    #[tokio::test]
+    async fn a_spawn_inside_a_block_is_not_floating() {
+        let w = WorldBlocks::new();
+        let flat = FlatWorldGenerator::new();
+        w.set(3, 80, 3, Block::new(1, 0)).await;
+        assert!(!is_floating_spawn(&w, &flat, 3.5, 80.0, 3.5).await);
+    }
+}

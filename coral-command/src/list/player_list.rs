@@ -29,11 +29,11 @@ pub fn command(player_registry: Arc<PlayerRegistry>) -> Command {
                     .collect::<Vec<String>>();
 
                 let msg = ChatAppender::new()
-                    .add(
+                    .push(
                         ChatBuilder::new(format!("There are {} players online: ", count))
                             .color(ChatColor::Yellow),
                     )
-                    .add(ChatBuilder::new(names.join(", ")).color(ChatColor::White))
+                    .push(ChatBuilder::new(names.join(", ")).color(ChatColor::White))
                     .build();
 
                 CommandResult::Success(msg)

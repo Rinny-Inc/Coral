@@ -55,10 +55,10 @@ pub fn command(
 
                 CommandResult::Success(
                     ChatAppender::new()
-                        .add(ChatBuilder::new("Set ").color(ChatColor::Gray))
-                        .add(ChatBuilder::new(&*username).color(ChatColor::White))
-                        .add(ChatBuilder::new("'s gamemode to ").color(ChatColor::Gray))
-                        .add(ChatBuilder::new(format!("{:?}", gamemode)).color(ChatColor::White))
+                        .push(ChatBuilder::new("Set ").color(ChatColor::Gray))
+                        .push(ChatBuilder::new(&*username).color(ChatColor::White))
+                        .push(ChatBuilder::new("'s gamemode to ").color(ChatColor::Gray))
+                        .push(ChatBuilder::new(format!("{:?}", gamemode)).color(ChatColor::White))
                         .build(),
                 )
             }

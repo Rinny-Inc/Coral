@@ -24,8 +24,10 @@ use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
+use coral_world::blocks::{is_floating_spawn, surface_y};
 use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::load_player_data;
+use coral_world::spawn;
 use futures::SinkExt;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, broadcast::Sender};
@@ -265,7 +267,7 @@ struct PlayerState {
     is_flying: bool,
     was_on_ground: bool,
     latency_ms: (i32, i32),
-    name: Arc<String>,
+    name: String,
     keep_alive_count: i32,
     last_sent_keep_alive: Option<(i32, std::time::Instant)>,
     inventory: Inventory,
@@ -285,6 +287,8 @@ struct PlayerState {
     fishing_hook_eid: Option<i32>,
     is_op: bool,
     first_position_received: bool,
+    pending_teleport: Option<(f64, f64, f64)>,
+    pending_teleport_at: Option<Instant>,
     xp_level: i32,
     xp_total: i32,
     xp_progress: f32, // 0.0 to 1.0
@@ -326,7 +330,7 @@ impl PlayerState {
             is_flying: false,
             was_on_ground: true,
             latency_ms: (0, 0),
-            name: name.into(),
+            name,
             keep_alive_count: 0,
             last_sent_keep_alive: None,
             inventory: Inventory::new(),
@@ -346,6 +350,8 @@ impl PlayerState {
             fishing_hook_eid: None,
             is_op: false,
             first_position_received: false,
+            pending_teleport: None,
+            pending_teleport_at: None,
             xp_level: 0,
             xp_total: 0,
             xp_progress: 0.0,
@@ -366,6 +372,13 @@ impl PlayerState {
             watcher: DataWatcher::new(),
             in_lava: false,
         }
+    }
+
+    fn await_teleport(&mut self, x: f64, y: f64, z: f64) {
+        self.pending_teleport = Some((x, y, z));
+        self.pending_teleport_at = Some(Instant::now());
+        self.fall_distance = 0.0;
+        self.velocity = (0.0, 0.0, 0.0);
     }
 
     fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
@@ -819,14 +832,10 @@ async fn make_player_join(
     framed.codec_mut().state = handshake::EnumProtocol::Play;
 
     let saved = load_player_data(world_dir, &state.uuid).await;
-    let (px, py, pz, pyaw, ppitch, phealth, pfood, psat, pgm, xp_total) = if let Some(d) = &saved {
-        println!("PlayerData exist and used");
+    let world_spawn = *spawn_point.read().await;
+    let (px, py, pz, pyaw, ppitch) = spawn::join_position(saved.as_ref(), world_spawn);
+    let (phealth, pfood, psat, pgm, xp_total) = if let Some(d) = &saved {
         (
-            d.x,
-            d.y,
-            d.z,
-            d.yaw,
-            d.pitch,
             d.health,
             d.food,
             d.food_saturation,
@@ -834,14 +843,7 @@ async fn make_player_join(
             d.xp_total,
         )
     } else {
-        println!("PlayerData doesnt exist and not used");
-        let (sx, sy, sz, syaw, spitch) = *spawn_point.read().await;
         (
-            sx,
-            sy,
-            sz,
-            syaw,
-            spitch,
             20.0,
             20,
             5.0,
@@ -850,13 +852,43 @@ async fn make_player_join(
         )
     };
 
+    state.is_dead = phealth <= 0.0;
+    state.bed_spawn = saved.as_ref().and_then(|d| d.bed_spawn);
+
+    let surface = surface_y(
+        world_blocks,
+        generator,
+        px.floor() as i32,
+        pz.floor() as i32,
+    )
+    .await;
+    let floating = is_floating_spawn(world_blocks, generator, px, py, pz).await;
+
+    let (px, py, pz) = if floating && saved.is_none() {
+        let y = surface.map_or(py, f64::from);
+        println!(
+            "[World] Spawn point ({px:.1}, {py:.1}, {pz:.1}) is floating; using surface y={y}"
+        );
+        (px, y, pz)
+    } else {
+        if floating {
+            println!(
+                "[World] {} joins at ({px:.1}, {py:.1}, {pz:.1}) but the surface there is y={}; \
+                they will fall {:.0} blocks. This is their saved position, so it is not \
+                overridden — clear their playerdata, or /setworldspawn somewhere solid.",
+                profile.username,
+                surface.map_or("none".to_string(), |s| s.to_string()),
+                py - surface.map_or(py, f64::from),
+            );
+        }
+        (px, py, pz)
+    };
     let gamemode = if config.server.enforce_default_gamemode {
         GameMode::try_from(config.server.default_gamemode).unwrap_or(GameMode::Survival)
     } else {
         pgm
     };
     let gamemodeu8 = u8::from(gamemode);
-    println!("gamemode is {}", gamemodeu8);
 
     send_packet(
         framed,
@@ -968,8 +1000,7 @@ async fn make_player_join(
     )
     .await;
 
-    state.chunk_x = (px as i32) >> 4;
-    state.chunk_z = (pz as i32) >> 4;
+    (state.chunk_x, state.chunk_z) = spawn::spawn_chunk(px, pz);
 
     send_chunks(
         framed,
@@ -998,7 +1029,7 @@ async fn make_player_join(
     )
     .await;
 
-    state.fall_distance = 0.0;
+    state.await_teleport(px, py, pz);
     state.was_on_ground = true;
 
     let player = Player::new(

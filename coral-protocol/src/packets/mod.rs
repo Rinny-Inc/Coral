@@ -97,3 +97,8 @@ impl PacketRegistry {
         self.handlers.get(&key).map(|decoder| decoder(buf))
     }
 }
+impl Default for PacketRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
