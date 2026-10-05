@@ -10,6 +10,7 @@ pub mod player_list;
 pub mod reply;
 pub mod say;
 pub mod setworldspawn;
+pub mod summon;
 pub mod teleport;
 pub mod time;
 pub mod usage;

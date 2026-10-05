@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 use crate::bounding_box::{BoundingBox, EntityBounds};
 
+pub mod ai;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MobType {
     // Passive

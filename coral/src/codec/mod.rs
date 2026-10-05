@@ -5,6 +5,7 @@ use std::time::Instant;
 use std::vec;
 
 use bytes::{Buf, Bytes, BytesMut};
+use coral::JoinLeave;
 use coral_protocol::framing::{
     CompressionEnvelope, decompress_checked, validate_compression_envelope, validate_packet_length,
     validate_uncompressed_size,
@@ -37,7 +38,7 @@ use uuid::Uuid;
 use crate::codec::state::play::{self, send_chunks, send_spawn_player, send_weather};
 use crate::codec::state::preplay::{JoinRequest, PrePlayContext};
 use crate::codec::state::throttle;
-use crate::{Channels, EquipmentUpdate, JoinLeave, ServerContext};
+use crate::{Channels, EquipmentUpdate, ServerContext};
 use coral_config::Config;
 use coral_protocol::encryption::Encryption;
 use coral_protocol::packets::login::SetCompression;
