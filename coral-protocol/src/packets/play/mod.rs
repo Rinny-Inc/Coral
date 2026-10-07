@@ -15,6 +15,7 @@ pub mod game;
 pub mod inventory;
 pub mod join_game;
 pub mod keepalive;
+pub mod mob;
 pub mod movement;
 pub mod player_list;
 pub mod scoreboard;

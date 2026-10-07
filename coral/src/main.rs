@@ -7,34 +7,13 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use coral::world_path;
-use coral_protocol::packets::{
-    PacketRegistry,
-    play::{
-        entity::{EntityAnimationType, EntityMetadata, TileEntity},
-        game::EntityStatusType,
-        movement::MovementBroadcast,
-    },
-};
-use coral_types::{
-    BedUpdate, BlockUpdate, BreakAnimation, ChestAnimation, DamageEvent, DespawnEntity,
-    EntityVelocityUpdate, EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemInfo, ItemPickup,
-    KickRequest, ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate,
-    SoundEffect, SplashEffect, TeleportRequest, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup,
-};
+use coral::{Channels, register_commands, world_path};
+use coral_protocol::packets::{PacketRegistry, play::entity::TileEntity};
+use coral_types::{BreakAnimation, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect};
 use rsa::RsaPrivateKey;
-use tokio::{
-    net::TcpListener,
-    sync::{
-        RwLock,
-        broadcast::{Sender, channel},
-    },
-};
+use tokio::{net::TcpListener, sync::RwLock};
 
-use coral_command::{
-    CommandDispatcher,
-    list::{self, usage::ResourceMonitor},
-};
+use coral_command::{CommandDispatcher, list::usage::ResourceMonitor};
 use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
@@ -43,8 +22,8 @@ use coral_server::{
     experience::XpOrb,
     items::ItemRegistry,
     ops::OpsFile,
-    player::{Player, registry::PlayerRegistry},
-    projectile::{Projectile, ProjectileKind},
+    player::registry::PlayerRegistry,
+    projectile::Projectile,
     scoreboard::{ScoreboardManager, team::TeamManager},
     statistics::StatTracker,
     whitelist::WhitelistFile,
@@ -53,7 +32,6 @@ use coral_world::{
     blocks::{WorldBlocks, registry::BlockRegistry},
     generator::FlatWorldGenerator,
     level::{read_spawn_point, write_level_dat},
-    weather::WeatherState,
 };
 
 mod codec;
@@ -106,37 +84,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (private_key, public_key_der) = generate_rsa_key();
 
-    let ctx = ServerContext {
-        packet_registry: Arc::new(PacketRegistry::new()),
-        server_icon: Arc::new(server_icon),
-        item_registry: Arc::new(ItemRegistry::new()),
-        block_registry: Arc::new(BlockRegistry::new()),
-        config: config.clone(),
-        dispatcher: Arc::new(CommandDispatcher::new()),
-        entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
-        item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
-        item_positions: Arc::new(RwLock::new(HashMap::new())),
-        projectiles: Arc::new(RwLock::new(Vec::new())),
-        channels: Channels::new(),
+    let ctx = ServerContext::new(
+        server_icon,
+        config.clone(),
         world_blocks,
-        world_time: Arc::new(AtomicI64::new(0)),
         generator,
-        player_registry: Arc::new(PlayerRegistry::new()),
-        private_key: Arc::new(private_key),
-        public_key_der: Arc::new(public_key_der),
-        ops: Arc::new(RwLock::new(OpsFile::load())),
-        whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
-        banlist: Arc::new(RwLock::new(BanList::load())),
-        spawn_point: Arc::new(RwLock::new(spawn_point)),
-        world_dir: Arc::new(world_dir),
-        xp_orbs: Arc::new(RwLock::new(Vec::new())),
-        fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
-        tile_entities: Arc::new(RwLock::new(HashMap::new())),
-        server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
-        scoreboard: Arc::new(ScoreboardManager::new()),
-        teams: Arc::new(TeamManager::new()),
-        stats: Arc::new(StatTracker::new()),
-    };
+        private_key,
+        public_key_der,
+        spawn_point,
+        world_dir,
+    );
+
+    register_commands(
+        &ctx.dispatcher,
+        &ctx.channels,
+        &ctx.player_registry,
+        &ctx.ops,
+        &ctx.whitelist,
+        &resource_monitor,
+        &ctx.spawn_point,
+        &ctx.world_dir,
+        &ctx.world_time,
+    )
+    .await;
 
     tasks::spawn_furnace_task(
         ctx.tile_entities.clone(),
@@ -154,90 +124,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.world.auto_save_interval,
         );
     }
-
-    ctx.dispatcher.register(list::version::command()).await;
-    ctx.dispatcher
-        .register(list::player_list::command(ctx.player_registry.clone()))
-        .await;
-    ctx.dispatcher
-        .register(list::gamemode::command(
-            ctx.player_registry.clone(),
-            ctx.channels.gm_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::kill::command(
-            ctx.player_registry.clone(),
-            ctx.channels.dmg_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::op::command(
-            ctx.player_registry.clone(),
-            ctx.ops.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::deop::command(
-            ctx.player_registry.clone(),
-            ctx.ops.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::whitelist::command(
-            ctx.player_registry.clone(),
-            ctx.whitelist.clone(),
-        ))
-        .await;
-    ctx.dispatcher.register(list::say::command()).await;
-    ctx.dispatcher
-        .register(list::msg::command(
-            ctx.player_registry.clone(),
-            ctx.channels.private_msg_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::reply::command(
-            ctx.player_registry.clone(),
-            ctx.channels.private_msg_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::usage::command(resource_monitor.clone()))
-        .await;
-    ctx.dispatcher
-        .register(
-            list::setworldspawn::command(
-                ctx.player_registry.clone(),
-                ctx.spawn_point.clone(),
-                ctx.world_dir.clone(),
-            )
-            .await,
-        )
-        .await;
-    ctx.dispatcher
-        .register(list::teleport::command(
-            ctx.player_registry.clone(),
-            ctx.channels.teleport_rq_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::kick::command(
-            ctx.player_registry.clone(),
-            ctx.channels.kick_rq_tx.clone(),
-        ))
-        .await;
-    ctx.dispatcher
-        .register(list::ping::command(ctx.player_registry.clone()))
-        .await;
-    ctx.dispatcher
-        .register(list::time::command(ctx.world_time.clone()))
-        .await;
-    ctx.dispatcher
-        .register(list::difficulty::command(
-            ctx.channels.difficulty_tx.clone(),
-        ))
-        .await;
 
     tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
     tasks::spawn_shutdown_task(
@@ -309,6 +195,7 @@ pub struct ServerContext {
     player_registry: Arc<PlayerRegistry>,
     item_registry: Arc<ItemRegistry>,
     block_registry: Arc<BlockRegistry>,
+    // TODO: mob_registry: Arc<MobRegistry>,
     server_icon: Arc<Option<String>>,
     config: Arc<Config>,
     dispatcher: Arc<CommandDispatcher>,
@@ -335,92 +222,47 @@ pub struct ServerContext {
     teams: Arc<TeamManager>,
     stats: Arc<StatTracker>,
 }
-
-type JoinLeave = (Player, bool);
-type AnimationUpdate = (i32, EntityAnimationType);
-type EntityStatusUpdate = (i32, EntityStatusType);
-type ProjectileSpawn = (i32, i32, ProjectileKind, f64, f64, f64, f64, f64, f64);
-
-#[derive(Clone)]
-pub struct Channels {
-    chat_tx: Arc<Sender<String>>,
-    join_tx: Arc<Sender<JoinLeave>>,
-    pos_tx: Arc<Sender<MovementBroadcast>>,
-    gm_tx: Arc<Sender<GamemodeUpdate>>,
-    ping_tx: Arc<Sender<PingUpdate>>,
-    block_tx: Arc<Sender<BlockUpdate>>,
-    break_tx: Arc<Sender<BreakAnimation>>,
-    anim_tx: Arc<Sender<AnimationUpdate>>,
-    meta_tx: Arc<Sender<EntityMetadata>>,
-    dmg_tx: Arc<Sender<DamageEvent>>,
-    item_tx: Arc<Sender<ItemDrop>>,
-    despawn_tx: Arc<Sender<DespawnEntity>>,
-    pickup_tx: Arc<Sender<ItemPickup>>,
-    time_tx: Arc<Sender<TimeUpdate>>,
-    weather_tx: Arc<Sender<WeatherState>>,
-    tick_tx: Arc<Sender<()>>,
-    status_tx: Arc<Sender<EntityStatusUpdate>>,
-    equip_tx: Arc<Sender<EquipmentUpdate>>,
-    sound_tx: Arc<Sender<SoundEffect>>,
-    shutdown_tx: Arc<Sender<()>>,
-    particle_tx: Arc<Sender<ParticleEffect>>,
-    projectile_spawn_tx: Arc<Sender<ProjectileSpawn>>,
-    projectile_move_tx: Arc<Sender<ProjectileMove>>,
-    splash_effect_tx: Arc<Sender<SplashEffect>>,
-    xp_orb_spawn_tx: Arc<Sender<XpOrbSpawn>>,
-    xp_orb_move_tx: Arc<Sender<XpOrbMove>>,
-    xp_pickup_tx: Arc<Sender<XpPickup>>,
-    bed_tx: Arc<Sender<BedUpdate>>,
-    wake_tx: Arc<Sender<()>>,
-    private_msg_tx: Arc<Sender<PrivateMessage>>,
-    teleport_rq_tx: Arc<Sender<TeleportRequest>>,
-    kick_rq_tx: Arc<Sender<KickRequest>>,
-    sign_update_tx: Arc<Sender<SignUpdate>>,
-    velocity_broadcast_tx: Arc<Sender<EntityVelocityUpdate>>,
-    chest_anim_tx: Arc<Sender<ChestAnimation>>,
-    furnace_update_tx: Arc<Sender<(i32, i32, i32)>>,
-    difficulty_tx: Arc<Sender<u8>>,
-}
-impl Channels {
-    pub fn new() -> Self {
+impl ServerContext {
+    fn new(
+        server_icon: Option<String>,
+        config: Arc<Config>,
+        world_blocks: Arc<WorldBlocks>,
+        generator: Arc<FlatWorldGenerator>,
+        private_key: RsaPrivateKey,
+        public_key_der: Vec<u8>,
+        spawn_point: (f64, f64, f64, f32, f32),
+        world_dir: PathBuf,
+    ) -> Self {
         Self {
-            chat_tx: Arc::new(channel::<String>(50).0),
-            join_tx: Arc::new(channel::<JoinLeave>(16).0),
-            pos_tx: Arc::new(channel::<MovementBroadcast>(100).0),
-            gm_tx: Arc::new(channel::<GamemodeUpdate>(16).0),
-            ping_tx: Arc::new(channel::<PingUpdate>(16).0),
-            block_tx: Arc::new(channel::<BlockUpdate>(100).0),
-            break_tx: Arc::new(channel::<BreakAnimation>(100).0),
-            anim_tx: Arc::new(channel::<AnimationUpdate>(100).0),
-            meta_tx: Arc::new(channel::<EntityMetadata>(100).0),
-            dmg_tx: Arc::new(channel::<DamageEvent>(100).0),
-            item_tx: Arc::new(channel::<ItemDrop>(1000).0),
-            despawn_tx: Arc::new(channel::<DespawnEntity>(50).0),
-            pickup_tx: Arc::new(channel::<ItemPickup>(100).0),
-            time_tx: Arc::new(channel::<TimeUpdate>(1).0),
-            weather_tx: Arc::new(channel::<WeatherState>(1).0),
-            tick_tx: Arc::new(channel(5).0),
-            status_tx: Arc::new(channel::<EntityStatusUpdate>(100).0),
-            equip_tx: Arc::new(channel::<EquipmentUpdate>(100).0),
-            sound_tx: Arc::new(channel::<SoundEffect>(100).0),
-            shutdown_tx: Arc::new(channel::<()>(1).0),
-            particle_tx: Arc::new(channel::<ParticleEffect>(100).0),
-            projectile_spawn_tx: Arc::new(channel::<ProjectileSpawn>(100).0),
-            projectile_move_tx: Arc::new(channel::<ProjectileMove>(200).0),
-            splash_effect_tx: Arc::new(channel::<SplashEffect>(100).0),
-            xp_orb_spawn_tx: Arc::new(channel::<XpOrbSpawn>(100).0),
-            xp_orb_move_tx: Arc::new(channel::<XpOrbMove>(200).0),
-            xp_pickup_tx: Arc::new(channel::<XpPickup>(100).0),
-            bed_tx: Arc::new(channel::<BedUpdate>(50).0),
-            wake_tx: Arc::new(channel::<()>(4).0),
-            private_msg_tx: Arc::new(channel::<PrivateMessage>(50).0),
-            teleport_rq_tx: Arc::new(channel::<TeleportRequest>(5).0),
-            kick_rq_tx: Arc::new(channel::<KickRequest>(5).0),
-            sign_update_tx: Arc::new(channel::<SignUpdate>(5).0),
-            velocity_broadcast_tx: Arc::new(channel::<EntityVelocityUpdate>(100).0),
-            chest_anim_tx: Arc::new(channel::<ChestAnimation>(30).0),
-            furnace_update_tx: Arc::new(channel::<(i32, i32, i32)>(100).0),
-            difficulty_tx: Arc::new(channel::<u8>(4).0),
+            packet_registry: Arc::new(PacketRegistry::new()),
+            server_icon: Arc::new(server_icon),
+            item_registry: Arc::new(ItemRegistry::new()),
+            block_registry: Arc::new(BlockRegistry::new()),
+            config,
+            dispatcher: Arc::new(CommandDispatcher::new()),
+            entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
+            item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
+            item_positions: Arc::new(RwLock::new(HashMap::new())),
+            projectiles: Arc::new(RwLock::new(Vec::new())),
+            channels: Channels::new(),
+            world_blocks,
+            world_time: Arc::new(AtomicI64::new(0)),
+            generator,
+            player_registry: Arc::new(PlayerRegistry::new()),
+            private_key: Arc::new(private_key),
+            public_key_der: Arc::new(public_key_der),
+            ops: Arc::new(RwLock::new(OpsFile::load())),
+            whitelist: Arc::new(RwLock::new(WhitelistFile::load())),
+            banlist: Arc::new(RwLock::new(BanList::load())),
+            spawn_point: Arc::new(RwLock::new(spawn_point)),
+            world_dir: Arc::new(world_dir),
+            xp_orbs: Arc::new(RwLock::new(Vec::new())),
+            fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
+            tile_entities: Arc::new(RwLock::new(HashMap::new())),
+            server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
+            scoreboard: Arc::new(ScoreboardManager::new()),
+            teams: Arc::new(TeamManager::new()),
+            stats: Arc::new(StatTracker::new()),
         }
     }
 }
