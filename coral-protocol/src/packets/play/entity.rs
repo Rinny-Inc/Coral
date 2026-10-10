@@ -316,7 +316,7 @@ pub enum MetadataValue {
     // TODO: to extend String, Slot...
 }
 impl MetadataValue {
-    fn type_tag(&self) -> u8 {
+    pub fn type_tag(&self) -> u8 {
         match self {
             MetadataValue::Byte(_) => 0,
             MetadataValue::Short(_) => 1,
@@ -324,7 +324,7 @@ impl MetadataValue {
             MetadataValue::Float(_) => 3,
         }
     }
-    fn write(&self, writer: &mut Writer) {
+    pub fn write(&self, writer: &mut Writer) {
         match self {
             MetadataValue::Byte(v) => writer.write_byte(*v),
             MetadataValue::Short(v) => writer.write_i16(*v),
