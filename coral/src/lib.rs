@@ -56,7 +56,7 @@ pub struct Channels {
     pub status_tx: Arc<Sender<EntityStatusUpdate>>,
     pub equip_tx: Arc<Sender<EquipmentUpdate>>,
     pub sound_tx: Arc<Sender<SoundEffect>>,
-    pub shutdown_tx: Arc<Sender<()>>,
+    pub shutdown_tx: Arc<Sender<bool>>,
     pub particle_tx: Arc<Sender<ParticleEffect>>,
     pub projectile_spawn_tx: Arc<Sender<ProjectileSpawn>>,
     pub projectile_move_tx: Arc<Sender<ProjectileMove>>,
@@ -98,7 +98,7 @@ impl Channels {
             status_tx: Arc::new(channel::<EntityStatusUpdate>(100).0),
             equip_tx: Arc::new(channel::<EquipmentUpdate>(100).0),
             sound_tx: Arc::new(channel::<SoundEffect>(100).0),
-            shutdown_tx: Arc::new(channel::<()>(1).0),
+            shutdown_tx: Arc::new(channel::<bool>(1).0),
             particle_tx: Arc::new(channel::<ParticleEffect>(100).0),
             projectile_spawn_tx: Arc::new(channel::<ProjectileSpawn>(100).0),
             projectile_move_tx: Arc::new(channel::<ProjectileMove>(200).0),
@@ -119,6 +119,8 @@ impl Channels {
         }
     }
 }
+
+pub mod updater;
 
 pub fn world_path(name: &str) -> std::io::Result<&Path> {
     let world_path = Path::new(name);

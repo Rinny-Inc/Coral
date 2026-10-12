@@ -91,7 +91,7 @@ pub fn spawn_fluid_task(
                         .await;
                     }
                 }
-                Ok(()) = shutdown_rx.recv() => {
+                Ok(_) = shutdown_rx.recv() => {
                     println!("[Fluid] shutting down");
                     break;
                 }

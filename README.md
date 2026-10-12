@@ -129,6 +129,20 @@ addresses = ["127.0.0.1"]
 url = ""
 hash = "" # optional: sha1sum of the zip for client caching
 forced = false
+
+[updater]
+enabled = true
+# auto = follow this build's channel; or stable | rc | beta | alpha
+channel = "auto"
+# notify | download
+mode = "download"
+# amount of seconds players has to get somewhere safe
+restart_grace_seconds = 30
+# what to run when restarting; empty = the updated binary itself
+# Point it at your launcher script tp come back with the same environment:
+#    restart_command = "./start.sh"
+#    restart_command = ["/home/coral/start.sh", "--nogui"]
+restart_command = ""
 ```
 
 ## 🤝 Contributing

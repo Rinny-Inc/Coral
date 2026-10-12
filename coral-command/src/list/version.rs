@@ -20,9 +20,13 @@ pub fn command() -> Command {
                 )
                 .push(ChatBuilder::new(" version ").color(ChatColor::White))
                 .push(
-                    ChatBuilder::new(format!("git-Coral-{}", env!("GIT_HASH")))
-                        .color(ChatColor::LightPurple)
-                        .hover_text("Git commit hash"),
+                    ChatBuilder::new(
+                        option_env!("CORAL_VERSION")
+                            .map(|tag| format!("{tag} (git-Coral-{})", env!("GIT_HASH")))
+                            .unwrap_or_else(|| format!("git-Coral-{}", env!("GIT_HASH"))),
+                    )
+                    .color(ChatColor::LightPurple)
+                    .hover_text("Release tag & git commit hash"),
                 )
                 .push(ChatBuilder::new(" (Implementing API version 1.8.x)").color(ChatColor::White))
                 .build();

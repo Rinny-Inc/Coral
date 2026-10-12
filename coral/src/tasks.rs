@@ -5,11 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use coral::updater::RestartPlan;
 use coral_command::{
     CommandContext, CommandDispatcher, CommandResult, list::usage::ResourceMonitor,
 };
 use coral_protocol::packets::play::{
-    chat::builder::ChatBuilder, entity::TileEntity, inventory::ItemStack,
+    chat::builder::{ChatBuilder, ChatColor},
+    entity::TileEntity,
+    inventory::ItemStack,
 };
 use coral_server::{
     experience::XpOrb,
@@ -34,18 +37,39 @@ use uuid::Uuid;
 
 use crate::Channels;
 
+/// Why the server is stopping
+#[derive(PartialEq)]
+enum Stop {
+    Exit,
+    /// Re-exec this binary. The path comes from the updater rather than from `current_exe()`;
+    /// see [`coral::updater::RestartRequest`]
+    Restart(PathBuf),
+}
+
 pub fn spawn_shutdown_task(
-    shutdown_signal: Arc<Sender<()>>,
+    shutdown_signal: Arc<Sender<bool>>,
+    restart_tx: Arc<Sender<PathBuf>>,
+    chat_tx: Arc<Sender<String>>,
+    restart_grace: Duration,
+    restart_plan: RestartPlan,
     player_registry: Arc<PlayerRegistry>,
     world_blocks: Arc<WorldBlocks>,
     world_dir: PathBuf,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     generator: Arc<FlatWorldGenerator>,
 ) {
+    let mut restart_rx = restart_tx.subscribe();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
+        drop(restart_tx);
+        let stop = tokio::select! {
+            _ = tokio::signal::ctrl_c() => Stop::Exit,
+            Ok(exe) = restart_rx.recv() => {
+                warn_players(&chat_tx, &player_registry, restart_grace).await;
+                Stop::Restart(exe)
+            }
+        };
         println!("Shutting down, kicking players..");
-        shutdown_signal.send(()).ok();
+        shutdown_signal.send(stop != Stop::Exit).ok();
 
         for _ in 0..50 {
             if player_registry.get_online_count().await == 0 {
@@ -68,10 +92,95 @@ pub fn spawn_shutdown_task(
         world_blocks
             .save(&world_dir, &generator, &tile_entities_by_chunk)
             .await;
-        println!("World saved. Server closed.");
-        std::process::exit(0);
+        // world.save(&world_dir, &tile_entities_by_chunk).await;
+        match stop {
+            Stop::Exit => {
+                println!("World saved. Server closed!");
+                std::process::exit(0);
+            }
+            Stop::Restart(exe) => {
+                println!("World saved. Restarting..");
+                restart_into(&restart_plan, &exe);
+            }
+        }
     });
 }
+
+/// Tell whoever is online that the server is about to go, and give them the
+/// grace period to get somewhere safe
+/// Skipped entirely on an empty server
+async fn warn_players(
+    chat_tx: &Arc<Sender<String>>,
+    player_registry: &Arc<PlayerRegistry>,
+    grace: Duration,
+) {
+    if player_registry.get_online_count().await == 0 || grace.is_zero() {
+        return;
+    }
+
+    let secs = grace.as_secs();
+    chat_tx
+        .send(ChatBuilder::colored_json(
+            &format!("Update installed - restarting in {secs}s"),
+            ChatColor::Yellow,
+        ))
+        .ok();
+
+    // a last call
+    if grace > Duration::from_secs(6) {
+        tokio::time::sleep(grace - Duration::from_secs(5)).await;
+        chat_tx
+            .send(ChatBuilder::colored_json(
+                "Restarting in 5s",
+                ChatColor::Red,
+            ))
+            .ok();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    } else {
+        tokio::time::sleep(grace).await;
+    }
+}
+
+fn restart_into(plan: &RestartPlan, exe: &std::path::Path) -> ! {
+    let (program, args): (&std::path::Path, Vec<std::ffi::OsString>) = match plan {
+        RestartPlan::Command { program, args } => (
+            program.as_path(),
+            args.iter().map(std::ffi::OsString::from).collect(),
+        ),
+        RestartPlan::Binary => (exe, std::env::args_os().skip(1).collect()),
+    };
+
+    let mut command = std::process::Command::new(program);
+    command.args(&args);
+    command.env("CORAL_UPDATED_EXE", exe);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = command.exec();
+        eprintln!("[Updater] Could not exec {}: {err}", program.display());
+    }
+
+    #[cfg(windows)]
+    {
+        match command.spawn() {
+            Ok(child) => {
+                println!("[Updater] Restarted as pid {}", child.id());
+                std::process::exit(0);
+            }
+            Err(e) => eprintln!("[Updater] Could not start {}: {e}", program.display()),
+        }
+    }
+
+    if matches!(plan, RestartPlan::Command { .. }) {
+        eprintln!("[Updater] Falling back to the updated binary");
+        restart_into(&RestartPlan::Binary, exe);
+    }
+
+    eprintln!("[Updater] Start it again manually to pick up the update.");
+    std::process::exit(70);
+}
+
 pub fn spawn_tick_task(tick_tx: Arc<Sender<()>>, player_registry: Arc<PlayerRegistry>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_ticks(1));

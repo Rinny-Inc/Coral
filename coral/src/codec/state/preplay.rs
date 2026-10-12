@@ -78,9 +78,13 @@ pub async fn pre_play(
 
     loop {
         tokio::select! {
-                Ok(()) = shutdown_rx.recv() => {
+                Ok(is_restarting) = shutdown_rx.recv() => {
                     if framed.codec().state == EnumProtocol::Login {
-                        kick(framed, "Server closed.").await;
+                        if is_restarting {
+                            kick(framed, "Server restarting.").await;
+                        } else {
+                            kick(framed, "Server closed.").await;
+                        }
                     }
                     return None;
                 }
