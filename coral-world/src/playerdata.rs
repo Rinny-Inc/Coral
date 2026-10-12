@@ -83,26 +83,11 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         (90.0, 0.0)
     };
 
-    let health = root
-        .get("Health")
-        .and_then(|t| {
-            if let NbtTag::Float(v) = t {
-                Some(*v)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(20.0);
+    let health = root.get("Health").and_then(|t| t.as_f32()).unwrap_or(20.0);
     let food = root.get("foodLevel").and_then(|t| t.as_i32()).unwrap_or(20);
     let food_saturation = root
         .get("foodSaturationLevel")
-        .and_then(|t| {
-            if let NbtTag::Float(v) = t {
-                Some(*v)
-            } else {
-                None
-            }
-        })
+        .and_then(|t| t.as_f32())
         .unwrap_or(5.0);
     let gamemode = root
         .get("playerGameType")

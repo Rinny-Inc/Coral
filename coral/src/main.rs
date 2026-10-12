@@ -3,7 +3,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicI64},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -11,7 +11,10 @@ use coral::{Channels, register_commands, world_path};
 use coral_protocol::packets::{PacketRegistry, play::entity::TileEntity};
 use coral_types::{BreakAnimation, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect};
 use rsa::RsaPrivateKey;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, broadcast::channel},
+};
 
 use coral_command::{CommandDispatcher, list::usage::ResourceMonitor};
 use coral_config::Config;
@@ -43,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resource_monitor = Arc::new(ResourceMonitor::new());
     let config = Arc::new(coral_config::Config::load());
     let addr = format!("0.0.0.0:{}", config.server.port);
-    let listener = match TcpListener::bind(&addr).await {
+    let listener = match bind_with_retry(&addr).await {
         Ok(l) => {
             println!("Minecraft Server 1.8.x started at {}", addr);
             l
@@ -126,8 +129,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
+    let restart_tx = Arc::new(channel::<PathBuf>(1).0);
     tasks::spawn_shutdown_task(
         ctx.channels.shutdown_tx.clone(),
+        restart_tx.clone(),
+        ctx.channels.chat_tx.clone(),
+        Duration::from_secs(config.updater.restart_grace_seconds),
+        coral::updater::plan_restart(&config.updater.restart_command),
         ctx.player_registry.clone(),
         ctx.world_blocks.clone(),
         ctx.world_dir.to_path_buf(),
@@ -178,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     tasks::spawn_resource_monitor_task(resource_monitor.clone());
+    tokio::spawn(coral::updater::run(config.updater.clone(), restart_tx));
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -281,4 +290,21 @@ fn load_server_icon_file(cwd: &Path) -> Option<String> {
     }
 
     Some(format!("data:image/png;base64,{}", STANDARD.encode(&bytes)))
+}
+
+async fn bind_with_retry(addr: &str) -> std::io::Result<TcpListener> {
+    const ATTEMPTS: u32 = 12;
+    for attempt in 1..=ATTEMPTS {
+        match TcpListener::bind(addr).await {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == ErrorKind::AddrInUse && attempt < ATTEMPTS => {
+                if attempt == 1 {
+                    println!("[Server] {addr} is busy, waiting for it to free up..");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the last attempt returns")
 }

@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 use toml_edit::{DocumentMut, Item, Table};
 
+pub mod updater;
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(default)]
 pub struct Config {
@@ -11,6 +13,7 @@ pub struct Config {
     pub tracking: TrackingConfig,
     pub bungee: BungeecordConfig,
     pub resource_pack: ResourcePackConfig,
+    pub updater: updater::UpdaterConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -275,6 +278,20 @@ addresses = ["127.0.0.1"]
 url = ""
 hash = "" # optional: sha1sum of the zip for client caching
 forced = false
+
+[updater]
+enabled = true
+# auto = follow this build's channel; or stable | rc | beta | alpha
+channel = "auto"
+# notify | download
+mode = "download"
+# amount of seconds players has to get somewhere safe
+restart_grace_seconds = 30
+# what to run when restarting; empty = the updated binary itself
+# Point it at your launcher script tp come back with the same environment:
+#    restart_command = "./start.sh"
+#    restart_command = ["/home/coral/start.sh", "--nogui"]
+restart_command = ""
 "#;
 
 #[cfg(test)]
@@ -418,9 +435,68 @@ mod tests {
             "[tracking]",
             "[bungee]",
             "[resource_pack]",
+            "[updater]",
         ] {
             assert!(after.contains(section), "{section} was not added");
         }
+    }
+
+    #[test]
+    fn the_updater_defaults_to_downloading_and_restarting() {
+        let c = Config::default().updater;
+        assert!(c.enabled);
+        assert_eq!(c.mode, updater::UpdateMode::Download);
+        assert_eq!(c.channel, updater::UpdateChannel::Auto);
+        assert_eq!(c.restart_grace_seconds, 30);
+    }
+
+    #[test]
+    fn the_updater_can_be_set_to_notify_without_restarting() {
+        let path = write("notify", "[updater]\nmode = \"notify\"\n");
+        let c = Config::load_from(&path);
+        assert_eq!(c.updater.mode, updater::UpdateMode::Notify);
+        assert!(c.updater.enabled);
+        assert!(read(&path).contains("restart_grace_seconds"));
+    }
+
+    #[test]
+    fn the_default_config_can_be_serialized() {
+        let s = toml::to_string_pretty(&Config::default()).expect("default config serializes");
+        assert!(s.contains("restart_command"));
+        assert_eq!(Config::default().updater.restart_command.argv(), None);
+    }
+
+    #[test]
+    fn a_launcher_script_round_trips_in_both_forms() {
+        let path = write(
+            "launcher",
+            "[updater]\nrestart_command = \"./start.sh --nogui\"\n",
+        );
+        let (program, args) = Config::load_from(&path)
+            .updater
+            .restart_command
+            .argv()
+            .expect("a command");
+        assert_eq!(program, "./start.sh");
+        assert_eq!(args, ["--nogui"]);
+
+        let path = write(
+            "launcher-argv",
+            "[updater]\nrestart_command = [\"/opt/a b/start.sh\"]\n",
+        );
+        let (program, args) = Config::load_from(&path)
+            .updater
+            .restart_command
+            .argv()
+            .expect("a command");
+        assert_eq!(program, "/opt/a b/start.sh");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn a_zero_grace_period_is_kept() {
+        let path = write("grace0", "[updater]\nrestart_grace_seconds = 0\n");
+        assert_eq!(Config::load_from(&path).updater.restart_grace_seconds, 0);
     }
 
     #[test]

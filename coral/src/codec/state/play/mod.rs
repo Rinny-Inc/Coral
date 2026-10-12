@@ -167,8 +167,12 @@ pub async fn play(
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(framed, KeepAlive { id: state.keep_alive_count }).await;
             }
-            Ok(()) = shutdown_rx.recv() => {
-                kick(framed, "Server closed.").await;
+            Ok(is_restarting) = shutdown_rx.recv() => {
+                if is_restarting {
+                    kick(framed, "Server restarting.").await;
+                } else {
+                    kick(framed, "Server closed.").await;
+                }
                 break;
             }
             Ok(()) = tick_rx.recv() => {
@@ -514,8 +518,6 @@ pub async fn play(
                 }).ok();
 
                 let (new_cx, new_cz) = spawn::spawn_chunk(x, z);
-                let new_cx = (x as i32) >> 4;
-                let new_cz = (x as i32) >> 4;
                 if new_cx != state.chunk_x || new_cz != state.chunk_z {
                     state.chunk_x = new_cx;
                     state.chunk_z = new_cz;
