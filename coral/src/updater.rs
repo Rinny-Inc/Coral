@@ -428,7 +428,7 @@ fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, UpdateError> {
         let mut zip = zip::ZipArchive::new(io::Cursor::new(archive)).map_err(io::Error::other)?;
         if let Ok(mut file) = zip.by_name(want) {
             let mut out = Vec::with_capacity(file.size() as usize);
-            file.read_toEnd(&mut out)?;
+            file.read_to_end(&mut out)?;
             return Ok(out);
         }
     }
