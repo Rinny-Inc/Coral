@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicI64},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -32,9 +32,9 @@ use coral_server::{
     whitelist::WhitelistFile,
 };
 use coral_world::{
-    blocks::{WorldBlocks, registry::BlockRegistry},
-    generator::FlatWorldGenerator,
+    blocks::registry::BlockRegistry,
     level::{read_spawn_point, write_level_dat},
+    world::World,
 };
 
 mod codec;
@@ -43,8 +43,8 @@ mod tasks;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let resource_monitor = Arc::new(ResourceMonitor::new());
     let config = Arc::new(coral_config::Config::load());
+
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = match bind_with_retry(&addr).await {
         Ok(l) => {
@@ -61,6 +61,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let restart_tx = Arc::new(channel::<PathBuf>(1).0);
+    tokio::spawn(coral::updater::run(
+        config.updater.clone(),
+        restart_tx.clone(),
+    ));
+
     let cwd = std::env::current_dir()?;
 
     let server_icon = load_server_icon_file(&cwd)
@@ -70,28 +76,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         });
 
+    let resource_monitor = Arc::new(ResourceMonitor::new());
+
     let world_path = world_path(&config.world.world_name)?;
     let world_dir = cwd.join(&config.world.world_name);
 
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_path, &config.world.world_name);
+    let generator = coral_world::generator::from_name(&config.world.generator);
+    println!("[World] generator: {}", generator.name());
+    if generator.is_empty() {
+        println!(
+            "[World] this world generates nothing! players will fall unless there is \
+            something saved under the spawn point"
+        );
     }
 
-    let spawn_point = read_spawn_point(world_path)
-        .await
-        .unwrap_or((0.5, 5.0, 0.5, 0.0, 0.0));
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(
+            world_path,
+            &config.world.world_name,
+            generator.spawn_y() as i32,
+        );
+    }
 
-    let world_blocks = Arc::new(WorldBlocks::new());
-    let generator = Arc::new(FlatWorldGenerator::new());
-    world_blocks.load(world_path, &generator).await;
+    let spawn_point =
+        read_spawn_point(world_path)
+            .await
+            .unwrap_or((0.5, generator.spawn_y(), 0.5, 0.0, 0.0));
+
+    let world = Arc::new(World::new(generator));
+    world.load(world_path).await;
 
     let (private_key, public_key_der) = generate_rsa_key();
 
     let ctx = ServerContext::new(
         server_icon,
         config.clone(),
-        world_blocks,
-        generator,
+        world,
         private_key,
         public_key_der,
         spawn_point,
@@ -107,21 +127,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &resource_monitor,
         &ctx.spawn_point,
         &ctx.world_dir,
-        &ctx.world_time,
+        &ctx.world.time,
     )
     .await;
 
     tasks::spawn_furnace_task(
         ctx.tile_entities.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
+        ctx.world.clone(),
         ctx.channels.clone(),
     );
 
     if config.world.enable_auto_save {
         tasks::spawn_world_save_task(
-            ctx.world_blocks.clone(),
-            ctx.generator.clone(),
+            ctx.world.clone(),
             ctx.world_dir.to_path_buf(),
             ctx.tile_entities.clone(),
             config.world.auto_save_interval,
@@ -129,18 +147,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tasks::spawn_console_task(ctx.dispatcher.clone(), ctx.channels.chat_tx.clone());
-    let restart_tx = Arc::new(channel::<PathBuf>(1).0);
     tasks::spawn_shutdown_task(
         ctx.channels.shutdown_tx.clone(),
-        restart_tx.clone(),
+        restart_tx,
         ctx.channels.chat_tx.clone(),
         Duration::from_secs(config.updater.restart_grace_seconds),
         coral::updater::plan_restart(&config.updater.restart_command),
         ctx.player_registry.clone(),
-        ctx.world_blocks.clone(),
+        ctx.world.clone(),
         ctx.world_dir.to_path_buf(),
         ctx.tile_entities.clone(),
-        ctx.generator.clone(),
     );
     tasks::spawn_tick_task(ctx.channels.tick_tx.clone(), ctx.player_registry.clone());
     tasks::spawn_world_time_task(
@@ -162,31 +178,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tasks::spawn_projectile_task(
         ctx.projectiles.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
+        ctx.world.clone(),
         ctx.player_registry.clone(),
         ctx.channels.clone(),
     );
 
-    tasks::spawn_chunk_cache_cleanup_task(ctx.world_blocks.clone());
+    tasks::spawn_chunk_cache_cleanup_task(ctx.world.clone());
 
     tasks::spawn_xp_orb_task(
         ctx.xp_orbs.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
+        ctx.world.clone(),
         ctx.player_registry.clone(),
         ctx.channels.clone(),
     );
 
     fluid_sim::spawn_fluid_task(
         ctx.fluid_queue.clone(),
-        ctx.world_blocks.clone(),
-        ctx.generator.clone(),
+        ctx.world.clone(),
         ctx.channels.clone(),
     );
 
     tasks::spawn_resource_monitor_task(resource_monitor.clone());
-    tokio::spawn(coral::updater::run(config.updater.clone(), restart_tx));
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -213,9 +225,7 @@ pub struct ServerContext {
     item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
     projectiles: Arc<RwLock<Vec<Projectile>>>,
     channels: Channels,
-    world_blocks: Arc<WorldBlocks>,
-    world_time: Arc<AtomicI64>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     private_key: Arc<RsaPrivateKey>,
     public_key_der: Arc<Vec<u8>>,
     ops: Arc<RwLock<OpsFile>>,
@@ -235,8 +245,7 @@ impl ServerContext {
     fn new(
         server_icon: Option<String>,
         config: Arc<Config>,
-        world_blocks: Arc<WorldBlocks>,
-        generator: Arc<FlatWorldGenerator>,
+        world: Arc<World>,
         private_key: RsaPrivateKey,
         public_key_der: Vec<u8>,
         spawn_point: (f64, f64, f64, f32, f32),
@@ -254,9 +263,7 @@ impl ServerContext {
             item_positions: Arc::new(RwLock::new(HashMap::new())),
             projectiles: Arc::new(RwLock::new(Vec::new())),
             channels: Channels::new(),
-            world_blocks,
-            world_time: Arc::new(AtomicI64::new(0)),
-            generator,
+            world,
             player_registry: Arc::new(PlayerRegistry::new()),
             private_key: Arc::new(private_key),
             public_key_der: Arc::new(public_key_der),

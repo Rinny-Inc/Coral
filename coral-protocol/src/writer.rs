@@ -13,20 +13,28 @@ impl Writer {
         self.data.push(byte);
     }
 
-    pub fn write_varint(&mut self, mut value: i32) {
-        while (value & !(SEGMENT_BITS as i32)) != 0 {
-            self.write_byte(((value & SEGMENT_BITS as i32) as u8) | CONTINUE_BIT);
+    pub fn write_varint(&mut self, value: i32) {
+        let mut value = value as u32;
+        loop {
+            if value & !(SEGMENT_BITS as u32) == 0 {
+                self.write_byte(value as u8);
+                return;
+            }
+            self.write_byte(((value & SEGMENT_BITS as u32) as u8) | CONTINUE_BIT);
             value >>= 7;
         }
-        self.write_byte(value as u8);
     }
 
-    pub fn write_varint_byte(&mut self, mut value: i8) {
-        while (value & !SEGMENT_BITS as i8) != 0 {
-            self.write_byte(((value & SEGMENT_BITS as i8) as u8) | CONTINUE_BIT);
+    pub fn write_varint_byte(&mut self, value: i8) {
+        let mut value = value as u8;
+        loop {
+            if value & !SEGMENT_BITS == 0 {
+                self.write_byte(value);
+                return;
+            }
+            self.write_byte((value & SEGMENT_BITS) | CONTINUE_BIT);
             value >>= 7;
         }
-        self.write_byte(value as u8);
     }
 
     pub fn write_bool(&mut self, value: bool) {
@@ -84,5 +92,74 @@ impl Writer {
 impl Default for Writer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::Reader;
+
+    fn varint(value: i32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_varint(value);
+        w.data
+    }
+
+    #[test]
+    fn negative_varints_terminate_in_five_bytes() {
+        for value in [-1, -128, -1000, i32::MIN, i32::MIN + 1] {
+            let bytes = varint(value);
+            assert_eq!(bytes.len(), 5, "{value} encoded as {bytes:?}");
+        }
+    }
+
+    #[test]
+    fn varint_widths_match_the_protocol() {
+        assert_eq!(varint(0), vec![0x00]);
+        assert_eq!(varint(1), vec![0x01]);
+        assert_eq!(varint(127).len(), 1);
+        assert_eq!(varint(128).len(), 2);
+        assert_eq!(varint(16_383).len(), 2);
+        assert_eq!(varint(16_384).len(), 3);
+        assert_eq!(varint(2_097_151).len(), 3);
+        assert_eq!(varint(2_097_152).len(), 4);
+        assert_eq!(varint(i32::MAX).len(), 5);
+        assert_eq!(varint(-1), vec![0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
+        assert_eq!(varint(i32::MIN), vec![0x80, 0x80, 0x80, 0x80, 0x08]);
+    }
+
+    #[test]
+    fn varints_round_trip_through_the_reader() {
+        for value in [
+            0,
+            1,
+            127,
+            128,
+            255,
+            16_383,
+            16_384,
+            2_097_152,
+            i32::MAX,
+            -1,
+            -128,
+            -2_097_152,
+            i32::MIN,
+        ] {
+            let bytes = varint(value);
+            let mut r = Reader::new(&bytes);
+            assert_eq!(r.read_varint(), value, "{value} did not survive {bytes:?}");
+            assert!(r.is_ok(), "{value} left the reader in an error state");
+            assert_eq!(r.remaining(), 0, "{value} left trailing bytes");
+        }
+    }
+
+    #[test]
+    fn negative_varint_bytes_terminate_too() {
+        for value in [-1i8, -64, i8::MIN] {
+            let mut w = Writer::new();
+            w.write_varint_byte(value);
+            assert!(w.data.len() <= 2, "{value} encoded as {:?}", w.data);
+        }
     }
 }

@@ -1,7 +1,8 @@
 use crate::anvil::nbt_to_blocks_raw;
 use crate::blocks::Block;
 use crate::blocks::WorldBlocks;
-use crate::generator::FlatWorldGenerator;
+use crate::generator::WorldGenerator;
+use crate::world::World;
 use coral_protocol::packets::PacketOut;
 use coral_protocol::writer::Writer;
 use std::collections::HashMap;
@@ -22,10 +23,9 @@ impl ChunkData {
         chunk_x: i32,
         chunk_z: i32,
         client_protocol: i32,
-        world_blocks: &Arc<WorldBlocks>,
-        generator: &FlatWorldGenerator,
+        world: &Arc<World>,
     ) -> Self {
-        if let Some(nbt) = world_blocks.get_chunk_nbt(chunk_x, chunk_z).await {
+        if let Some(nbt) = world.blocks.get_chunk_nbt(chunk_x, chunk_z).await {
             let mut chunk_blocks: HashMap<(i32, u8, i32), Block> = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
 
@@ -36,7 +36,7 @@ impl ChunkData {
             found_sections.sort();
             found_sections.dedup();
 
-            let player_blocks = world_blocks.blocks.read().await;
+            let player_blocks = world.blocks.blocks.read().await;
             for x in 0..16i32 {
                 for z in 0..16i32 {
                     for y in 0u8..=255 {
@@ -61,10 +61,21 @@ impl ChunkData {
                 primary_bitmask,
             };
         }
+
+        if world.generator.is_empty() && !world.blocks.chunk_has_edits(chunk_x, chunk_z).await {
+            return Self {
+                chunk_x,
+                chunk_z,
+                client_protocol,
+                data: vec![1u8; 256],
+                primary_bitmask: 0x0000,
+            };
+        }
+
         let data = if client_protocol == 47 {
-            build_chunk_data_18(chunk_x, chunk_z, world_blocks, generator).await
+            build_chunk_data_18(chunk_x, chunk_z, &world.blocks, world.generator.as_ref()).await
         } else {
-            build_chunk_data_17(chunk_x, chunk_z, world_blocks, generator).await
+            build_chunk_data_17(chunk_x, chunk_z, &world.blocks, world.generator.as_ref()).await
         };
 
         //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
@@ -110,20 +121,20 @@ fn get_block_state(
     wx: i32,
     wy: u8,
     wz: i32,
-    generator: &FlatWorldGenerator,
+    generator: &dyn WorldGenerator,
 ) -> u16 {
     let block = snapshot
         .get(&(wx, wy, wz))
         .cloned()
-        .unwrap_or_else(|| generator.get(wy));
+        .unwrap_or_else(|| generator.block_at(wx, wy, wz));
     ((block.id as u16) << 4) | (block.metadata as u16 & 0xF)
 }
 
 async fn build_chunk_data_18(
     chunk_x: i32,
     chunk_z: i32,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &FlatWorldGenerator,
+    world_blocks: &WorldBlocks,
+    generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
     let block_data = {
         let snapshot = world_blocks.blocks.read().await;
@@ -154,8 +165,8 @@ async fn build_chunk_data_18(
 async fn build_chunk_data_17(
     chunk_x: i32,
     chunk_z: i32,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &FlatWorldGenerator,
+    world_blocks: &WorldBlocks,
+    generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
     let mut blocks = vec![0u8; 4096];
 
@@ -327,5 +338,57 @@ impl PacketOut for UnloadChunk {
         writer.write_u16(0x0000);
         writer.write_varint(0);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generator::VoidWorldGenerator;
+    use crate::world::World;
+
+    fn void() -> Arc<World> {
+        Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
+    }
+
+    #[tokio::test]
+    async fn a_void_chunk_is_sent_as_no_sections() {
+        let c = ChunkData::build(0, 0, 47, &void()).await;
+        assert_eq!(c.primary_bitmask, 0x0000);
+        assert_eq!(c.data.len(), 256, "biomes only");
+    }
+
+    #[tokio::test]
+    async fn an_edited_void_chunk_carries_its_section() {
+        let w = void();
+        w.set(3, 5, 3, Block::new(1, 0)).await;
+
+        let c = ChunkData::build(0, 0, 47, &w).await;
+        assert_eq!(c.primary_bitmask, 0x0001);
+        assert_eq!(c.data.len(), 12544);
+
+        let idx = ((5usize & 15) << 8 | 3 << 4 | 3) * 2;
+        let state = u16::from_le_bytes([c.data[idx], c.data[idx + 1]]);
+        assert_eq!(state >> 4, 1, "stone id at the placed position");
+
+        let n = ChunkData::build(1, 0, 47, &w).await;
+        assert_eq!(n.primary_bitmask, 0x0000);
+    }
+
+    #[tokio::test]
+    async fn a_flat_chunk_still_claims_its_section() {
+        let w = Arc::new(World::flat());
+        let c = ChunkData::build(0, 0, 47, &w).await;
+        assert_eq!(c.primary_bitmask, 0x0001);
+        assert_eq!(c.data.len(), 12544);
+
+        // bedrock at y=0, grass at y=3, air above
+        let at = |x: usize, y: usize, z: usize| {
+            let i = (y << 8 | z << 4 | x) * 2;
+            u16::from_le_bytes([c.data[i], c.data[i + 1]]) >> 4
+        };
+        assert_eq!(at(0, 0, 0), 7);
+        assert_eq!(at(0, 3, 0), 2);
+        assert_eq!(at(0, 4, 0), 0);
     }
 }

@@ -7,7 +7,7 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 
 use crate::nbt::{NbtReader, NbtTag};
 
-pub fn write_level_dat(world_dir: &Path, world_name: &str) {
+pub fn write_level_dat(world_dir: &Path, world_name: &str, spawn_y: i32) {
     let data = NbtTag::Compound(vec![(
         "Data".to_string(),
         NbtTag::Compound(vec![
@@ -19,7 +19,7 @@ pub fn write_level_dat(world_dir: &Path, world_name: &str) {
             ("DataVersion".to_string(), NbtTag::Int(0)),
             ("RandomSeed".to_string(), NbtTag::Long(0)),
             ("SpawnX".to_string(), NbtTag::Int(0)),
-            ("SpawnY".to_string(), NbtTag::Int(5)),
+            ("SpawnY".to_string(), NbtTag::Int(spawn_y)),
             ("SpawnZ".to_string(), NbtTag::Int(0)),
             ("SpawnYaw".to_string(), NbtTag::Float(0.0)),
             ("SpawnPitch".to_string(), NbtTag::Float(0.0)),
@@ -122,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_level_dat_matches_runtime_default() {
         let dir = tmp("fresh");
-        write_level_dat(&dir, "world");
+        write_level_dat(&dir, "world", 5);
         assert_eq!(
             read_spawn_point(&dir).await,
             Some((0.5, 5.0, 0.5, 0.0, 0.0))
@@ -133,7 +133,7 @@ mod tests {
     #[tokio::test]
     async fn setworldspawn_survives_reload() {
         let dir = tmp("set");
-        write_level_dat(&dir, "world");
+        write_level_dat(&dir, "world", 5);
         write_spawn_point(&dir, 100, 64, -200, 90.0, -15.0)
             .await
             .unwrap();

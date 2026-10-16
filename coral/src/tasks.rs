@@ -23,10 +23,10 @@ use coral_server::{
 use coral_types::{DespawnEntity, ItemInfo, dist_sq3, dist3, ext::TicksExt};
 use coral_world::{
     anvil::tile_entity_to_nbt,
-    blocks::{Block, WorldBlocks},
-    generator::FlatWorldGenerator,
+    blocks::Block,
     nbt::NbtTag,
     weather::{Weather, WeatherState},
+    world::World,
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -53,10 +53,9 @@ pub fn spawn_shutdown_task(
     restart_grace: Duration,
     restart_plan: RestartPlan,
     player_registry: Arc<PlayerRegistry>,
-    world_blocks: Arc<WorldBlocks>,
+    world: Arc<World>,
     world_dir: PathBuf,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-    generator: Arc<FlatWorldGenerator>,
 ) {
     let mut restart_rx = restart_tx.subscribe();
     tokio::spawn(async move {
@@ -89,10 +88,7 @@ pub fn spawn_shutdown_task(
             }
             map
         };
-        world_blocks
-            .save(&world_dir, &generator, &tile_entities_by_chunk)
-            .await;
-        // world.save(&world_dir, &tile_entities_by_chunk).await;
+        world.save(&world_dir, &tile_entities_by_chunk).await;
         match stop {
             Stop::Exit => {
                 println!("World saved. Server closed!");
@@ -314,8 +310,7 @@ pub fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sende
     });
 }
 pub fn spawn_world_save_task(
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     world_dir: PathBuf,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     auto_save_interval: u64,
@@ -334,19 +329,18 @@ pub fn spawn_world_save_task(
                 }
                 map
             };
-            world_blocks
-                .save(&world_dir, &generator, &tile_entities_by_chunk)
-                .await;
+            world.save(&world_dir, &tile_entities_by_chunk).await;
             println!("[World] Auto-Saved.");
         }
     });
 }
-pub fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
+pub fn spawn_chunk_cache_cleanup_task(world: Arc<World>) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            world_blocks
+            world
+                .blocks
                 .evict_stale_chunks(Duration::from_secs(120))
                 .await;
         }
@@ -354,8 +348,7 @@ pub fn spawn_chunk_cache_cleanup_task(world_blocks: Arc<WorldBlocks>) {
 }
 pub fn spawn_projectile_task(
     projectiles: Arc<RwLock<Vec<Projectile>>>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     player_registry: Arc<PlayerRegistry>,
     channels: Channels,
 ) {
@@ -389,9 +382,7 @@ pub fn spawn_projectile_task(
                     let by = proj.y.floor() as i32;
                     let bz = proj.z.floor() as i32;
 
-                    let block = world_blocks
-                        .get(bx, by.clamp(0, 255) as u8, bz, &generator)
-                        .await;
+                    let block = world.get(bx, by.clamp(0, 255) as u8, bz).await;
                     let hit_block = !block.is_air() && (0..255).contains(&by);
 
                     if hit_block {
@@ -511,8 +502,7 @@ pub fn spawn_projectile_task(
 }
 pub fn spawn_xp_orb_task(
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     player_registry: Arc<PlayerRegistry>,
     channels: Channels,
 ) {
@@ -537,9 +527,7 @@ pub fn spawn_xp_orb_task(
                     let bx = orb.x.floor() as i32;
                     let by = (orb.y.floor() as i32).clamp(0, 255) as u8;
                     let bz = orb.z.floor() as i32;
-                    let below = world_blocks
-                        .get(bx, by.saturating_sub(1), bz, &generator)
-                        .await;
+                    let below = world.get(bx, by.saturating_sub(1), bz).await;
                     if !below.is_air() && orb.vy < 0.0 {
                         orb.vy = 0.0;
                     }
@@ -599,8 +587,7 @@ pub fn spawn_resource_monitor_task(monitor: Arc<ResourceMonitor>) {
 }
 pub fn spawn_furnace_task(
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     channels: Channels,
 ) {
     tokio::spawn(async move {
@@ -685,11 +672,9 @@ pub fn spawn_furnace_task(
                 let now_burning = *burn_ticks > 0;
 
                 if was_burning != now_burning {
-                    let current = world_blocks
-                        .get(pos.0, pos.1 as u8, pos.2, &generator)
-                        .await;
+                    let current = world.get(pos.0, pos.1 as u8, pos.2).await;
                     let new_id = if now_burning { 62 } else { 61 };
-                    world_blocks
+                    world
                         .set(
                             pos.0,
                             pos.1 as u8,

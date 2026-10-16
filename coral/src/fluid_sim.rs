@@ -3,12 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_types::ext::TicksExt;
-use coral_world::blocks::{Block, WorldBlocks};
+use coral_world::blocks::Block;
+use coral_world::world::World;
 use tokio::sync::RwLock;
 use tokio::time::interval;
 
 use coral_world::blocks::fluid::{Fluid, FluidKind, is_replaceable};
-use coral_world::generator::FlatWorldGenerator;
 
 use crate::Channels;
 
@@ -39,8 +39,7 @@ pub async fn queue_fluid_update(
 
 pub fn spawn_fluid_task(
     fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
     channels: Channels,
 ) {
     tokio::spawn(async move {
@@ -63,7 +62,7 @@ pub fn spawn_fluid_task(
                         if !(0..=255).contains(&y) {
                             continue;
                         }
-                        let block = world_blocks.get(x, y as u8, z, &generator).await;
+                        let block = world.get(x, y as u8, z).await;
                         let Some(fluid) = Fluid::from_block_id(block.id) else {
                             continue;
                         };
@@ -83,8 +82,7 @@ pub fn spawn_fluid_task(
                             z,
                             fluid,
                             block.metadata,
-                            &world_blocks,
-                            &generator,
+                            &world,
                             &channels,
                             &fluid_queue,
                         )
@@ -100,18 +98,11 @@ pub fn spawn_fluid_task(
     });
 }
 
-async fn decay_at(
-    fluid: Fluid,
-    x: i32,
-    y: i32,
-    z: i32,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
-) -> i32 {
+async fn decay_at(fluid: Fluid, x: i32, y: i32, z: i32, world: &Arc<World>) -> i32 {
     if !(0..=255).contains(&y) {
         return -1;
     }
-    let b = wb.get(x, y as u8, z, generator).await;
+    let b = world.get(x, y as u8, z).await;
     if Fluid::same_kind(b.id, fluid.block_id()) {
         b.metadata as i32
     } else {
@@ -137,39 +128,26 @@ fn fold_min_decay(neighbor_decay: i32, current: i32, sources: &mut u8) -> i32 {
     }
 }
 
-async fn is_blocked(
-    x: i32,
-    y: i32,
-    z: i32,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
-) -> bool {
+async fn is_blocked(x: i32, y: i32, z: i32, world: &Arc<World>) -> bool {
     if !(0..=255).contains(&y) {
         return true;
     }
-    let b = wb.get(x, y as u8, z, generator).await;
+    let b = world.get(x, y as u8, z).await;
     !(b.is_air() || is_replaceable(b.id) || Fluid::is_fluid(b.id))
 }
 
-async fn can_flow_into(
-    fluid: Fluid,
-    x: i32,
-    y: i32,
-    z: i32,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
-) -> bool {
+async fn can_flow_into(fluid: Fluid, x: i32, y: i32, z: i32, world: &Arc<World>) -> bool {
     if !(0..=255).contains(&y) {
         return false;
     }
-    let b = wb.get(x, y as u8, z, generator).await;
+    let b = world.get(x, y as u8, z).await;
     if Fluid::same_kind(b.id, fluid.block_id()) {
         return false;
     }
     if Fluid::is_lava(b.id) {
         return false;
     }
-    !is_blocked(x, y, z, wb, generator).await
+    !is_blocked(x, y, z, world).await
 }
 
 async fn flow_into(
@@ -178,19 +156,18 @@ async fn flow_into(
     z: i32,
     fluid: Fluid,
     decay: u8,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     channels: &Channels,
     queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
 ) {
-    if !can_flow_into(fluid, x, y, z, wb, generator).await {
+    if !can_flow_into(fluid, x, y, z, world).await {
         return;
     }
     if fluid.kind == FluidKind::Lava {
         fizz(x, y, z, channels);
     }
     let flowing = fluid.flowing_variant();
-    set_block(x, y, z, flowing.block_id(), decay, wb, channels, queue).await;
+    set_block(x, y, z, flowing.block_id(), decay, world, channels, queue).await;
 }
 
 fn decay_step(fluid: Fluid) -> i32 {
@@ -205,13 +182,12 @@ async fn buildable_or_source_below(
     y: i32,
     z: i32,
     fluid: Fluid,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
 ) -> bool {
     if y == 0 {
         return true;
     }
-    let below = wb.get(x, (y - 1) as u8, z, generator).await;
+    let below = world.get(x, (y - 1) as u8, z).await;
     let solid = !below.is_air() && !is_replaceable(below.id) && !Fluid::is_fluid(below.id);
     let same_source =
         Fluid::same_kind(below.id, fluid.block_id()) && Fluid::is_source(below.id, below.metadata);
@@ -224,22 +200,21 @@ async fn check_lava_water_reaction(
     z: i32,
     fluid: Fluid,
     metadata: u8,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
 ) -> Option<u8> {
     if fluid.kind != FluidKind::Lava {
         return None;
     }
     let mut water_adjacent = false;
     for (dx, dz) in DIRS {
-        let n = wb.get(x + dx, y as u8, z + dz, generator).await;
+        let n = world.get(x + dx, y as u8, z + dz).await;
         if Fluid::is_water(n.id) {
             water_adjacent = true;
             break;
         }
     }
     if !water_adjacent && y < 255 {
-        let above = wb.get(x, (y + 1) as u8, z, generator).await;
+        let above = world.get(x, (y + 1) as u8, z).await;
         if Fluid::is_water(above.id) {
             water_adjacent = true;
         }
@@ -257,15 +232,12 @@ async fn update_tick(
     z: i32,
     fluid: Fluid,
     metadata: u8,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     channels: &Channels,
     queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
 ) {
-    if let Some(converted) =
-        check_lava_water_reaction(x, y, z, fluid, metadata, wb, generator).await
-    {
-        set_block(x, y, z, converted, 0, wb, channels, queue).await;
+    if let Some(converted) = check_lava_water_reaction(x, y, z, fluid, metadata, world).await {
+        set_block(x, y, z, converted, 0, world, channels, queue).await;
         fizz(x, y, z, channels);
         return;
     }
@@ -277,7 +249,7 @@ async fn update_tick(
         let mut sources: u8 = 0;
         let mut k1: i32 = -100;
         for (dx, dz) in DIRS {
-            let nd = decay_at(fluid, x + dx, y, z + dz, wb, generator).await;
+            let nd = decay_at(fluid, x + dx, y, z + dz, world).await;
             k1 = fold_min_decay(nd, k1, &mut sources);
         }
 
@@ -286,14 +258,14 @@ async fn update_tick(
             j1 = -1;
         }
 
-        let above = decay_at(fluid, x, y + 1, z, wb, generator).await;
+        let above = decay_at(fluid, x, y + 1, z, world).await;
         if above >= 0 {
             j1 = if above >= 8 { above } else { above + 8 };
         }
 
         if sources >= 2
             && fluid.kind == FluidKind::Water
-            && buildable_or_source_below(x, y, z, fluid, wb, generator).await
+            && buildable_or_source_below(x, y, z, fluid, world).await
         {
             j1 = 0;
         }
@@ -301,7 +273,7 @@ async fn update_tick(
         if j1 != l {
             l = j1;
             if j1 < 0 {
-                set_block(x, y, z, 0, 0, wb, channels, queue).await; // the drain
+                set_block(x, y, z, 0, 0, world, channels, queue).await; // the drain
                 return;
             } else {
                 set_block(
@@ -310,7 +282,7 @@ async fn update_tick(
                     z,
                     fluid.flowing_variant().block_id(),
                     j1 as u8,
-                    wb,
+                    world,
                     channels,
                     queue,
                 )
@@ -318,30 +290,19 @@ async fn update_tick(
             }
         }
     }
-    if y > 0 && can_flow_into(fluid, x, y - 1, z, wb, generator).await {
+    if y > 0 && can_flow_into(fluid, x, y - 1, z, world).await {
         if fluid.kind == FluidKind::Lava {
-            let below = wb.get(x, (y - 1) as u8, z, generator).await;
+            let below = world.get(x, (y - 1) as u8, z).await;
             if Fluid::is_water(below.id) {
-                set_block(x, y - 1, z, 1 /* stone */, 0, wb, channels, queue).await;
+                set_block(x, y - 1, z, 1 /* stone */, 0, world, channels, queue).await;
                 fizz(x, y - 1, z, channels);
                 return;
             }
         }
         let new_decay = if l >= 8 { l as u8 } else { (l + 8) as u8 };
-        flow_into(
-            x,
-            y - 1,
-            z,
-            fluid,
-            new_decay,
-            wb,
-            generator,
-            channels,
-            queue,
-        )
-        .await;
-    } else if l >= 0 && (l == 0 || is_blocked(x, y - 1, z, wb, generator).await) {
-        let dirs = optimal_flow_directions(x, y, z, fluid, wb, generator).await;
+        flow_into(x, y - 1, z, fluid, new_decay, world, channels, queue).await;
+    } else if l >= 0 && (l == 0 || is_blocked(x, y - 1, z, world).await) {
+        let dirs = optimal_flow_directions(x, y, z, fluid, world).await;
 
         let mut j1 = l + step;
         if l >= 8 {
@@ -353,35 +314,17 @@ async fn update_tick(
 
         for (i, (dx, dz)) in DIRS.iter().enumerate() {
             if dirs[i] {
-                flow_into(
-                    x + dx,
-                    y,
-                    z + dz,
-                    fluid,
-                    j1 as u8,
-                    wb,
-                    generator,
-                    channels,
-                    queue,
-                )
-                .await;
+                flow_into(x + dx, y, z + dz, fluid, j1 as u8, world, channels, queue).await;
             }
         }
     }
 }
 
-async fn passable(
-    x: i32,
-    y: i32,
-    z: i32,
-    fluid: Fluid,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
-) -> bool {
-    if is_blocked(x, y, z, wb, generator).await {
+async fn passable(x: i32, y: i32, z: i32, fluid: Fluid, world: &Arc<World>) -> bool {
+    if is_blocked(x, y, z, world).await {
         return false;
     }
-    let b = wb.get(x, y as u8, z, generator).await;
+    let b = world.get(x, y as u8, z).await;
     if Fluid::same_kind(b.id, fluid.block_id()) {
         !Fluid::is_source(b.id, b.metadata)
     } else {
@@ -394,19 +337,18 @@ async fn optimal_flow_directions(
     y: i32,
     z: i32,
     fluid: Fluid,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
 ) -> [bool; 4] {
     let mut costs = [1000i32; 4];
 
     for (i, (dx, dz)) in DIRS.iter().enumerate() {
         let (nx, nz) = (x + dx, z + dz);
-        if !passable(nx, y, nz, fluid, wb, generator).await {
+        if !passable(nx, y, nz, fluid, world).await {
             continue;
         }
-        let below_blocked = is_blocked(nx, y - 1, nz, wb, generator).await;
+        let below_blocked = is_blocked(nx, y - 1, nz, world).await;
         costs[i] = if below_blocked {
-            flow_cost(nx, y, nz, 1, i, fluid, wb, generator).await
+            flow_cost(nx, y, nz, 1, i, fluid, world).await
         } else {
             0
         };
@@ -427,8 +369,7 @@ async fn flow_cost(
     depth: i32,
     from_dir: usize,
     fluid: Fluid,
-    wb: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
 ) -> i32 {
     let mut best = 1000;
     let opposite = match from_dir {
@@ -443,14 +384,14 @@ async fn flow_cost(
             continue;
         }
         let (nx, nz) = (x + dx, z + dz);
-        if !passable(nx, y, nz, fluid, wb, generator).await {
+        if !passable(nx, y, nz, fluid, world).await {
             continue;
         }
-        if !is_blocked(nx, y - 1, nz, wb, generator).await {
+        if !is_blocked(nx, y - 1, nz, world).await {
             return depth;
         }
         if depth < 4 {
-            let c = Box::pin(flow_cost(nx, y, nz, depth + 1, i, fluid, wb, generator)).await;
+            let c = Box::pin(flow_cost(nx, y, nz, depth + 1, i, fluid, world)).await;
             best = best.min(c);
         }
     }
@@ -463,11 +404,11 @@ async fn set_block(
     z: i32,
     id: u8,
     metadata: u8,
-    wb: &Arc<WorldBlocks>,
+    world: &Arc<World>,
     channels: &Channels,
     queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
 ) {
-    wb.set(x, y as u8, z, Block::new(id, metadata)).await;
+    world.set(x, y as u8, z, Block::new(id, metadata)).await;
     channels.block_tx.send((x, y, z, id as i32, metadata)).ok();
     queue_fluid_update(x, y, z, queue).await;
 }

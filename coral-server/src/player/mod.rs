@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use coral_types::GameMode;
-use coral_world::{
-    blocks::{WorldBlocks, fluid::Fluid},
-    generator::FlatWorldGenerator,
-};
+use coral_world::{blocks::fluid::Fluid, world::World};
 use uuid::Uuid;
 
 use coral_protocol::auth::ProfileProperty;
@@ -114,11 +111,7 @@ impl Player {
         (self.x, self.y + eye_height, self.z)
     }
 
-    pub async fn is_head_submerged(
-        &self,
-        wb: &Arc<WorldBlocks>,
-        generator: &Arc<FlatWorldGenerator>,
-    ) -> bool {
+    pub async fn is_head_submerged(&self, world: &Arc<World>) -> bool {
         let (bx, by, bz) = self.get_head_position();
         let by = by.floor() as i32;
 
@@ -128,8 +121,7 @@ impl Player {
         let bx = bx.floor() as i32;
         let bz = bz.floor() as i32;
 
-        let block = wb.get(bx, by as u8, bz, generator);
-        Fluid::is_water(block.await.id)
+        Fluid::is_water(world.get(bx, by as u8, bz).await.id)
     }
 
     pub fn entity_flags(&self) -> u8 {

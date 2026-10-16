@@ -25,10 +25,9 @@ use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
-use coral_world::blocks::{is_floating_spawn, surface_y};
-use coral_world::generator::FlatWorldGenerator;
 use coral_world::playerdata::load_player_data;
 use coral_world::spawn;
+use coral_world::world::World;
 use futures::SinkExt;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, broadcast::Sender};
@@ -68,7 +67,7 @@ use coral_server::{
     player::Player,
     player::registry::{PlayerRegistry, next_entity_id},
 };
-use coral_world::{blocks::WorldBlocks, weather::WeatherState};
+use coral_world::weather::WeatherState;
 
 mod state;
 
@@ -590,8 +589,7 @@ impl PlayerState {
         &mut self,
         framed: &mut Framed<TcpStream, Codec>,
         player: &Player,
-        world_blocks: &Arc<WorldBlocks>,
-        generator: &Arc<FlatWorldGenerator>,
+        world: &Arc<World>,
         player_registry: &Arc<PlayerRegistry>,
         chat_tx: &Arc<Sender<String>>,
         sound_tx: &Arc<Sender<SoundEffect>>,
@@ -604,8 +602,8 @@ impl PlayerState {
         let by_feet = player.y.floor().clamp(0.0, 255.0) as u8;
         let by_body = (player.y + 1.0).floor().clamp(0.0, 255.0) as u8;
 
-        let feet = world_blocks.get(bx, by_feet, bz, generator).await;
-        let body = world_blocks.get(bx, by_body, bz, generator).await;
+        let feet = world.get(bx, by_feet, bz).await;
+        let body = world.get(bx, by_body, bz).await;
 
         let touching_lava = Fluid::is_lava(feet.id) || Fluid::is_lava(body.id);
         let touching_fire = feet.id == 51 || body.id == 51;
@@ -752,8 +750,7 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         &ctx.item_registry,
         &ctx.channels.join_tx,
         &ctx.channels.chat_tx,
-        &ctx.world_blocks,
-        &ctx.generator,
+        &ctx.world,
         &ctx.tile_entities,
         &ctx.server_loaded_chunks,
         &ctx.entity_tracker,
@@ -789,8 +786,7 @@ async fn make_player_join(
     item_registry: &Arc<ItemRegistry>,
     join_tx: &Arc<Sender<JoinLeave>>,
     chat_tx: &Arc<Sender<String>>,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
@@ -856,14 +852,8 @@ async fn make_player_join(
     state.is_dead = phealth <= 0.0;
     state.bed_spawn = saved.as_ref().and_then(|d| d.bed_spawn);
 
-    let surface = surface_y(
-        world_blocks,
-        generator,
-        px.floor() as i32,
-        pz.floor() as i32,
-    )
-    .await;
-    let floating = is_floating_spawn(world_blocks, generator, px, py, pz).await;
+    let surface = world.surface_y(px.floor() as i32, pz.floor() as i32).await;
+    let floating = world.is_floating_spawn(px, py, pz).await;
 
     let (px, py, pz) = if floating && saved.is_none() {
         let y = surface.map_or(py, f64::from);
@@ -899,7 +889,7 @@ async fn make_player_join(
             dimension: 0,
             difficulty: config.world.difficulty,
             max_player: config.server.max_players as u8,
-            level_type: "flat".to_string(),
+            level_type: world.level_type().to_string(),
             reduced_debug_info: false,
         },
     )
@@ -1006,8 +996,7 @@ async fn make_player_join(
     send_chunks(
         framed,
         client_protocol,
-        world_blocks,
-        generator,
+        world,
         tile_entities,
         server_loaded_chunks,
         state.chunk_x,

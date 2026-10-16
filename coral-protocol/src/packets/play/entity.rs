@@ -100,9 +100,9 @@ impl PacketOut for SpawnPlayer {
         }
         */
 
-        writer.write_varint((self.x * 32.0).floor() as i32);
-        writer.write_varint((self.y * 32.0).floor() as i32);
-        writer.write_varint((self.z * 32.0).floor() as i32);
+        writer.write_i32((self.x * 32.0).floor() as i32);
+        writer.write_i32((self.y * 32.0).floor() as i32);
+        writer.write_i32((self.z * 32.0).floor() as i32);
         writer.write_byte(self.yaw.to_byte());
         writer.write_byte(self.pitch.to_byte());
         writer.write_i16(self.current_item);
@@ -595,5 +595,67 @@ impl PacketIn for UpdateSign {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod spawn_player_tests {
+    use super::*;
+    use crate::packets::PacketOut;
+    use crate::reader::Reader;
+    use crate::writer::Writer;
+
+    fn spawn_at(x: f64, y: f64, z: f64) -> SpawnPlayer {
+        SpawnPlayer {
+            entity_id: 42,
+            uuid: uuid::Uuid::from_u128(1),
+            properties: vec![],
+            x,
+            y,
+            z,
+            yaw: 0.0,
+            pitch: 0.0,
+            current_item: 0,
+        }
+    }
+
+    fn position_bytes(p: &SpawnPlayer) -> (i32, i32, i32) {
+        let mut w = Writer::new();
+        p.encode(&mut w).unwrap();
+        let mut r = Reader::new(&w.data);
+        r.read_varint(); // packet id
+        r.read_varint(); // entity id
+        r.read_long(); // uuid msb
+        r.read_long(); // uuid lsb
+        let mut next = || {
+            let b = r.read_bytes(4);
+            i32::from_be_bytes([b[0], b[1], b[2], b[3]])
+        };
+        let out = (next(), next(), next());
+        assert!(r.is_ok());
+        out
+    }
+
+    #[test]
+    fn position_is_fixed_width_int() {
+        assert_eq!(position_bytes(&spawn_at(8.5, 64.0, 8.5)), (272, 2048, 272));
+
+        let mut w = Writer::new();
+        spawn_at(8.5, 64.0, 8.5).encode(&mut w).unwrap();
+        let mut narrow = Writer::new();
+        spawn_at(1.0, 1.0, 1.0).encode(&mut narrow).unwrap();
+        assert_eq!(
+            w.data.len(),
+            narrow.data.len(),
+            "position must not change the packet length"
+        );
+    }
+
+    #[test]
+    fn negative_coordinates_encode() {
+        assert_eq!(
+            position_bytes(&spawn_at(-8.5, 64.0, -2000.5)),
+            (-272, 2048, -64_016)
+        );
     }
 }

@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{
-        Arc,
-        atomic::{AtomicI64, Ordering::Relaxed},
-    },
+    sync::{Arc, atomic::Ordering::Relaxed},
     time::Instant,
 };
 
@@ -24,10 +21,10 @@ use coral_server::{
 use coral_types::GameMode;
 use coral_world::{
     blocks::{
-        Block, WorldBlocks,
+        Block,
         fluid::{Fluid, FluidKind, is_replaceable},
     },
-    generator::FlatWorldGenerator,
+    world::World,
 };
 use tokio::{net::TcpStream, sync::RwLock};
 use tokio_util::codec::Framed;
@@ -141,9 +138,8 @@ pub async fn try_with_item_on_block(
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
-    world_blocks: &Arc<WorldBlocks>,
+    world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-    generator: &Arc<FlatWorldGenerator>,
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
     clicked: Option<(i32, i32, i32)>,
@@ -164,7 +160,7 @@ pub async fn try_with_item_on_block(
                 Some(l) => Some((l.0, l.1, l.2)),
                 None => {
                     let (x, y, z) = p.get_head_direction();
-                    raytrace_for_fluid(x, y, z, p.yaw, p.pitch, 6.0, world_blocks, generator).await
+                    raytrace_for_fluid(x, y, z, p.yaw, p.pitch, 6.0, world).await
                 }
             };
 
@@ -176,7 +172,7 @@ pub async fn try_with_item_on_block(
 
             let y = hit.1 + 1;
 
-            let target = world_blocks.get(hit.0, y as u8, hit.2, generator).await;
+            let target = world.get(hit.0, y as u8, hit.2).await;
             println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
 
             let Some(fluid) = Fluid::from_block_id(target.id) else {
@@ -190,9 +186,7 @@ pub async fn try_with_item_on_block(
 
             println!("[BUCKET] confirmed source, removing");
             // remove the source
-            world_blocks
-                .set(place.x, y as u8, place.z, Block::air())
-                .await;
+            world.set(place.x, y as u8, place.z, Block::air()).await;
             channels.block_tx.send((place.x, y, place.z, 0, 0)).ok();
 
             // recalculate neighbor fluids (it may now drain)
@@ -267,7 +261,7 @@ pub async fn try_with_item_on_block(
                 _ => return false,
             };
 
-            world_blocks
+            world
                 .set(tx, ty as u8, tz, Block::new(block_id, meta))
                 .await;
             channels
@@ -319,16 +313,14 @@ pub async fn try_with_item_on_block(
             return false;
         }
 
-        let existing = world_blocks.get(tx, ty as u8, tz, generator).await;
+        let existing = world.get(tx, ty as u8, tz).await;
         // only place into air or replaceable blocks
         if !existing.is_air() && !is_replaceable(existing.id) {
             return false;
         }
 
         let source_id = fluid.block_id();
-        world_blocks
-            .set(tx, ty as u8, tz, Block::new(source_id, 0))
-            .await;
+        world.set(tx, ty as u8, tz, Block::new(source_id, 0)).await;
         channels
             .block_tx
             .send((tx, ty, tz, source_id as i32, 0))
@@ -377,9 +369,7 @@ pub async fn try_with_block(
     state: &mut PlayerState,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
-    world_blocks: &Arc<WorldBlocks>,
-    world_time: &Arc<AtomicI64>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
     channels: &Channels,
@@ -387,7 +377,7 @@ pub async fn try_with_block(
     if place.face.is_none() {
         return false;
     };
-    let clicked = world_blocks.get(place.x, place.y, place.z, generator).await;
+    let clicked = world.get(place.x, place.y, place.z).await;
 
     if try_with_item_on_block(
         framed,
@@ -395,9 +385,8 @@ pub async fn try_with_block(
         state,
         player_registry,
         item_registry,
-        world_blocks,
+        world,
         tile_entities,
-        generator,
         fluid_queue,
         channels,
         Some((place.x, place.y as i32, place.z)),
@@ -434,7 +423,7 @@ pub async fn try_with_block(
             false
         }
         26 => {
-            if !is_night(world_time.load(Relaxed)) {
+            if !is_night(world.time.load(Relaxed)) {
                 send_packet(
                     framed,
                     ChatMessageOut::from_json(&ChatBuilder::plain_json(
@@ -487,8 +476,7 @@ async fn raytrace_for_fluid(
     yaw: f32,
     pitch: f32,
     max_dist: f64,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
 ) -> Option<(i32, i32, i32)> {
     let yaw_rad = (yaw as f64).to_radians();
     let pitch_rad = (pitch as f64).to_radians();
@@ -515,7 +503,7 @@ async fn raytrace_for_fluid(
             last_block = Some((bx, by, bz));
 
             if (0..=255).contains(&by) {
-                let block = world_blocks.get(bx, by as u8, bz, generator).await;
+                let block = world.get(bx, by as u8, bz).await;
 
                 if Fluid::is_fluid(block.id) && Fluid::is_source(block.id, block.metadata) {
                     return Some((bx, by, bz));

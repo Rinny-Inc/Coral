@@ -11,7 +11,7 @@ use coral_server::{
     player::{Player, registry::PlayerRegistry},
 };
 use coral_types::GameMode;
-use coral_world::{blocks::WorldBlocks, generator::FlatWorldGenerator};
+use coral_world::world::World;
 use rand::RngExt;
 use tokio::{
     net::TcpStream,
@@ -36,8 +36,7 @@ pub async fn handle_tick(
     config: &Config,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     channels: &Channels,
 ) {
     tick_effects(framed, state, player_registry, &channels.chat_tx).await;
@@ -77,8 +76,7 @@ pub async fn handle_tick(
         state,
         &player,
         player_registry,
-        world_blocks,
-        generator,
+        world,
         &channels.sound_tx,
         &channels.chat_tx,
     )
@@ -88,8 +86,7 @@ pub async fn handle_tick(
         .check_fire_lava_damage(
             framed,
             &player,
-            world_blocks,
-            generator,
+            world,
             player_registry,
             &channels.chat_tx,
             &channels.sound_tx,
@@ -278,12 +275,11 @@ async fn tick_drowning(
     state: &mut PlayerState,
     player: &Player,
     player_registry: &Arc<PlayerRegistry>,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     sound_tx: &Arc<Sender<SoundEffect>>,
     chat_tx: &Arc<Sender<String>>,
 ) {
-    let submerged = player.is_head_submerged(world_blocks, generator).await;
+    let submerged = player.is_head_submerged(world).await;
     let can_drown = state.gamemode == GameMode::Survival && !state.is_flying;
     if submerged && can_drown {
         if state.air_tick > 0 {

@@ -4,7 +4,7 @@ use coral_protocol::packets::play::{entity::TileEntity, inventory::ItemStack};
 
 use crate::{
     blocks::Block,
-    generator::FlatWorldGenerator,
+    generator::WorldGenerator,
     nbt::{NbtReader, NbtTag},
 };
 
@@ -12,55 +12,65 @@ pub fn chunk_to_nbt(
     chunk_x: i32,
     chunk_z: i32,
     blocks: &HashMap<(i32, u8, i32), Block>,
-    generator: &FlatWorldGenerator,
+    generator: &dyn WorldGenerator,
     tile_entities: Vec<NbtTag>,
     is_new_chunk: bool,
 ) -> Vec<u8> {
-    let mut sections = vec![];
+    const VOLUME: usize = 16 * 16 * 256;
+    #[inline]
+    fn index(x: i32, y: u8, z: i32) -> usize {
+        ((y as usize) << 8) | (((z & 15) as usize) << 4) | ((x & 15) as usize)
+    }
 
-    for section_y in 0..16u8 {
-        let y_start = section_y as i32 * 16;
+    let mut dense = vec![Block::air(); VOLUME];
 
+    if is_new_chunk && !generator.is_empty() {
+        let mut i = 0usize;
+        for y in 0..255u8 {
+            for z in 0..16i32 {
+                for x in 0..16i32 {
+                    dense[i] = generator.block_at(chunk_x * 16 + x, y, chunk_z * 16 + z);
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    for (&(x, y, z), block) in blocks {
+        if (x >> 4) != chunk_x || (z >> 4) != chunk_z {
+            continue;
+        }
+        dense[index(x, y, z)] = block.clone();
+    }
+
+    let mut heightmap = vec![0i32; 256];
+    let mut sections = Vec::with_capacity(16);
+
+    for section_y in 0..16usize {
+        let slice = &dense[&section_y * 4096..(section_y + 1) * 4096];
         let mut block_ids = vec![0u8; 4096];
         let mut block_data = vec![0u8; 2048];
         let mut has_nonair = false;
 
-        for local_y in 0..16usize {
-            let wy = (y_start + local_y as i32) as u8;
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let wx = chunk_x * 16 + x as i32;
-                    let wz = chunk_z * 16 + z as i32;
-
-                    // HashMap first (includes explicit air overrides), then generator
-                    let block = blocks.get(&(wx, wy, wz)).cloned().unwrap_or_else(|| {
-                        if is_new_chunk {
-                            generator.get(wy)
-                        } else {
-                            Block::air()
-                        }
-                    });
-
-                    if block.id != 0 {
-                        has_nonair = true;
-                    }
-
-                    // YZX ordering
-                    let idx = local_y * 256 + z * 16 + x;
-                    block_ids[idx] = block.id;
-
-                    let ni = idx / 2;
-                    if idx & 1 == 0 {
-                        block_data[ni] = (block_data[ni] & 0xF0) | (block.metadata & 0x0F);
-                    } else {
-                        block_data[ni] = (block_data[ni] & 0x0F) | ((block.metadata & 0x0F) << 4);
-                    }
-                }
+        for (idx, block) in slice.iter().enumerate() {
+            if block.is_air() {
+                continue;
             }
+            has_nonair = true;
+            block_ids[idx] = block.id;
+
+            let ni = idx / 2;
+            if idx & 1 == 0 {
+                block_data[ni] = (block_data[ni] & 0xF0) | (block.metadata & 0x0F);
+            } else {
+                block_data[ni] = (block_data[ni] & 0x0F) | ((block.metadata & 0x0F) << 4);
+            }
+
+            let column = idx & 0xFF;
+            heightmap[column] = (section_y * 16 + (idx >> 8)) as i32 + 1;
         }
 
-        // always include section 0 (bedrock layer) even if all air above
-        // skip higher sections that are truly empty
+        // always keep section 0 so the chunk is never headerless
         if !has_nonair && section_y > 0 {
             continue;
         }
@@ -80,28 +90,6 @@ pub fn chunk_to_nbt(
         ]));
     }
 
-    let biomes = vec![1u8; 256]; // plains
-
-    let mut heightmap = vec![0i32; 256];
-    for z in 0..16usize {
-        for x in 0..16usize {
-            let wx = chunk_x * 16 + x as i32;
-            let wz = chunk_z * 16 + z as i32;
-            let mut h = 0i32;
-            for y in (0u8..u8::MAX).rev() {
-                let b = blocks
-                    .get(&(wx, y, wz))
-                    .cloned()
-                    .unwrap_or_else(|| generator.get(y));
-                if b.id != 0 {
-                    h = y as i32 + 1;
-                    break;
-                }
-            }
-            heightmap[z * 16 + x] = h;
-        }
-    }
-
     let level = NbtTag::Compound(vec![
         ("xPos".to_string(), NbtTag::Int(chunk_x)),
         ("zPos".to_string(), NbtTag::Int(chunk_z)),
@@ -110,7 +98,7 @@ pub fn chunk_to_nbt(
         ("TerrainPopulated".to_string(), NbtTag::Byte(1)),
         ("V".to_string(), NbtTag::Byte(1)),
         ("InhabitedTime".to_string(), NbtTag::Long(0)),
-        ("Biomes".to_string(), NbtTag::ByteArray(biomes)),
+        ("Biomes".to_string(), NbtTag::ByteArray(vec![1u8; 256])),
         ("HeightMap".to_string(), NbtTag::IntArray(heightmap)),
         ("Sections".to_string(), NbtTag::List(10, sections)),
         ("Entities".to_string(), NbtTag::List(10, vec![])),
@@ -369,7 +357,7 @@ pub fn parse_tile_entity(raw: &RawTileEntity) -> Option<TileEntity> {
 pub fn nbt_to_blocks(
     nbt_data: &[u8],
     out: &mut HashMap<(i32, u8, i32), Block>,
-    generator: &FlatWorldGenerator,
+    generator: &dyn WorldGenerator,
 ) {
     let mut reader = NbtReader::new(nbt_data);
     let (_, root) = reader.read_named_root();
@@ -402,11 +390,13 @@ pub fn nbt_to_blocks(
 
         for local_y in 0..16usize {
             let wy = (y_start + local_y as i32) as u8;
-            let gen_block = generator.get(wy);
 
             for z in 0..16usize {
                 for x in 0..16usize {
                     let idx = local_y * 256 + z * 16 + x;
+                    let wx = chunk_x * 16 + x as i32;
+                    let wz = chunk_z * 16 + z as i32;
+                    let gen_block = generator.block_at(wx, wy, wz);
                     let block_id = block_ids[idx];
                     let metadata = block_data
                         .map(|d| {
@@ -419,13 +409,11 @@ pub fn nbt_to_blocks(
                         })
                         .unwrap_or(0);
 
-                    // skip if matches generator — no need to store
+                    // skip if matches generator - no need to store
                     if block_id == gen_block.id && metadata == gen_block.metadata {
                         continue;
                     }
 
-                    let wx = chunk_x * 16 + x as i32;
-                    let wz = chunk_z * 16 + z as i32;
                     out.insert((wx, wy, wz), Block::new(block_id, metadata));
                 }
             }
@@ -450,6 +438,9 @@ pub fn nbt_to_blocks_raw(nbt_data: &[u8], out: &mut HashMap<(i32, u8, i32), Bloc
         return;
     };
 
+    out.reserve(sections.len() * 4096);
+    let (base_x, base_z) = (chunk_x * 16, chunk_z * 16);
+
     for section in sections {
         let Some(section_y) = section.get("Y").and_then(|v| v.as_i8()) else {
             continue;
@@ -457,33 +448,197 @@ pub fn nbt_to_blocks_raw(nbt_data: &[u8], out: &mut HashMap<(i32, u8, i32), Bloc
         let Some(block_ids) = section.get("Blocks").and_then(|v| v.as_byte_array()) else {
             continue;
         };
-        let block_data = section.get("Data").and_then(|v| v.as_byte_array());
-        let y_start = section_y as i32 * 16;
 
-        for local_y in 0..16usize {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let idx = local_y * 256 + z * 16 + x;
-                    let block_id = block_ids[idx];
-                    if block_id == 0 {
-                        continue;
+        if block_ids.len() < 4096 {
+            continue;
+        }
+        let block_data = section
+            .get("Data")
+            .and_then(|v| v.as_byte_array())
+            .filter(|d| d.len() >= 2048);
+        let y_start = (section_y as i32) * 16;
+
+        for (idx, &block_id) in block_ids[..4096].iter().enumerate() {
+            if block_id == 0 {
+                continue;
+            }
+            let metadata = match block_data {
+                Some(d) => {
+                    let packed = d[idx / 2];
+                    if idx & 1 == 0 {
+                        packed & 0x0F
+                    } else {
+                        (packed >> 4) & 0x0F
                     }
-                    let metadata = block_data
-                        .map(|d| {
-                            let ni = idx / 2;
-                            if idx & 1 == 0 {
-                                d[ni] & 0x0F
-                            } else {
-                                (d[ni] >> 4) & 0x0F
-                            }
-                        })
-                        .unwrap_or(0);
-                    let wx = chunk_x * 16 + x as i32;
-                    let wy = (y_start + local_y as i32) as u8;
-                    let wz = chunk_z * 16 + z as i32;
-                    out.insert((wx, wy, wz), Block::new(block_id, metadata));
+                }
+                None => 0,
+            };
+            let wx = base_x + (idx & 15) as i32;
+            let wz = base_z + ((idx >> 4) & 15) as i32;
+            let wy = (y_start + (idx >> 8) as i32) as u8;
+            out.insert((wx, wy, wz), Block::new(block_id, metadata));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generator::{FlatWorldGenerator, VoidWorldGenerator};
+
+    fn level(bytes: &[u8]) -> NbtTag {
+        let (_, root) = NbtReader::new(bytes).read_named_root();
+        root.get("Level").expect("Level").clone()
+    }
+
+    fn heightmap(bytes: &[u8]) -> Vec<i32> {
+        match level(bytes).get("HeightMap").expect("HeightMap") {
+            NbtTag::IntArray(v) => v.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn sections(bytes: &[u8]) -> usize {
+        level(bytes)
+            .get("Sections")
+            .and_then(|s| s.as_list())
+            .map(|s| s.len())
+            .unwrap_or(0)
+    }
+
+    fn solid_chunk() -> HashMap<(i32, u8, i32), Block> {
+        let mut m = HashMap::new();
+        for x in 0..16i32 {
+            for z in 0..16i32 {
+                for y in 0..64u8 {
+                    m.insert((x, y, z), Block::new(if y == 63 { 2 } else { 1 }, 0));
                 }
             }
         }
+        m
+    }
+
+    #[test]
+    fn blocks_round_trip_through_the_encoder() {
+        let g = VoidWorldGenerator::new();
+        let mut blocks = HashMap::new();
+        for i in 0..16u8 {
+            blocks.insert((i as i32, i * 16, 3), Block::new(35, i));
+        }
+        blocks.insert((15, 255, 15), Block::new(7, 0));
+
+        let nbt = chunk_to_nbt(0, 0, &blocks, &g, Vec::new(), false);
+        let mut back = HashMap::new();
+        nbt_to_blocks_raw(&nbt, &mut back);
+
+        assert_eq!(back.len(), blocks.len());
+        for (pos, block) in &blocks {
+            let got = back.get(pos).unwrap_or_else(|| panic!("{pos:?} was lost"));
+            assert_eq!(
+                (got.id, got.metadata),
+                (block.id, block.metadata),
+                "at {pos:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_generated_chunk_round_trips_its_terrain() {
+        let g = FlatWorldGenerator::new();
+        let nbt = chunk_to_nbt(2, -3, &HashMap::new(), &g, Vec::new(), true);
+        let mut back = HashMap::new();
+        nbt_to_blocks_raw(&nbt, &mut back);
+
+        // 4 layers over a 16x16 chunk, and nothing above
+        assert_eq!(back.len(), 16 * 16 * 4);
+        assert_eq!(back.get(&(32, 0, -48)).map(|b| b.id), Some(7));
+        assert_eq!(back.get(&(32, 3, -48)).map(|b| b.id), Some(2));
+        assert!(back.get(&(32, 4, -48)).is_none());
+    }
+
+    #[test]
+    fn the_heightmap_describes_the_blocks_not_the_generator() {
+        let flat = FlatWorldGenerator::new();
+
+        let empty = chunk_to_nbt(0, 0, &HashMap::new(), &flat, Vec::new(), false);
+        assert!(heightmap(&empty).iter().all(|&h| h == 0));
+
+        let mut blocks = HashMap::new();
+        blocks.insert((0, 0, 0), Block::new(7, 0));
+        let dug = chunk_to_nbt(0, 0, &blocks, &flat, Vec::new(), false);
+        let h = heightmap(&dug);
+        assert_eq!(h[0], 1, "one block at y=0 is a height of 1");
+        assert_eq!(h[1], 0, "the column beside it is empty");
+
+        let generated = chunk_to_nbt(0, 0, &HashMap::new(), &flat, Vec::new(), true);
+        assert!(heightmap(&generated).iter().all(|&h| h == 4));
+    }
+
+    #[test]
+    fn a_block_on_the_top_layer_counts() {
+        let g = VoidWorldGenerator::new();
+        let mut blocks = HashMap::new();
+        blocks.insert((0, 255, 0), Block::new(1, 0));
+        assert_eq!(
+            heightmap(&chunk_to_nbt(0, 0, &blocks, &g, Vec::new(), false))[0],
+            256
+        );
+    }
+
+    #[test]
+    fn empty_sections_are_dropped_but_section_zero_is_kept() {
+        let g = VoidWorldGenerator::new();
+        assert_eq!(
+            sections(&chunk_to_nbt(0, 0, &HashMap::new(), &g, Vec::new(), false)),
+            1
+        );
+
+        let mut blocks = HashMap::new();
+        blocks.insert((0, 200, 0), Block::new(1, 0));
+        assert_eq!(
+            sections(&chunk_to_nbt(0, 0, &blocks, &g, Vec::new(), false)),
+            2
+        );
+    }
+
+    #[test]
+    fn blocks_from_another_chunk_are_ignored() {
+        let g = VoidWorldGenerator::new();
+        let mut blocks = HashMap::new();
+        blocks.insert((3, 10, 3), Block::new(1, 0));
+        blocks.insert((19, 10, 3), Block::new(49, 0)); // chunk (1,0)
+        blocks.insert((3, 10, -13), Block::new(49, 0)); // chunk (0,-1)
+
+        let nbt = chunk_to_nbt(0, 0, &blocks, &g, Vec::new(), false);
+        let mut back = HashMap::new();
+        nbt_to_blocks_raw(&nbt, &mut back);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.get(&(3, 10, 3)).map(|b| b.id), Some(1));
+    }
+
+    #[test]
+    fn negative_chunk_coordinates_keep_their_positions() {
+        let g = VoidWorldGenerator::new();
+        let mut blocks = HashMap::new();
+        blocks.insert((-48, 7, -17), Block::new(1, 0));
+
+        let nbt = chunk_to_nbt(-3, -2, &blocks, &g, Vec::new(), false);
+        let mut back = HashMap::new();
+        nbt_to_blocks_raw(&nbt, &mut back);
+        assert_eq!(back.keys().collect::<Vec<_>>(), vec![&(-48, 7, -17)]);
+    }
+
+    #[test]
+    fn a_solid_chunk_survives_a_full_cycle() {
+        let g = FlatWorldGenerator::new();
+        let blocks = solid_chunk();
+        let nbt = chunk_to_nbt(0, 0, &blocks, &g, Vec::new(), false);
+
+        let mut back = HashMap::new();
+        nbt_to_blocks_raw(&nbt, &mut back);
+        assert_eq!(back.len(), blocks.len());
+
+        assert_eq!(chunk_to_nbt(0, 0, &back, &g, Vec::new(), false), nbt);
+        assert_eq!(heightmap(&nbt)[0], 64);
     }
 }

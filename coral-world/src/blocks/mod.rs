@@ -1,6 +1,6 @@
 use crate::{
     anvil::{chunk_to_nbt, nbt_to_blocks_raw},
-    generator::FlatWorldGenerator,
+    generator::WorldGenerator,
     nbt::NbtTag,
     region::RegionFile,
 };
@@ -99,7 +99,6 @@ pub struct WorldBlocks {
     // chunks that need to be saved
     pub dirty_chunks: RwLock<HashSet<(i32, i32)>>,
     pub world_dir: RwLock<Option<std::path::PathBuf>>,
-    pub generator: RwLock<Option<FlatWorldGenerator>>,
 }
 
 const MAX_CACHED_CHUNKS: usize = 2048;
@@ -111,7 +110,6 @@ impl WorldBlocks {
             decoded_cache: RwLock::new(HashMap::new()),
             dirty_chunks: RwLock::new(HashSet::new()),
             world_dir: RwLock::new(None),
-            generator: RwLock::new(None),
         }
     }
 
@@ -136,7 +134,7 @@ impl WorldBlocks {
         Some(nbt)
     }
 
-    pub async fn get(&self, x: i32, y: u8, z: i32, generator: &FlatWorldGenerator) -> Block {
+    pub async fn get(&self, x: i32, y: u8, z: i32, generator: &dyn WorldGenerator) -> Block {
         if let Some(b) = self.blocks.read().await.get(&(x, y, z)) {
             return b.clone();
         }
@@ -162,7 +160,28 @@ impl WorldBlocks {
             return result;
         }
 
-        generator.get(y)
+        generator.block_at(x, y, z)
+    }
+
+    pub async fn chunk_has_edits(&self, cx: i32, cz: i32) -> bool {
+        self.blocks
+            .read()
+            .await
+            .keys()
+            .any(|(x, _, z)| (x >> 4) == cx && (z >> 4) == cz)
+    }
+
+    pub async fn is_untouched_column(&self, x: i32, z: i32) -> bool {
+        let (cx, cz) = (x >> 4, z >> 4);
+        if self.get_chunk_nbt(cx, cz).await.is_some() {
+            return false;
+        }
+        !self
+            .blocks
+            .read()
+            .await
+            .keys()
+            .any(|(bx, _, bz)| *bx == x && *bz == z)
     }
 
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
@@ -201,14 +220,13 @@ impl WorldBlocks {
         }
     }
 
-    pub async fn load(&self, world_dir: &Path, generator: &FlatWorldGenerator) {
+    pub async fn load(&self, world_dir: &Path) {
         let region_dir = world_dir.join("region");
         if !region_dir.exists() {
             println!("[World] No existing world found, starting fresh!");
             return;
         }
         *self.world_dir.write().await = Some(world_dir.to_path_buf());
-        *self.generator.write().await = Some(generator.clone());
 
         let count = std::fs::read_dir(&region_dir)
             .map(|d| {
@@ -231,7 +249,7 @@ impl WorldBlocks {
     pub async fn save(
         &self,
         world_dir: &Path,
-        generator: &FlatWorldGenerator,
+        generator: Arc<dyn WorldGenerator>,
         tile_entities_by_chunk: &HashMap<(i32, i32), Vec<NbtTag>>,
     ) {
         let dirty = {
@@ -244,7 +262,6 @@ impl WorldBlocks {
         };
 
         let player_blocks = self.blocks.read().await.clone();
-        let generator = generator.clone();
         let world_dir = world_dir.to_path_buf();
         let region_dir = world_dir.join("region");
 
@@ -320,6 +337,27 @@ impl WorldBlocks {
                     file_data.resize(8192, 0);
                 }
 
+                let mut used = vec![false; (file_data.len() / 4096).max(2)];
+                fn mark(used: &mut Vec<bool>, off: usize, count: usize, taken: bool) {
+                    if off < 2 || count == 0 {
+                        return;
+                    }
+                    if used.len() < off + count {
+                        used.resize(off + count, false);
+                    }
+                    used[off..off + count].fill(taken);
+                }
+                for i in 0..1024usize {
+                    let ho = i * 4;
+                    if ho + 4 > file_data.len() {
+                        continue;
+                    }
+                    let off = (file_data[ho] as usize) << 16
+                        | (file_data[ho + 1] as usize) << 8
+                        | file_data[ho + 2] as usize;
+                    mark(&mut used, off, file_data[ho + 3] as usize, true);
+                }
+
                 for (cx, cz) in &chunks {
                     let Some(final_blocks) = chunk_block_maps.get(&(*cx, *cz)) else {
                         continue;
@@ -330,7 +368,8 @@ impl WorldBlocks {
                         .cloned()
                         .unwrap_or_default();
 
-                    let nbt = chunk_to_nbt(*cx, *cz, final_blocks, &generator, tiles, is_new);
+                    let nbt =
+                        chunk_to_nbt(*cx, *cz, final_blocks, generator.as_ref(), tiles, is_new);
 
                     let compressed = {
                         use flate2::Compression;
@@ -348,43 +387,34 @@ impl WorldBlocks {
                     let local_x = cx.rem_euclid(32) as usize;
                     let local_z = cz.rem_euclid(32) as usize;
                     let header_offset = (local_x + local_z * 32) * 4;
-                    let this_idx = local_x + local_z * 32;
 
                     let old_offset = (file_data[header_offset] as usize) << 16
                         | (file_data[header_offset + 1] as usize) << 8
                         | file_data[header_offset + 2] as usize;
                     let old_sectors = file_data[header_offset + 3] as usize;
 
-                    let mut used: HashSet<usize> = HashSet::new();
-                    for i in 0..1024usize {
-                        if i == this_idx {
-                            continue;
-                        }
-                        let ho = i * 4;
-                        if ho + 4 > file_data.len() {
-                            continue;
-                        }
-                        let off = (file_data[ho] as usize) << 16
-                            | (file_data[ho + 1] as usize) << 8
-                            | file_data[ho + 2] as usize;
-                        let cnt = file_data[ho + 3] as usize;
-                        if off >= 2 && cnt > 0 {
-                            for s in off..off + cnt {
-                                used.insert(s);
-                            }
-                        }
-                    }
-
+                    // this chunk may reuse the sectors it is vacating
+                    mark(&mut used, old_offset, old_sectors, false);
                     let mut sector_offset = 2usize;
                     'find: loop {
-                        for s in sector_offset..sector_offset + sectors_needed {
-                            if used.contains(&s) {
+                        // anything past the end of the file is free
+                        if sector_offset + sectors_needed > used.len() {
+                            break;
+                        }
+                        for (s, &is_used) in used
+                            .iter()
+                            .enumerate()
+                            .skip(sector_offset)
+                            .take(sectors_needed)
+                        {
+                            if is_used {
                                 sector_offset = s + 1;
                                 continue 'find;
                             }
                         }
                         break;
                     }
+                    mark(&mut used, sector_offset, sectors_needed, true);
 
                     if old_offset >= 2 && old_sectors > 0 {
                         let s = old_offset * 4096;
@@ -545,77 +575,106 @@ fn yaw_to_facing(yaw: f32) -> BlockFace {
     }
 }
 
-pub async fn surface_y(
-    world_block: &WorldBlocks,
-    generator: &FlatWorldGenerator,
-    x: i32,
-    z: i32,
-) -> Option<u8> {
-    for y in (0..=255u8).rev() {
-        if !world_block.get(x, y, z, generator).await.is_air() {
-            return y.checked_add(1);
-        }
-    }
-    None
-}
-
-pub async fn is_floating_spawn(
-    world_block: &WorldBlocks,
-    generator: &FlatWorldGenerator,
-    x: f64,
-    y: f64,
-    z: f64,
-) -> bool {
-    let (bx, bz) = (x.floor() as i32, z.floor() as i32);
-    let feet = y.floor().clamp(0.0, 255.0) as u8;
-    if feet > 0 && !world_block.get(bx, feet - 1, bz, generator).await.is_air() {
-        return false;
-    }
-    if !world_block.get(bx, feet, bz, generator).await.is_air() {
-        return false;
-    }
-    match surface_y(world_block, generator, bx, bz).await {
-        Some(surface) => (feet as i32) - (surface as i32) > 1,
-        None => false,
-    }
-}
-
 #[cfg(test)]
-mod spawn_tests {
-    use super::*;
+mod region_tests {
+    use crate::blocks::Block;
+    use crate::world::World;
+    use std::collections::HashMap;
 
-    #[tokio::test]
-    async fn surface_is_one_above_the_highest_solid_block() {
-        let w = WorldBlocks::new();
-        let flat = FlatWorldGenerator::new();
-        assert_eq!(surface_y(&w, &flat, 0, 0).await, Some(4));
-
-        w.set(0, 70, 0, Block::new(1, 0)).await;
-        assert_eq!(surface_y(&w, &flat, 0, 0).await, Some(71));
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("coral-region-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&d).ok();
+        std::fs::create_dir_all(&d).unwrap();
+        d
     }
 
     #[tokio::test]
-    async fn a_spawn_high_above_the_surface_is_floating() {
-        let w = WorldBlocks::new();
-        let flat = FlatWorldGenerator::new();
-        assert!(is_floating_spawn(&w, &flat, 0.5, 64.0, 0.5).await);
-        assert!(!is_floating_spawn(&w, &flat, 0.5, 4.0, 0.5).await);
-        assert!(!is_floating_spawn(&w, &flat, 0.5, 5.0, 0.5).await);
+    async fn many_chunks_in_one_region_survive_a_save_and_reload() {
+        let dir = tmp("many");
+        let w = World::flat();
+
+        let chunks: Vec<(i32, i32)> = (0..8).flat_map(|x| (0..8).map(move |z| (x, z))).collect();
+        for (i, (cx, cz)) in chunks.iter().enumerate() {
+            w.set(
+                cx * 16 + 1,
+                70,
+                cz * 16 + 1,
+                Block::new((i % 200 + 1) as u8, (i % 16) as u8),
+            )
+            .await;
+        }
+        w.save(&dir, &HashMap::new()).await;
+
+        let reloaded = World::flat();
+        reloaded.load(&dir).await;
+        for (i, (cx, cz)) in chunks.iter().enumerate() {
+            let b = reloaded.get(cx * 16 + 1, 70, cz * 16 + 1).await;
+            assert_eq!(
+                (b.id, b.metadata),
+                ((i % 200 + 1) as u8, (i % 16) as u8),
+                "chunk ({cx},{cz}) came back wrong"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
-    async fn a_spawn_standing_on_real_terrain_is_not_floating() {
-        let w = WorldBlocks::new();
-        let flat = FlatWorldGenerator::new();
-        w.set(10, 70, 10, Block::new(1, 0)).await;
-        assert!(!is_floating_spawn(&w, &flat, 10.5, 71.0, 10.5).await);
+    async fn a_chunk_that_grows_relocates_without_clobbering_its_neighbours() {
+        let dir = tmp("grow");
+        let w = World::flat();
+
+        for cx in 0..4i32 {
+            w.set(cx * 16 + 2, 70, 2, Block::new(41, 0)).await;
+        }
+        w.save(&dir, &HashMap::new()).await;
+
+        // chunk 0 becomes far larger than the sectors it holds
+        for x in 0..16i32 {
+            for z in 0..16i32 {
+                for y in 100..160u8 {
+                    w.set(x, y, z, Block::new(1, 0)).await;
+                }
+            }
+        }
+        w.save(&dir, &HashMap::new()).await;
+
+        let reloaded = World::flat();
+        reloaded.load(&dir).await;
+
+        // the grown chunk
+        assert_eq!(reloaded.get(5, 130, 5).await.id, 1);
+        assert_eq!(reloaded.get(2, 70, 2).await.id, 41);
+        // and the neighbours it had to move around
+        for cx in 1..4i32 {
+            assert_eq!(
+                reloaded.get(cx * 16 + 2, 70, 2).await.id,
+                41,
+                "chunk {cx} was overwritten"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
-    async fn a_spawn_inside_a_block_is_not_floating() {
-        let w = WorldBlocks::new();
-        let flat = FlatWorldGenerator::new();
-        w.set(3, 80, 3, Block::new(1, 0)).await;
-        assert!(!is_floating_spawn(&w, &flat, 3.5, 80.0, 3.5).await);
+    async fn resaving_a_chunk_reuses_its_sectors() {
+        let dir = tmp("resave");
+        let w = World::flat();
+        w.set(1, 70, 1, Block::new(41, 0)).await;
+        w.save(&dir, &HashMap::new()).await;
+
+        let region = dir.join("region").join("r.0.0.mca");
+        let first = std::fs::metadata(&region).unwrap().len();
+
+        for i in 0..5u8 {
+            w.set(1, 70, 1, Block::new(41 + i, 0)).await;
+            w.save(&dir, &HashMap::new()).await;
+        }
+        let after = std::fs::metadata(&region).unwrap().len();
+        assert_eq!(first, after, "the region file grew on a same-size rewrite");
+
+        let reloaded = World::flat();
+        reloaded.load(&dir).await;
+        assert_eq!(reloaded.get(1, 70, 1).await.id, 45);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

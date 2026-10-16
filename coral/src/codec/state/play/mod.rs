@@ -59,13 +59,13 @@ use coral_server::{
 };
 use coral_types::{GameMode, ToolMaterial, dist_xz, dist3};
 use coral_world::{
-    blocks::{Block, WorldBlocks, placement_metadata},
+    blocks::{Block, placement_metadata},
     chunk::{ChunkData, UnloadChunk},
-    generator::FlatWorldGenerator,
     playerdata::{PlayerData, save_player_data},
     spawn,
     time::TimeUpdate,
     weather::WeatherState,
+    world::World,
 };
 use tokio::{
     net::TcpStream,
@@ -108,12 +108,10 @@ pub async fn play(
         item_positions,
         projectiles,
         channels,
-        world_blocks,
-        generator,
+        world,
         spawn_point,
         world_dir,
         xp_orbs,
-        world_time,
         fluid_queue,
         tile_entities,
         server_loaded_chunks,
@@ -188,8 +186,7 @@ pub async fn play(
                     &config,
                     &item_spawn_times,
                     &item_positions,
-                    &world_blocks,
-                    &generator,
+                    &world,
                     &channels,
                 ).await;
             }
@@ -334,7 +331,7 @@ pub async fn play(
                 }).await;
             }
             Ok((world_age, time_of_day)) = time_rx.recv() => {
-                world_time.store(time_of_day, Relaxed);
+                world.time.store(time_of_day, Relaxed);
                 send_packet(framed, TimeUpdate {
                     world_age,
                     time_of_day
@@ -407,11 +404,10 @@ pub async fn play(
                     .unwrap_or(true);
 
                     if on_ground && !was_on_ground {
-                        let land_block = world_blocks.get(
+                        let land_block = world.get(
                             x.floor() as i32,
                             (y.floor() as i32 - 1).max(0) as u8,
                             z.floor() as i32,
-                            &generator
                         ).await;
 
                         if !land_block.is_air() {
@@ -433,11 +429,10 @@ pub async fn play(
                         .unwrap_or(false);
 
                     if is_sprinting && on_ground {
-                        let block_below = world_blocks.get(
+                        let block_below = world.get(
                             x.floor() as i32,
                             (y.floor() as i32 - 1).max(0) as u8,
                             z.floor() as i32,
-                            &generator
                         ).await;
 
                         if !block_below.is_air() {
@@ -521,7 +516,7 @@ pub async fn play(
                 if new_cx != state.chunk_x || new_cz != state.chunk_z {
                     state.chunk_x = new_cx;
                     state.chunk_z = new_cz;
-                    update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, &server_loaded_chunks, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
+                    update_chunks(framed, client_protocol, &world, &tile_entities, &server_loaded_chunks, new_cx, new_cz, config.server.view_distance, &mut state.loaded_chunks).await;
                 }
 
                 state.was_on_ground = false;
@@ -796,10 +791,10 @@ pub async fn play(
                         if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
                             match dig.status {
                                 DigStatus::StartDig => {
-                                    let block = world_blocks.get(dig.x, dig.y, dig.z, &generator).await;
+                                    let block = world.get(dig.x, dig.y, dig.z).await;
 
                                     if state.gamemode == GameMode::Creative {
-                                        world_blocks.set(dig.x, dig.y, dig.z, Block::air()).await;
+                                        world.set(dig.x, dig.y, dig.z, Block::air()).await;
                                         channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                         channels.sound_tx.send((
                                             block_break_sound(block.id).to_string(),
@@ -836,7 +831,7 @@ pub async fn play(
                                         continue;
                                     }
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
-                                        let block = world_blocks.get(bx, by as u8, bz, &generator).await;
+                                        let block = world.get(bx, by as u8, bz).await;
 
                                         let required_ticks = break_time_ticks(
                                             &item_registry,
@@ -853,7 +848,7 @@ pub async fn play(
                                             state.breaking_block = Some((bx, by, bz));
                                             continue;
                                         }
-                                        world_blocks.set(bx, by as u8, bz, Block::air()).await;
+                                        world.set(bx, by as u8, bz, Block::air()).await;
                                         channels.block_tx.send((
                                             bx, by, bz,
                                             0, 0
@@ -1094,12 +1089,12 @@ pub async fn play(
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
-                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &item_registry, &world_blocks, &tile_entities, &generator, &fluid_queue, &channels, None).await {
+                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels, None).await {
                                     continue;
                                 }
                                 continue;
                             };
-                            if interact::try_with_block(framed, place, state, &player_registry, &item_registry, &world_blocks, &world_time, &generator, &tile_entities, &fluid_queue, &channels).await
+                            if interact::try_with_block(framed, place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels).await
                                 || place.held_item_id == EMPTY_HAND
                                 || state.gamemode >= GameMode::Adventure
                             {
@@ -1136,7 +1131,7 @@ pub async fn play(
                                 state.consume_held_one(framed, &player_registry, &item_registry, &channels).await;
                             }
 
-                            world_blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
+                            world.blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
                             channels.block_tx.send((tx, ty, tz, block_id, block_meta)).ok();
                             channels.sound_tx.send((
                                 block_break_sound(block_id as u8).to_string(),
@@ -1328,7 +1323,7 @@ pub async fn play(
                                     if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
                                         state.chunk_x = new_chunk_x;
                                         state.chunk_z = new_chunk_z;
-                                        update_chunks(framed, client_protocol, &world_blocks, &generator, &tile_entities, &server_loaded_chunks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
+                                        update_chunks(framed, client_protocol, &world, &tile_entities, &server_loaded_chunks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
                                     }
 
                                     let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
@@ -1502,14 +1497,14 @@ pub async fn play(
                                     dimension: -1,
                                     difficulty: config.world.difficulty,
                                     gamemode: u8::from(state.gamemode),
-                                    level_type: "flat".to_string()
+                                    level_type: world.level_type().to_string()
                                 }).await;
 
                                 send_packet(framed, Respawn {
                                     dimension: 0,
                                     difficulty: config.world.difficulty,
                                     gamemode: u8::from(state.gamemode),
-                                    level_type: "flat".to_string()
+                                    level_type: world.level_type().to_string()
                                 }).await;
 
                                 let world_spawn = *spawn_point.read().await;
@@ -1523,8 +1518,7 @@ pub async fn play(
                                 send_chunks(
                                     framed,
                                     client_protocol,
-                                    &world_blocks,
-                                    &generator,
+                                    &world,
                                     &tile_entities,
                                     &server_loaded_chunks,
                                     spawn_cx, spawn_cz,
@@ -2089,8 +2083,7 @@ fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
 pub async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     center_x: i32,
@@ -2106,7 +2099,7 @@ pub async fn send_chunks(
 
             let already_loaded = server_loaded_chunks.read().await.contains(&(cx, cz));
             if !already_loaded {
-                if let Some(nbt) = world_blocks.get_chunk_nbt(cx, cz).await {
+                if let Some(nbt) = world.blocks.get_chunk_nbt(cx, cz).await {
                     for raw in coral_world::anvil::nbt_to_tile_entities(&nbt) {
                         if let Some(tile) = coral_world::anvil::parse_tile_entity(&raw) {
                             tile_entities
@@ -2119,7 +2112,7 @@ pub async fn send_chunks(
                 server_loaded_chunks.write().await.insert((cx, cz));
             }
 
-            let chunk = ChunkData::build(cx, cz, client_protocol, world_blocks, generator).await;
+            let chunk = ChunkData::build(cx, cz, client_protocol, world).await;
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
 
@@ -2202,8 +2195,7 @@ async fn handle_landing(
 async fn update_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
-    world_blocks: &Arc<WorldBlocks>,
-    generator: &Arc<FlatWorldGenerator>,
+    world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     new_chunk_x: i32,
@@ -2214,8 +2206,7 @@ async fn update_chunks(
     send_chunks(
         framed,
         client_protocol,
-        world_blocks,
-        generator,
+        world,
         tile_entities,
         server_loaded_chunks,
         new_chunk_x,

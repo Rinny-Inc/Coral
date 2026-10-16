@@ -50,12 +50,15 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
     let path = player_path(world_dir, uuid);
     let compressed = tokio::fs::read(&path).await.ok()?;
 
-    let mut decoder = GzDecoder::new(&compressed[..]);
-    let mut nbt_bytes = Vec::new();
-    decoder.read_to_end(&mut nbt_bytes).ok()?;
-
-    let mut reader = NbtReader::new(&nbt_bytes);
-    let (_, root) = reader.read_named_root();
+    let root = tokio::task::spawn_blocking(move || {
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut nbt_bytes = Vec::new();
+        decoder.read_to_end(&mut nbt_bytes).ok()?;
+        Some(NbtReader::new(&nbt_bytes).read_named_root().1)
+    })
+    .await
+    .ok()
+    .flatten()?;
 
     let pos = root.get("Pos").and_then(|t| t.as_list())?;
     let (x, y, z) = if let (NbtTag::Double(x), NbtTag::Double(y), NbtTag::Double(z)) =
@@ -323,14 +326,18 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
 
     let root = NbtTag::Compound(root_field);
 
-    let mut nbt_bytes = Vec::new();
-    NbtTag::write_named_root("", &root, &mut nbt_bytes);
+    let compressed = tokio::task::spawn_blocking(move || {
+        let mut nbt_bytes = Vec::new();
+        NbtTag::write_named_root("", &root, &mut nbt_bytes);
 
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    if encoder.write_all(&nbt_bytes).is_err() {
-        return;
-    }
-    let Ok(compressed) = encoder.finish() else {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&nbt_bytes).ok()?;
+        encoder.finish().ok()
+    })
+    .await;
+
+    let Ok(Some(compressed)) = compressed else {
+        eprintln!("[World] Could not encode playerdata for {uuid}");
         return;
     };
 

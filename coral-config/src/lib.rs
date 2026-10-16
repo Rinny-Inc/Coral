@@ -49,6 +49,7 @@ pub struct ChatConfig {
 #[serde(default)]
 pub struct WorldConfig {
     pub world_name: String,
+    pub generator: String,
     pub difficulty: u8,
     pub item_despawn_seconds: u64,
     pub disable_weather: bool,
@@ -103,6 +104,7 @@ impl Default for WorldConfig {
     fn default() -> Self {
         Self {
             world_name: "world".to_string(),
+            generator: "flat".to_string(), // TODO: use default when available
             difficulty: 0,
             item_despawn_seconds: 300,
             disable_weather: false,
@@ -255,6 +257,8 @@ format = "<{username}> {message}"
 
 [world]
 world_name = "world"
+# flat | void
+generator = "flat"
 difficulty = 0
 item_despawn_seconds = 300
 disable_weather = false

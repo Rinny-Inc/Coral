@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use coral_types::{MobAttackBroadcast, MobMoveBroadcast};
-use coral_world::{blocks::WorldBlocks, generator::FlatWorldGenerator};
+use coral_world::world::World;
 use uuid::Uuid;
 
 use crate::{
@@ -24,8 +24,7 @@ const IDLE_FRICTION: f64 = 0.6;
 pub async fn tick_mob(
     mob_registry: Arc<MobRegistry>,
     player_registry: Arc<PlayerRegistry>,
-    world_blocks: Arc<WorldBlocks>,
-    generator: Arc<FlatWorldGenerator>,
+    world: Arc<World>,
 ) -> (Vec<MobMoveBroadcast>, Vec<MobAttackBroadcast>) {
     let players = player_registry.get_all().await;
 
@@ -64,13 +63,8 @@ pub async fn tick_mob(
 
         let below_y = (new_y - 0.1).floor();
         let below = if (0.0..=255.0).contains(&below_y) {
-            world_blocks
-                .get(
-                    new_x.floor() as i32,
-                    below_y as u8,
-                    new_z.floor() as i32,
-                    &generator,
-                )
+            world
+                .get(new_x.floor() as i32, below_y as u8, new_z.floor() as i32)
                 .await
         } else {
             coral_world::blocks::Block::air()
@@ -100,7 +94,7 @@ pub async fn tick_mob(
     (moves, attacks)
 }
 
-fn hostile_targeting(mob: &mut Mob, players: &Vec<Player>) {
+fn hostile_targeting(mob: &mut Mob, players: &[Player]) {
     if !mob.mob_type.is_hostile() {
         return;
     }
