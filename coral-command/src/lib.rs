@@ -94,3 +94,38 @@ where
 {
     Arc::new(move |ctx| Box::pin(f(ctx)))
 }
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    async fn run(command: Command, args: &[&str], is_op: bool) -> CommandResult {
+        let ctx = CommandContext {
+            sender: "Noksio".to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            reply_target: None,
+            is_op,
+        };
+        (command.handler)(ctx).await
+    }
+
+    fn denied(result: &CommandResult) -> bool {
+        matches!(result, CommandResult::Error(m) if m == "No permission.")
+    }
+
+    #[tokio::test]
+    async fn say_requires_op() {
+        assert!(denied(
+            &run(list::say::command(), &["say", "hello"], false).await
+        ));
+        assert!(!denied(
+            &run(list::say::command(), &["say", "hello"], true).await
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_non_op_cannot_broadcast_even_with_a_valid_argument_count() {
+        let r = run(list::say::command(), &["say"], false).await;
+        assert!(denied(&r), "got {r:?}");
+    }
+}

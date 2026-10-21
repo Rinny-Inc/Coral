@@ -16,7 +16,7 @@ use coral_protocol::packets::play::{
 use coral_server::{
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
-    projectile::{Projectile, ProjectileKind},
+    projectile::{Projectile, ProjectileKind, launch_velocity},
 };
 use coral_types::GameMode;
 use coral_world::{
@@ -66,8 +66,8 @@ pub async fn try_with_item(
                 .await
                 && let Some(p) = player_registry.get(&state.uuid).await
             {
-                let (dx, dy, dz) = p.get_head_direction();
                 let speed = 1.5;
+                let (vx, vy, vz) = launch_velocity(p.get_head_direction(), p.velocity, speed);
                 let hook_eid = next_entity_id();
 
                 let (eye_x, eye_y, eye_z) = p.get_head_position();
@@ -78,9 +78,9 @@ pub async fn try_with_item(
                     x: eye_x,
                     y: eye_y,
                     z: eye_z,
-                    vx: dx + p.velocity.0 * speed,
-                    vy: dy + p.velocity.1 * speed,
-                    vz: dz + p.velocity.2 * speed,
+                    vx,
+                    vy,
+                    vz,
                     ticks_alive: 0,
                     left_owner: false,
                 };

@@ -353,7 +353,7 @@ pub fn spawn_projectile_task(
     channels: Channels,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_ticks(50));
+        let mut interval = interval(Duration::from_ticks(1));
         loop {
             interval.tick().await;
 
@@ -507,7 +507,7 @@ pub fn spawn_xp_orb_task(
     channels: Channels,
 ) {
     tokio::spawn(async move {
-        let mut interval = interval(Duration::from_ticks(50));
+        let mut interval = interval(Duration::from_ticks(1));
         loop {
             interval.tick().await;
 

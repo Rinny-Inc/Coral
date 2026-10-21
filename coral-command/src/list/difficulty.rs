@@ -13,6 +13,9 @@ pub fn command(difficulty_tx: Arc<Sender<u8>>) -> Command {
         handler: make_handler(move |ctx| {
             let tx = difficulty_tx.clone();
             async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
                 let Some(arg) = ctx.arg(1) else {
                     return CommandResult::Error(
                         "Usage: /difficulty <peaceful|easy|normal|hard>".to_string(),

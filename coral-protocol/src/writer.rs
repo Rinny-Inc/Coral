@@ -66,12 +66,24 @@ impl Writer {
         self.data.extend_from_slice(&value.to_be_bytes());
     }
 
+    pub const MAX_STRING_BYTES: usize = 32767;
+
     pub fn write_string(&mut self, value: &str) {
         let bytes = value.as_bytes();
 
-        if bytes.len() > 32767 {
-            panic!("String too long: {} bytes", bytes.len());
-        }
+        let bytes = if bytes.len() > Self::MAX_STRING_BYTES {
+            let mut end = Self::MAX_STRING_BYTES;
+            while end > 0 && !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            eprintln!(
+                "[Protocol] truncating a {}-byte string to {end} bytes",
+                bytes.len()
+            );
+            &bytes[..end]
+        } else {
+            bytes
+        };
 
         self.write_varint(bytes.len() as i32);
         self.data.extend_from_slice(bytes);
@@ -104,6 +116,41 @@ mod tests {
         let mut w = Writer::new();
         w.write_varint(value);
         w.data
+    }
+
+    #[test]
+    fn an_oversized_string_truncates_instead_of_panicking() {
+        let mut w = Writer::new();
+        w.write_string(&"x".repeat(40_000));
+
+        let mut r = Reader::new(&w.data);
+        let got = r.read_string();
+        assert_eq!(got.len(), Writer::MAX_STRING_BYTES);
+        assert!(r.is_ok());
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn truncation_respects_character_boundaries() {
+        let text = "\u{e9ba}".repeat(20_000);
+        assert!(!text.is_char_boundary(Writer::MAX_STRING_BYTES));
+
+        let mut w = Writer::new();
+        w.write_string(&text);
+
+        let mut r = Reader::new(&w.data);
+        let got = r.read_string();
+        assert!(r.is_ok(), "the reader rejected the truncated string");
+        assert!(got.len() <= Writer::MAX_STRING_BYTES);
+        assert!(text.starts_with(&got), "truncation changed the content");
+    }
+
+    #[test]
+    fn a_string_at_the_limit_is_untouched() {
+        let text = "y".repeat(Writer::MAX_STRING_BYTES);
+        let mut w = Writer::new();
+        w.write_string(&text);
+        assert_eq!(Reader::new(&w.data).read_string(), text);
     }
 
     #[test]

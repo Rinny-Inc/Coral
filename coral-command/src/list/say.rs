@@ -7,6 +7,9 @@ pub fn command() -> Command {
         description: "Broadcast a message to all players",
         usage: "/say <message>",
         handler: make_handler(move |ctx| async move {
+            if !ctx.is_op {
+                return CommandResult::Error("No permission.".to_string());
+            }
             if ctx.args.len() < 2 {
                 return CommandResult::Error("Usage: /say <message>".to_string());
             }

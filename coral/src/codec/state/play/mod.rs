@@ -1147,6 +1147,13 @@ pub async fn play(
                         }
 
                         if let Some(chat) = packet.as_any().downcast_ref::<ChatMessage>() {
+                            let max_len = match state.client_brand.as_deref() {
+                                Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
+                                _ => 100,
+                            };
+                            if chat.message.chars().count() > max_len {
+                                continue;
+                            }
                             if chat.message.starts_with('/') {
                                 let args: Vec<String> = chat.message[1..]
                                     .split_whitespace()
@@ -1176,13 +1183,6 @@ pub async fn play(
                                     }
                                     CommandResult::None => {}
                                 }
-                                continue;
-                            }
-                            let max_len = match state.client_brand.as_deref() {
-                                Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
-                                _ => 100,
-                            };
-                            if chat.message.len() > max_len {
                                 continue;
                             }
                             let json = ChatBuilder::chat_message(&config.chat.format, &state.name, &chat.message);

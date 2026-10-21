@@ -20,6 +20,9 @@ pub fn command(
             let registry = player_registry.clone();
             let tx = teleport_tx.clone();
             async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
                 let players = registry.get_all().await;
 
                 let find = |name: &str| {

@@ -143,7 +143,7 @@ fn chase_player(
             mob.attack_cooldown = ATTACK_COOLDOWN_TICKS;
         }
     } else {
-        let dx = tz - mob.x;
+        let dx = tx - mob.x;
         let dz = tz - mob.z;
         let horizontal = (dx * dx + dz * dz).sqrt().max(0.0001);
         let speed = mob.mob_type.movement_speed() * 0.1;

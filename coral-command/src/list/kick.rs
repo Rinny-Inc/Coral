@@ -20,6 +20,9 @@ pub fn command(
             let registry = player_registry.clone();
             let tx = kick_rq_tx.clone();
             async move {
+                if !ctx.is_op {
+                    return CommandResult::Error("No permission.".to_string());
+                }
                 let Some(target_name) = ctx.arg(1) else {
                     return CommandResult::Error("Usage: /kick <player> [reason]".to_string());
                 };
