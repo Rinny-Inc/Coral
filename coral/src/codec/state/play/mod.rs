@@ -1804,7 +1804,7 @@ pub async fn play(
         &channels.sound_tx,
     )
     .await;
-    if !player_registry.players.read().await.is_empty() {
+    if !player_registry.is_empty().await {
         channels
             .chat_tx
             .send(ChatBuilder::colored_json(

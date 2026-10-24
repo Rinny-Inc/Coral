@@ -9,6 +9,17 @@ impl Writer {
         Self { data: Vec::new() }
     }
 
+    /// Write into a buffer that already exists
+    pub fn with_buffer(mut data: Vec<u8>) -> Self {
+        data.clear();
+        Self { data }
+    }
+
+    /// Hand the buffer back to be reused by the next [`Self::with_buffer`]
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
     pub fn write_byte(&mut self, byte: u8) {
         self.data.push(byte);
     }

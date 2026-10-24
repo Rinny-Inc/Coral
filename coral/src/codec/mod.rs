@@ -16,6 +16,7 @@ use coral_protocol::packets::play::scoreboard::{
     DisplayScoreboard, ScoreboardObjective, TeamPacket, UpdateScore,
 };
 use coral_protocol::reader::ReadError;
+use coral_protocol::{CONTINUE_BIT, SEGMENT_BITS};
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::items::ids::EMPTY_HAND;
@@ -28,6 +29,7 @@ use coral_world::blocks::fluid::Fluid;
 use coral_world::playerdata::load_player_data;
 use coral_world::spawn;
 use coral_world::world::World;
+use flate2::{Compress, Compression, FlushCompress, Status};
 use futures::SinkExt;
 use tokio::net::TcpStream;
 use tokio::sync::{RwLock, broadcast::Sender};
@@ -77,14 +79,60 @@ pub struct Codec {
     pub encryption: Option<Encryption>,
     compression_threshold: i32,
     decrypted_buf: BytesMut,
+    encode_buf: Vec<u8>,
+    compress_buf: Vec<u8>,
+    compressor: Compress,
 }
 
-fn zlib_compress(data: &[u8]) -> Vec<u8> {
-    use flate2::write::ZlibEncoder;
-    use std::io::Write;
-    let mut encoder = ZlibEncoder::new(Vec::new(), Default::default());
-    encoder.write_all(data).unwrap();
-    encoder.finish().unwrap()
+const MAX_VARINT_BYTES: usize = 5;
+
+fn zlib_compress_into(state: &mut Compress, data: &[u8], out: &mut Vec<u8>) {
+    state.reset();
+    out.reserve(data.len() / 64 + 64);
+
+    loop {
+        if out.len() == out.capacity() {
+            out.reserve(out.capacity().max(64));
+        }
+        let consumed = state.total_in() as usize;
+        let status = state
+            .compress_vec(&data[consumed..], out, FlushCompress::Finish)
+            .expect("in-memory deflate cannot fail");
+        if status == Status::StreamEnd {
+            return;
+        }
+        if state.total_in() as usize == consumed {
+            out.reserve(out.capacity().max(64));
+        }
+    }
+}
+
+fn put_varint(dst: &mut BytesMut, value: i32) -> usize {
+    let mut buf = [0u8; MAX_VARINT_BYTES];
+    let mut value = value as u32;
+    let mut n = 0;
+    loop {
+        if value & !(SEGMENT_BITS as u32) == 0 {
+            buf[n] = value as u8;
+            n += 1;
+            break;
+        }
+        buf[n] = ((value & SEGMENT_BITS as u32) as u8) | CONTINUE_BIT;
+        n += 1;
+        value >>= 7;
+    }
+    dst.extend_from_slice(&buf[..n]);
+    n
+}
+
+fn varint_len(value: i32) -> usize {
+    let mut value = value as u32;
+    let mut n = 1;
+    while value & !(SEGMENT_BITS as u32) != 0 {
+        value >>= 7;
+        n += 1;
+    }
+    n
 }
 
 impl Decoder for Codec {
@@ -197,51 +245,49 @@ impl Decoder for Codec {
     }
 }
 
-impl Encoder<Box<dyn PacketOut>> for Codec {
+impl<P: PacketOut> Encoder<P> for Codec {
     type Error = std::io::Error;
 
-    fn encode(&mut self, item: Box<dyn PacketOut>, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut writer = Writer::new();
+    fn encode(&mut self, item: P, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let mut writer = Writer::with_buffer(std::mem::take(&mut self.encode_buf));
         item.encode(&mut writer)?;
-        let data = writer.data;
 
-        let body = if self.compression_threshold >= 0 {
-            if data.len() >= self.compression_threshold as usize {
-                let compressed = zlib_compress(&data);
-                let mut w = Writer::new();
-                w.write_varint(data.len() as i32);
-                w.data.extend_from_slice(&compressed);
-                w.data
-            } else {
-                let mut w = Writer::new();
-                w.write_varint(0);
-                w.data.extend_from_slice(&data);
-                w.data
-            }
+        self.encode_buf = writer.into_data();
+
+        let start = dst.len();
+        let body = &self.encode_buf;
+
+        if self.compression_threshold < 0 {
+            dst.reserve(MAX_VARINT_BYTES + body.len());
+            put_varint(dst, body.len() as i32);
+            dst.extend_from_slice(body);
+        } else if body.len() >= self.compression_threshold as usize {
+            self.compress_buf.clear();
+            let mut header = Writer::with_buffer(std::mem::take(&mut self.compress_buf));
+            header.write_varint(body.len() as i32);
+            self.compress_buf = header.into_data();
+            zlib_compress_into(&mut self.compressor, body, &mut self.compress_buf);
+
+            dst.reserve(MAX_VARINT_BYTES + self.compress_buf.len());
+            put_varint(dst, self.compress_buf.len() as i32);
+            dst.extend_from_slice(&self.compress_buf);
         } else {
-            data
-        };
-
-        let mut length_writer = Writer::new();
-        length_writer.write_varint(body.len() as i32);
-
-        let mut frame = length_writer.data;
-        frame.extend_from_slice(&body);
-
-        if let Some(enc) = &mut self.encryption {
-            enc.encrypt(&mut frame);
+            let payload_len = 1 + body.len();
+            dst.reserve(varint_len(payload_len as i32) + payload_len);
+            put_varint(dst, payload_len as i32);
+            dst.extend_from_slice(&[0]);
+            dst.extend_from_slice(body);
         }
 
-        dst.reserve(frame.len()); // reserve memory
-        dst.extend_from_slice(&frame);
+        if let Some(enc) = &mut self.encryption {
+            enc.encrypt(&mut dst[start..]);
+        }
         Ok(())
     }
 }
 
 async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Codec>, packet: P) {
-    let boxed_packet: Box<dyn PacketOut> = Box::new(packet);
-
-    if let Err(e) = framed.send(boxed_packet).await
+    if let Err(e) = framed.send(packet).await
         && !is_normal_disconnect(&e)
     {
         eprintln!("Failed to cleanly dispatch packet frame: {e}");
@@ -744,6 +790,9 @@ pub async fn process(socket: TcpStream, ctx: ServerContext) {
         encryption: None,
         compression_threshold: -1,
         decrypted_buf: BytesMut::new(),
+        encode_buf: Vec::new(),
+        compress_buf: Vec::new(),
+        compressor: Compress::new(Compression::default(), true),
     };
     let peer_ip = socket.peer_addr().ok();
     let mut framed = Framed::new(socket, codec);
@@ -1252,4 +1301,180 @@ fn is_normal_disconnect(e: &std::io::Error) -> bool {
             | std::io::ErrorKind::UnexpectedEof
             | std::io::ErrorKind::InvalidData
     )
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use coral_protocol::encryption::Encryption;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct Blob {
+        bytes: Vec<u8>,
+    }
+
+    impl Blob {
+        fn repetitive(len: usize) -> Self {
+            Self {
+                bytes: vec![0xAB; len],
+            }
+        }
+
+        fn varied(len: usize) -> Self {
+            let mut state = 0x1234_5678u32;
+            let bytes = (0..len)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (state >> 24) as u8
+                })
+                .collect();
+            Self { bytes }
+        }
+    }
+
+    impl PacketOut for Blob {
+        fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
+            writer.write_varint(self.bytes.len() as i32);
+            writer.data.extend_from_slice(&self.bytes);
+            Ok(())
+        }
+    }
+
+    fn codec(compression_threshold: i32, encrypted: bool) -> Codec {
+        Codec {
+            registry: Arc::new(PacketRegistry::new()),
+            state: EnumProtocol::Play,
+            encryption: encrypted.then(|| Encryption::new(&[7u8; 16])),
+            compression_threshold,
+            decrypted_buf: BytesMut::new(),
+            encode_buf: Vec::new(),
+            compress_buf: Vec::new(),
+            compressor: Compress::new(Compression::default(), true),
+        }
+    }
+
+    fn oracle_frame(
+        packet: &Blob,
+        compression_threshold: i32,
+        encryption: &mut Option<Encryption>,
+    ) -> Vec<u8> {
+        fn zlib_compress(data: &[u8]) -> Vec<u8> {
+            use flate2::write::ZlibEncoder;
+            use std::io::Write;
+            let mut encoder = ZlibEncoder::new(Vec::new(), Default::default());
+            encoder.write_all(data).unwrap();
+            encoder.finish().unwrap()
+        }
+
+        let mut writer = Writer::new();
+        packet.encode(&mut writer).unwrap();
+        let data = writer.data;
+
+        let body = if compression_threshold >= 0 {
+            if data.len() >= compression_threshold as usize {
+                let compressed = zlib_compress(&data);
+                let mut w = Writer::new();
+                w.write_varint(data.len() as i32);
+                w.data.extend_from_slice(&compressed);
+                w.data
+            } else {
+                let mut w = Writer::new();
+                w.write_varint(0);
+                w.data.extend_from_slice(&data);
+                w.data
+            }
+        } else {
+            data
+        };
+
+        let mut length_writer = Writer::new();
+        length_writer.write_varint(body.len() as i32);
+        let mut frame = length_writer.data;
+        frame.extend_from_slice(&body);
+
+        if let Some(enc) = encryption {
+            enc.encrypt(&mut frame);
+        }
+        frame
+    }
+
+    /// Sizes that straddle every boundary
+    fn sizes() -> Vec<usize> {
+        vec![
+            0, 1, 2, 125, 126, 127, 128, 129, 255, 256, 257, 1000, 16383, 16384,
+        ]
+    }
+
+    fn check(compression_threshold: i32, encrypted: bool) {
+        let mut codec = codec(compression_threshold, encrypted);
+        let mut oracle_enc = encrypted.then(|| Encryption::new(&[7u8; 16]));
+        let mut dst = BytesMut::new();
+        let mut expected: Vec<u8> = Vec::new();
+
+        for size in sizes() {
+            for packet in [Blob::repetitive(size), Blob::varied(size)] {
+                expected.extend_from_slice(&oracle_frame(
+                    &packet,
+                    compression_threshold,
+                    &mut oracle_enc,
+                ));
+                codec.encode(packet, &mut dst).unwrap();
+            }
+        }
+
+        assert_eq!(
+            dst.len(),
+            expected.len(),
+            "stream length differs (threshold {compression_threshold}, encrypted {encrypted})"
+        );
+        assert_eq!(
+            &dst[..],
+            &expected[..],
+            "stream differs (threshold {compression_threshold}, encrypted {encrypted})"
+        );
+    }
+
+    #[test]
+    fn it_frames_exactly_as_before_with_compression_off() {
+        check(-1, false);
+    }
+
+    #[test]
+    fn it_frames_exactly_as_before_below_and_above_the_threshold() {
+        check(256, false);
+    }
+
+    #[test]
+    fn it_frames_exactly_as_before_when_everything_compresses() {
+        check(0, false);
+    }
+
+    #[test]
+    fn it_frames_exactly_as_before_under_encryption() {
+        check(-1, true);
+        check(256, true);
+    }
+
+    #[test]
+    fn the_scratch_buffers_are_reused_rather_than_regrown() {
+        let mut codec = codec(256, false);
+        let mut dst = BytesMut::new();
+
+        codec.encode(Blob::varied(4096), &mut dst).unwrap();
+        let (body_cap, compressed_cap) =
+            (codec.encode_buf.capacity(), codec.compress_buf.capacity());
+        assert!(body_cap >= 4096, "the body buffer did not grow");
+
+        for _ in 0..50 {
+            codec.encode(Blob::varied(4096), &mut dst).unwrap();
+        }
+
+        assert_eq!(codec.encode_buf.capacity(), body_cap, "body buffer regrew");
+        assert_eq!(
+            codec.compress_buf.capacity(),
+            compressed_cap,
+            "compression buffer regrew"
+        );
+    }
 }
