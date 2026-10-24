@@ -80,7 +80,7 @@ pub async fn open_tile_entity_window(
         chest_anim_tx.send((pos.0, pos.1, pos.2, *viewers)).ok();
         sound_tx
             .send((
-                "random.chestopen".to_string(),
+                "random.chestopen",
                 pos.0 as f64 + 0.5,
                 pos.1 as f64 + 0.5,
                 pos.2 as f64 + 0.5,
@@ -190,7 +190,7 @@ pub async fn close_tile_entity_window(
     if viewers == 0 {
         sound_tx
             .send((
-                "random.chestclosed".to_string(),
+                "random.chestclosed",
                 pos.0 as f64 + 0.5,
                 pos.1 as f64 + 0.5,
                 pos.2 as f64 + 0.5,

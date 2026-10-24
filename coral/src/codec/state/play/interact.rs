@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{Arc, atomic::Ordering::Relaxed},
     time::Instant,
 };
@@ -32,7 +32,7 @@ use tokio_util::codec::Framed;
 use crate::{
     Channels,
     codec::{Codec, PlayerState, send_packet, state::play::window_ops::open_tile_entity_window},
-    fluid_sim::queue_fluid_update,
+    fluid_sim::{FluidQueue, queue_fluid_update},
 };
 
 /// Return true if the itme interaction went well
@@ -140,7 +140,7 @@ pub async fn try_with_item_on_block(
     item_registry: &Arc<ItemRegistry>,
     world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-    fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    fluid_queue: &Arc<RwLock<FluidQueue>>,
     channels: &Channels,
     clicked: Option<(i32, i32, i32)>,
 ) -> bool {
@@ -159,7 +159,7 @@ pub async fn try_with_item_on_block(
             let hit = match clicked {
                 Some(l) => Some((l.0, l.1, l.2)),
                 None => {
-                    let (x, y, z) = p.get_head_direction();
+                    let (x, y, z) = p.get_head_position();
                     raytrace_for_fluid(x, y, z, p.yaw, p.pitch, 6.0, world).await
                 }
             };
@@ -170,9 +170,13 @@ pub async fn try_with_item_on_block(
                 return false;
             };
 
-            let y = hit.1 + 1;
+            let (bx, by, bz) = hit;
+            if !(0..=255).contains(&by) {
+                return false;
+            }
 
-            let target = world.get(hit.0, y as u8, hit.2).await;
+            let target = world.get(bx, by as u8, bz).await;
+
             println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
 
             let Some(fluid) = Fluid::from_block_id(target.id) else {
@@ -186,11 +190,11 @@ pub async fn try_with_item_on_block(
 
             println!("[BUCKET] confirmed source, removing");
             // remove the source
-            world.set(place.x, y as u8, place.z, Block::air()).await;
-            channels.block_tx.send((place.x, y, place.z, 0, 0)).ok();
+            world.set(bx, by as u8, bz, Block::air()).await;
+            channels.block_tx.send((bx, by, bz, 0, 0)).ok();
 
             // recalculate neighbor fluids (it may now drain)
-            queue_fluid_update(place.x, y, place.z, fluid_queue).await;
+            queue_fluid_update(bx, by, bz, fluid_queue).await;
             println!(
                 "[BUCKET] queued, queue len = {}",
                 fluid_queue.read().await.len()
@@ -222,10 +226,10 @@ pub async fn try_with_item_on_block(
             channels
                 .sound_tx
                 .send((
-                    sound.to_string(),
-                    place.x as f64 + 0.5,
-                    y as f64 + 0.5,
-                    place.z as f64 + 0.5,
+                    sound,
+                    bx as f64 + 0.5,
+                    by as f64 + 0.5,
+                    bz as f64 + 0.5,
                     1.0,
                     63,
                 ))
@@ -354,7 +358,7 @@ pub async fn try_with_item_on_block(
 
         channels
             .sound_tx
-            .send((sound.to_string(), tx as f64, ty as f64, tz as f64, 1.0, 63))
+            .send((sound, tx as f64, ty as f64, tz as f64, 1.0, 63))
             .ok();
         return true;
     }
@@ -371,7 +375,7 @@ pub async fn try_with_block(
     item_registry: &Arc<ItemRegistry>,
     world: &Arc<World>,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
-    fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    fluid_queue: &Arc<RwLock<FluidQueue>>,
     channels: &Channels,
 ) -> bool {
     if place.face.is_none() {
@@ -518,4 +522,69 @@ async fn raytrace_for_fluid(
     }
 
     None
+}
+
+#[cfg(test)]
+mod raytrace_for_fluid_tests {
+    use super::raytrace_for_fluid;
+    use coral_world::{blocks::Block, generator::VoidWorldGenerator, world::World};
+    use std::sync::Arc;
+
+    const WATER_SOURCE: u8 = 9;
+
+    fn void_world() -> Arc<World> {
+        Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
+    }
+
+    #[tokio::test]
+    async fn the_trace_starts_from_the_eye_position_not_the_origin() {
+        let world = void_world();
+        world.set(300, 62, -140, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(300.5, 65.62, -139.5, 0.0, 90.0, 6.0, &world).await;
+        assert_eq!(hit, Some((300, 62, -140)));
+
+        let as_direction = raytrace_for_fluid(0.0, -1.0, 0.0, 0.0, 90.0, 6.0, &world).await;
+        assert_eq!(as_direction, None, "the old call could never have hit");
+    }
+
+    #[tokio::test]
+    async fn the_hit_is_the_fluid_block_itself() {
+        let world = void_world();
+        world.set(0, 60, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world)
+            .await
+            .expect("the trace should reach the water");
+        let block = world.get(hit.0, hit.1 as u8, hit.2).await;
+        assert_eq!(block.id, WATER_SOURCE, "hit a block that is not the fluid");
+    }
+
+    #[tokio::test]
+    async fn a_solid_block_stops_the_trace() {
+        let world = void_world();
+        world.set(0, 62, 0, Block::new(WATER_SOURCE, 0)).await;
+        world.set(0, 63, 0, Block::new(1, 0)).await; // stone lid
+
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        assert_eq!(hit, None);
+    }
+
+    #[tokio::test]
+    async fn flowing_water_is_not_a_source() {
+        let world = void_world();
+        world.set(0, 62, 0, Block::new(WATER_SOURCE, 3)).await;
+
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        assert_eq!(hit, None);
+    }
+
+    #[tokio::test]
+    async fn nothing_in_range_is_not_a_hit() {
+        let world = void_world();
+        world.set(0, 20, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        assert_eq!(hit, None, "the water is well past the 6-block reach");
+    }
 }

@@ -10,7 +10,7 @@ use coral_server::{
     items::ItemRegistry,
     player::{Player, registry::PlayerRegistry},
 };
-use coral_types::GameMode;
+use coral_types::{GameMode, ext::TicksExt};
 use coral_world::world::World;
 use rand::RngExt;
 use tokio::{
@@ -142,41 +142,47 @@ async fn tick_item_pickup(
 ) {
     let mut items = item_positions.write().await;
     let mut picked_up = vec![];
+    let mut partial: Vec<(i32, u8)> = vec![];
+
+    let player_bb = EntityBounds::player(state.is_sneaking);
+    let item_bb = EntityBounds::item();
+    let ages: HashMap<i32, u64> = {
+        let spawn_time = item_spawn_times.read().await;
+        spawn_time
+            .iter()
+            .map(|(eid, t)| (*eid, t.elapsed().as_ticks()))
+            .collect()
+    };
 
     for (eid, (_item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-        let player_bb = EntityBounds::player(state.is_sneaking);
-
-        let item_bb = EntityBounds::item();
-
         if player_bb.intersects(player.x, player.y, player.z, &item_bb, *ix, *iy, *iz) {
-            let age = {
-                let spawn_time = item_spawn_times.read().await;
-                spawn_time
-                    .get(eid)
-                    .map(|t| t.elapsed().as_secs_f32())
-                    .unwrap_or(0.0)
-            };
+            let age = ages.get(eid).copied().unwrap_or(0);
 
-            if age < 0.5 {
+            if age < 5 {
                 continue;
             }
 
-            let slot_index = state
-                .inventory
-                .add_item_get_slot(*item_id, *count, *metadata);
-            if let Some((packet_slot, internal_idx)) = slot_index {
-                picked_up.push(*eid);
+            let outcome = state.inventory.add_item(*item_id, *count, *metadata);
+            if outcome.touched.is_empty() {
+                continue;
+            }
 
-                let actual_count = state.inventory.slots[internal_idx]
+            if outcome.leftover == 0 {
+                picked_up.push(*eid);
+            } else {
+                partial.push((*eid, outcome.leftover));
+            }
+            for (packet_slot, internal_idx) in &outcome.touched {
+                let actual_count = state.inventory.slots[*internal_idx]
                     .as_ref()
                     .map(|s| s.count)
-                    .unwrap_or(*count);
+                    .unwrap_or(0);
 
                 send_packet(
                     framed,
                     SetSlot {
                         window_id: 0,
-                        slot: packet_slot,
+                        slot: *packet_slot,
                         item_id: *item_id,
                         count: actual_count,
                         metadata: *metadata,
@@ -184,7 +190,7 @@ async fn tick_item_pickup(
                 )
                 .await;
 
-                if internal_idx == state.held_slot as usize {
+                if *internal_idx == state.held_slot as usize {
                     state.held_item = item_registry.resolve(*item_id);
                     player_registry
                         .update_held_item(&state.uuid, *item_id)
@@ -194,20 +200,23 @@ async fn tick_item_pickup(
             }
         }
     }
+    for (eid, remaining) in partial {
+        if let Some(entry) = items.get_mut(&eid) {
+            entry.5 = remaining;
+        }
+    }
+    if !picked_up.is_empty() {
+        let mut spawn_times = item_spawn_times.write().await;
+        for eid in &picked_up {
+            spawn_times.remove(eid);
+        }
+    }
     for eid in picked_up {
         items.remove(&eid);
-        item_spawn_times.write().await.remove(&eid);
         pickup_tx.send((state.entity_id, state.uuid, eid)).ok();
-        let pitch = 63 + (rand::rng().random_range(-12i8..=12) as i16) as u8;
+        let pitch = (63i16 + rand::rng().random_range(-12i16..=12)).clamp(0, 255) as u8;
         sound_tx
-            .send((
-                "random.pop".to_string(),
-                player.x,
-                player.y,
-                player.z,
-                0.2,
-                pitch,
-            ))
+            .send(("random.pop", player.x, player.y, player.z, 0.2, pitch))
             .ok();
     }
 }
@@ -258,14 +267,7 @@ async fn tick_eating(
 
             channels
                 .sound_tx
-                .send((
-                    "random.burp".to_string(),
-                    player.x,
-                    player.y,
-                    player.z,
-                    0.5,
-                    63,
-                ))
+                .send(("random.burp", player.x, player.y, player.z, 0.5, 63))
                 .ok();
         }
     }
@@ -289,14 +291,7 @@ async fn tick_drowning(
             if state.tick_count % 20 == 0 {
                 let died = state.damage_player(framed, 2.0, player_registry).await;
                 sound_tx
-                    .send((
-                        "damage.drown".to_string(),
-                        player.x,
-                        player.y,
-                        player.z,
-                        1.0,
-                        63,
-                    ))
+                    .send(("damage.drown", player.x, player.y, player.z, 1.0, 63))
                     .ok();
                 if died {
                     chat_tx

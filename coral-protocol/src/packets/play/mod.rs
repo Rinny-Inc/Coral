@@ -214,6 +214,7 @@ pub struct WorldParticles {
     pub offset_z: f32,
     pub particle_data: f32,
     pub count: i32,
+    pub extra: [i32; 2],
 }
 impl PacketOut for WorldParticles {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
@@ -228,6 +229,14 @@ impl PacketOut for WorldParticles {
         writer.write_f32(self.offset_z);
         writer.write_f32(self.particle_data);
         writer.write_i32(self.count);
+        match self.particle_id {
+            36 => {
+                writer.write_varint(self.extra[0]);
+                writer.write_varint(self.extra[1]);
+            }
+            37 | 38 => writer.write_varint(self.extra[0]),
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -379,5 +388,73 @@ impl PacketOut for Statistics {
             writer.write_varint(*value);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod particle_tests {
+    use super::*;
+    use crate::reader::Reader;
+    use crate::writer::Writer;
+
+    fn particles(id: i32, extra: [i32; 2]) -> Vec<u8> {
+        let mut w = Writer::new();
+        WorldParticles {
+            particle_id: id,
+            long_distance: false,
+            x: 1.0,
+            y: 2.0,
+            z: 3.0,
+            offset_x: 0.3,
+            offset_y: 0.3,
+            offset_z: 0.3,
+            particle_data: 0.0,
+            count: 8,
+            extra,
+        }
+        .encode(&mut w)
+        .unwrap();
+        w.data
+    }
+
+    const FIXED: usize = 1 + 4 + 1 + (6 * 4) + 4 + 4;
+
+    #[test]
+    fn blockcrack_carries_its_block_state() {
+        let stone_with_meta = 1 | (3 << 12);
+        let data = particles(37, [stone_with_meta, 0]);
+
+        let mut r = Reader::new(&data);
+        assert_eq!(r.read_varint(), 0x2A);
+        let mut r = Reader::new(&data[FIXED..]);
+        assert_eq!(r.read_varint(), stone_with_meta);
+        assert!(r.is_ok());
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn iconcrack_carries_two_values() {
+        let data = particles(36, [278, 5]);
+        let mut r = Reader::new(&data[FIXED..]);
+        assert_eq!(r.read_varint(), 278);
+        assert_eq!(r.read_varint(), 5);
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn blockdust_carries_one_value() {
+        let data = particles(38, [12, 0]);
+        assert_eq!(data.len(), FIXED + 1);
+    }
+
+    #[test]
+    fn ordinary_particles_end_after_the_count() {
+        for id in [0, 1, 2, 30, 35, 39, 40] {
+            assert_eq!(
+                particles(id, [99, 99]).len(),
+                FIXED,
+                "id {id} changed length"
+            );
+        }
     }
 }

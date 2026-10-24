@@ -171,7 +171,7 @@ pub async fn pre_play(
                                         kick(framed, "Unsupported version. Use 1.8.x").await;
                                         return None;
                                     }
-                                    if player_registry.get_online_count().await > config.server.max_players {
+                                    if player_registry.get_online_count().await >= config.server.max_players {
                                         kick(framed, "Server is full!").await;
                                         return None;
                                     }

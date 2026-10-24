@@ -43,7 +43,7 @@ impl BlockBehavior for Grass {
         2
     }
     fn hardness(&self) -> f32 {
-        0.6
+        0.55
     }
     fn required_tool(&self) -> ToolKind {
         ToolKind::Shovel
@@ -56,7 +56,7 @@ impl BlockBehavior for Dirt {
         3
     }
     fn hardness(&self) -> f32 {
-        0.5
+        0.45
     }
     fn required_tool(&self) -> ToolKind {
         ToolKind::Shovel

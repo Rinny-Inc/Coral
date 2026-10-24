@@ -172,7 +172,7 @@ pub struct EntityEffect {
 impl PacketOut for EntityEffect {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x1D);
-        writer.write_i32(self.entity_id);
+        writer.write_varint(self.entity_id);
         writer.write_byte(self.effect_id);
         writer.write_byte(self.amplifier);
         writer.write_varint(self.duration);
@@ -189,8 +189,76 @@ pub struct RemoveEntityEffect {
 impl PacketOut for RemoveEntityEffect {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x1E);
-        writer.write_i32(self.entity_id);
+        writer.write_varint(self.entity_id);
         writer.write_byte(self.effect_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod effect_packet_tests {
+    use super::*;
+    use crate::packets::PacketOut;
+    use crate::reader::Reader;
+    use crate::writer::Writer;
+
+    #[test]
+    fn entity_effect_fields_line_up() {
+        let mut w = Writer::new();
+        EntityEffect {
+            entity_id: 42,
+            effect_id: 19,
+            amplifier: 1,
+            duration: 600,
+            hide_particles: false,
+        }
+        .encode(&mut w)
+        .unwrap();
+
+        let mut r = Reader::new(&w.data);
+        assert_eq!(r.read_varint(), 0x1D);
+        assert_eq!(r.read_varint(), 42);
+        assert_eq!(r.read_byte(), 19);
+        assert_eq!(r.read_byte(), 1);
+        assert_eq!(r.read_varint(), 600);
+        assert!(!r.read_bool());
+        assert!(r.is_ok());
+        assert_eq!(r.remaining(), 0, "trailing bytes mean a width is wrong");
+    }
+
+    #[test]
+    fn remove_entity_effect_fields_line_up() {
+        let mut w = Writer::new();
+        RemoveEntityEffect {
+            entity_id: 42,
+            effect_id: 19,
+        }
+        .encode(&mut w)
+        .unwrap();
+
+        let mut r = Reader::new(&w.data);
+        assert_eq!(r.read_varint(), 0x1E);
+        assert_eq!(r.read_varint(), 42);
+        assert_eq!(r.read_byte(), 19);
+        assert!(r.is_ok());
+        assert_eq!(r.remaining(), 0);
+    }
+
+    #[test]
+    fn a_large_entity_id_round_trips() {
+        let mut w = Writer::new();
+        EntityEffect {
+            entity_id: 300_000,
+            effect_id: 1,
+            amplifier: 0,
+            duration: 1,
+            hide_particles: true,
+        }
+        .encode(&mut w)
+        .unwrap();
+
+        let mut r = Reader::new(&w.data);
+        r.read_varint();
+        assert_eq!(r.read_varint(), 300_000);
     }
 }

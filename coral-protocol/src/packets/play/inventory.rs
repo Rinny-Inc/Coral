@@ -158,6 +158,16 @@ pub struct ItemStack {
     pub metadata: i16,
     pub durability: i16,
 }
+
+/// Result of [`Inventory::add_item`]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct AddOutcome {
+    /// `(packet_slot, internal_index)` for every slot changed
+    pub touched: Vec<(i16, usize)>,
+    /// How much of the stack did not fit
+    pub leftover: u8,
+}
+
 pub struct Inventory {
     pub slots: [Option<ItemStack>; 44],
 }
@@ -195,36 +205,48 @@ impl Inventory {
         Some(stack) // didnt fit
     }
 
-    pub fn add_item_get_slot(
-        &mut self,
-        item_id: i16,
-        count: u8,
-        metadata: i16,
-    ) -> Option<(i16, usize)> {
+    pub fn add_item(&mut self, item_id: i16, count: u8, metadata: i16) -> AddOutcome {
+        let mut remaining = count;
+        let mut touched = Vec::new();
+
         // stack with existing
-        for (i, slot) in self.slots.iter_mut().enumerate() {
+        for (i, slot) in self.slots.iter_mut().enumerate().take(36) {
+            if remaining == 0 {
+                break;
+            }
             if let Some(s) = slot
                 && s.item_id == item_id
                 && s.metadata == metadata
                 && s.count < 64
             {
-                s.count += count.min(64 - s.count);
-                return Some((Self::internal_to_packet(i), i));
+                let moved = (64 - s.count).min(remaining);
+                s.count += moved;
+                remaining -= moved;
+                touched.push((Self::internal_to_packet(i), i));
             }
         }
-        // empty slot
+        // then empty slot
         for (i, slot) in self.slots.iter_mut().enumerate().take(36) {
+            if remaining == 0 {
+                break;
+            }
             if slot.is_none() {
+                let placed = remaining.min(64);
                 *slot = Some(ItemStack {
                     item_id,
-                    count,
+                    count: placed,
                     metadata,
                     durability: 0,
                 });
-                return Some((Self::internal_to_packet(i), i));
+                remaining -= placed;
+                touched.push((Self::internal_to_packet(i), i));
             }
         }
-        None
+
+        AddOutcome {
+            touched,
+            leftover: remaining,
+        }
     }
 
     fn internal_to_packet(index: usize) -> i16 {
@@ -235,6 +257,12 @@ impl Inventory {
             _ => index as i16,
         }
     }
+
+    pub const ARMOR_HELMET: usize = 36;
+    pub const ARMOR_CHESTPLATE: usize = 37;
+    pub const ARMOR_LEGGINGS: usize = 38;
+    pub const ARMOR_BOOTS: usize = 39;
+    pub const ARMOR_SLOTS: std::ops::RangeInclusive<usize> = 36..=39;
 
     pub fn packet_to_internal(slot: i16) -> Option<usize> {
         match slot {
@@ -408,5 +436,164 @@ impl PacketOut for WindowProperty {
         writer.write_i16(self.property);
         writer.write_i16(self.value);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod armor_slot_tests {
+    use super::*;
+
+    #[test]
+    fn packet_armor_slots_map_to_the_named_constants() {
+        assert_eq!(
+            Inventory::packet_to_internal(5),
+            Some(Inventory::ARMOR_HELMET)
+        );
+        assert_eq!(
+            Inventory::packet_to_internal(6),
+            Some(Inventory::ARMOR_CHESTPLATE)
+        );
+        assert_eq!(
+            Inventory::packet_to_internal(7),
+            Some(Inventory::ARMOR_LEGGINGS)
+        );
+        assert_eq!(
+            Inventory::packet_to_internal(8),
+            Some(Inventory::ARMOR_BOOTS)
+        );
+    }
+
+    #[test]
+    fn the_old_range_was_the_hotbar_not_the_armor() {
+        for packet_slot in 41..=44i16 {
+            let idx = Inventory::packet_to_internal(packet_slot).unwrap();
+            assert!((5..=8).contains(&idx), "packet {packet_slot} -> {idx}");
+            assert!(
+                !Inventory::ARMOR_SLOTS.contains(&idx),
+                "packet {packet_slot} is hotbar, not armor"
+            );
+        }
+        // and no armor click ever landed in the old range
+        for packet_slot in 5..=8i16 {
+            let idx = Inventory::packet_to_internal(packet_slot).unwrap();
+            assert!(
+                !(5..=8).contains(&idx),
+                "armor packet {packet_slot} -> {idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_armor_range_matches_the_constants() {
+        assert!(Inventory::ARMOR_SLOTS.contains(&Inventory::ARMOR_HELMET));
+        assert!(Inventory::ARMOR_SLOTS.contains(&Inventory::ARMOR_BOOTS));
+        assert!(!Inventory::ARMOR_SLOTS.contains(&35));
+        assert!(!Inventory::ARMOR_SLOTS.contains(&40));
+    }
+
+    #[test]
+    fn clicking_an_armor_slot_is_detected() {
+        for packet_slot in 5..=8i16 {
+            let idx = Inventory::packet_to_internal(packet_slot).unwrap();
+            assert!(Inventory::ARMOR_SLOTS.contains(&idx));
+        }
+        // and a hotbar click is not
+        let hotbar = Inventory::packet_to_internal(36).unwrap();
+        assert!(!Inventory::ARMOR_SLOTS.contains(&hotbar));
+    }
+}
+
+#[cfg(test)]
+mod add_item_tests {
+    use super::*;
+
+    fn stack(id: i16, count: u8) -> ItemStack {
+        ItemStack {
+            item_id: id,
+            count,
+            metadata: 0,
+            durability: 0,
+        }
+    }
+
+    #[test]
+    fn the_remainder_spills_into_the_next_slot_instead_of_vanishing() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(stack(1, 60));
+
+        let out = inv.add_item(1, 10, 0);
+        assert_eq!(out.leftover, 0, "nothing may be destroyed");
+        assert_eq!(inv.slots[0].as_ref().unwrap().count, 64);
+        let spilled: u8 = inv.slots[1..].iter().flatten().map(|s| s.count).sum();
+        assert_eq!(spilled, 6);
+        assert_eq!(out.touched.len(), 2);
+    }
+
+    #[test]
+    fn pickups_never_touch_armor_or_crafting_slots() {
+        let mut inv = Inventory::new();
+        inv.slots[Inventory::ARMOR_HELMET] = Some(stack(1, 1));
+        inv.slots[40] = Some(stack(1, 1)); // crafting
+
+        let out = inv.add_item(1, 5, 0);
+        assert_eq!(
+            inv.slots[Inventory::ARMOR_HELMET].as_ref().unwrap().count,
+            1
+        );
+        assert_eq!(inv.slots[40].as_ref().unwrap().count, 1);
+        assert!(out.touched.iter().all(|(_, i)| *i < 36));
+        assert_eq!(out.leftover, 0);
+    }
+
+    #[test]
+    fn a_full_inventory_reports_the_whole_stack_as_leftover() {
+        let mut inv = Inventory::new();
+        for i in 0..36 {
+            inv.slots[i] = Some(stack(2, 64));
+        }
+        let out = inv.add_item(1, 5, 0);
+        assert_eq!(out.leftover, 5);
+        assert!(out.touched.is_empty(), "nothing should have changed");
+    }
+
+    #[test]
+    fn a_partly_full_inventory_takes_what_fits() {
+        let mut inv = Inventory::new();
+        for i in 0..36 {
+            inv.slots[i] = Some(stack(1, 64));
+        }
+        inv.slots[35] = Some(stack(1, 60));
+
+        let out = inv.add_item(1, 10, 0);
+        assert_eq!(out.leftover, 6);
+        assert_eq!(inv.slots[35].as_ref().unwrap().count, 64);
+    }
+
+    #[test]
+    fn metadata_must_match_to_stack() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(ItemStack {
+            item_id: 35,
+            count: 10,
+            metadata: 1,
+            durability: 0,
+        });
+        let out = inv.add_item(35, 5, 14);
+        assert_eq!(
+            inv.slots[0].as_ref().unwrap().count,
+            10,
+            "different metadata merged"
+        );
+        assert_eq!(out.leftover, 0);
+        assert_eq!(inv.slots[1].as_ref().unwrap().metadata, 14);
+    }
+
+    #[test]
+    fn an_empty_inventory_takes_a_whole_stack() {
+        let mut inv = Inventory::new();
+        let out = inv.add_item(1, 64, 0);
+        assert_eq!(out.leftover, 0);
+        assert_eq!(out.touched.len(), 1);
+        assert_eq!(inv.slots[0].as_ref().unwrap().count, 64);
     }
 }

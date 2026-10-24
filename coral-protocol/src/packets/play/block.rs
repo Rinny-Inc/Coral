@@ -16,12 +16,24 @@ impl BlockPosition {
         Self { x, y, z }
     }
 
-    pub fn from_long(position: i64) -> Self {
-        Self {
-            x: (position >> 38) as i32,
-            y: ((position >> 26) & 0xFFF) as u8,
-            z: (position << 38 >> 38) as i32,
+    pub fn from_long_checked(position: i64) -> Option<Self> {
+        let y = (position >> 26) & 0xFFF;
+        if !(0..=255).contains(&y) {
+            return None;
         }
+        Some(Self {
+            x: (position >> 38) as i32,
+            y: y as u8,
+            z: (position << 38 >> 38) as i32,
+        })
+    }
+
+    pub fn from_long(position: i64) -> Self {
+        Self::from_long_checked(position).unwrap_or(Self {
+            x: (position >> 38) as i32,
+            y: 255,
+            z: (position << 38 >> 38) as i32,
+        })
     }
     pub fn to_long(&self) -> i64 {
         ((self.x as i64 & 0x3FFFFFF) << 38)
@@ -137,7 +149,12 @@ impl PacketIn for PlayerDig {
         let mut reader = Reader::new(buf);
         let status = reader.read_byte();
         let position = reader.read_long();
-        let BlockPosition { x, y, z } = BlockPosition::from_long(position);
+        let Some(BlockPosition { x, y, z }) = BlockPosition::from_long_checked(position) else {
+            return Err(Error::new(
+                std::io::ErrorKind::InvalidData,
+                "PlayerDig is outside the world",
+            ));
+        };
         let face = BlockFace::try_from(reader.read_byte()).ok();
         Ok(PlayerDig {
             status: DigStatus::try_from(status).map_err(|e| {
@@ -164,8 +181,22 @@ impl PacketIn for PlayerBlockPlacement {
     {
         let mut reader = Reader::new(buf);
         let position = reader.read_long();
-        let BlockPosition { x, y, z } = BlockPosition::from_long(position);
+        let placement = BlockPosition::from_long_checked(position);
         let face = BlockFace::try_from(reader.read_byte()).ok();
+        let BlockPosition { x, y, z } = match (placement, face.is_none()) {
+            (Some(p), _) => p,
+            (None, true) => BlockPosition {
+                x: -1,
+                y: 255,
+                z: -1,
+            },
+            (None, false) => {
+                return Err(Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "PlayerBlockPlacement position is outside the world",
+                ));
+            }
+        };
         let held_item_id = reader.read_i16();
         let (held_item_count, held_item_damage, cursor_x, cursor_y, cursor_z) = {
             if held_item_id != -1 {
@@ -226,7 +257,7 @@ impl PacketOut for BlockChange {
         let position = BlockPosition::new(self.x, self.y as u8, self.z);
         writer.write_block_position(position);
 
-        writer.write_varint(self.block_id << 4 | self.block_metadata as i32);
+        writer.write_varint((self.block_id << 4) | (self.block_metadata as i32 & 0xF));
         Ok(())
     }
 }
@@ -289,5 +320,47 @@ impl PacketOut for BlockAction {
         writer.write_byte(self.action_param);
         writer.write_varint(self.block_type);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    fn pack(x: i64, y: i64, z: i64) -> i64 {
+        ((x & 0x3FF_FFFF) << 38) | ((y & 0xFFF) << 26) | (z & 0x3FF_FFFF)
+    }
+
+    #[test]
+    fn ordinary_positions_round_trip() {
+        for (x, y, z) in [
+            (0i64, 0i64, 0i64),
+            (100, 64, -200),
+            (-1, 255, -1),
+            (30_000_000, 1, -30_000_000),
+        ] {
+            let p = BlockPosition::from_long_checked(pack(x, y, z)).expect("in range");
+            assert_eq!((p.x as i64, p.y as i64, p.z as i64), (x, y, z));
+        }
+    }
+
+    #[test]
+    fn out_of_range_y_is_rejected_not_wrapped() {
+        for y in [256i64, 263, 1000, 4095] {
+            assert!(
+                BlockPosition::from_long_checked(pack(0, y, 0)).is_none(),
+                "y={y} was accepted"
+            );
+            // and the lossy form clamps up, never down
+            assert_eq!(BlockPosition::from_long(pack(0, y, 0)).y, 255, "y={y}");
+        }
+    }
+
+    #[test]
+    fn the_air_use_sentinel_still_decodes() {
+        let packed = pack(-1, -1, -1);
+        assert!(BlockPosition::from_long_checked(packed).is_none());
+        let p = BlockPosition::from_long(packed);
+        assert_eq!((p.x, p.z), (-1, -1));
     }
 }

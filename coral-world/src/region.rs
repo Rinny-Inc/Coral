@@ -46,6 +46,10 @@ impl RegionFile {
             u32::from_be_bytes(data[byte_offset..byte_offset + 4].try_into().ok()?) as usize;
         let compression = data[byte_offset + 4];
 
+        if length == 0 {
+            return None;
+        }
+
         if byte_offset + 5 + length - 1 > data.len() {
             return None;
         }

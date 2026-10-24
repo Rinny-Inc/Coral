@@ -170,8 +170,9 @@ impl TileEntityWindow for TileEntity {
                             0 => *input = cursor,
                             1 => *fuel = cursor,
                             2 => {
-                                state.cursor_item = cursor;
-                                state.cursor_item = slot_item;
+                                let (new_cursor, new_output) = take_from_output(cursor, slot_item);
+                                state.cursor_item = new_cursor;
+                                *output = new_output;
                                 return Some(vec![
                                     slot_tuple(input),
                                     slot_tuple(fuel),
@@ -295,4 +296,126 @@ fn insert_into_chest(chest: &mut [Option<ItemStack>], mut stack: ItemStack) -> O
         }
     }
     Some(stack)
+}
+
+fn take_from_output(
+    cursor: Option<ItemStack>,
+    output: Option<ItemStack>,
+) -> (Option<ItemStack>, Option<ItemStack>) {
+    match (cursor, output) {
+        // empty hand: take whatever is there
+        (None, taken) => (taken, None),
+        // same item: merge what fits, leave the rest in the slot
+        (Some(mut held), Some(taken))
+            if held.item_id == taken.item_id
+                && held.metadata == taken.metadata
+                && held.count < 64 =>
+        {
+            let moved = (64 - held.count).min(taken.count);
+            held.count += moved;
+            let left = taken.count - moved;
+            (
+                Some(held),
+                (left > 0).then_some(ItemStack {
+                    count: left,
+                    ..taken
+                }),
+            )
+        }
+        (Some(held), taken) => (Some(held), taken),
+    }
+}
+
+#[cfg(test)]
+mod take_from_output_tests {
+    use super::{ItemStack, take_from_output};
+
+    fn stack(item_id: i16, count: u8) -> ItemStack {
+        ItemStack {
+            item_id,
+            count,
+            metadata: 0,
+            durability: 0,
+        }
+    }
+
+    fn seen(s: &Option<ItemStack>) -> Option<(i16, u8, i16)> {
+        s.as_ref().map(|s| (s.item_id, s.count, s.metadata))
+    }
+
+    #[test]
+    fn an_empty_hand_takes_the_whole_output() {
+        let (cursor, output) = take_from_output(None, Some(stack(265, 7)));
+        assert_eq!(seen(&cursor), Some((265, 7, 0)));
+        assert_eq!(seen(&output), None);
+    }
+
+    #[test]
+    fn an_empty_hand_on_an_empty_output_changes_nothing() {
+        let (cursor, output) = take_from_output(None, None);
+        assert_eq!(seen(&cursor), None);
+        assert_eq!(seen(&output), None);
+    }
+
+    #[test]
+    fn a_held_stack_survives_a_click_on_an_empty_output() {
+        let (cursor, output) = take_from_output(Some(stack(276, 1)), None);
+        assert_eq!(
+            seen(&cursor),
+            Some((276, 1, 0)),
+            "the held stack was destroyed"
+        );
+        assert_eq!(seen(&output), None);
+    }
+
+    #[test]
+    fn a_held_stack_survives_a_click_on_a_different_output() {
+        let (cursor, output) = take_from_output(Some(stack(276, 1)), Some(stack(265, 7)));
+        assert_eq!(
+            seen(&cursor),
+            Some((276, 1, 0)),
+            "the held stack was destroyed"
+        );
+        assert_eq!(seen(&output), Some((265, 7, 0)), "the output vanished");
+    }
+
+    #[test]
+    fn a_matching_held_stack_merges_the_output_into_itself() {
+        let (cursor, output) = take_from_output(Some(stack(265, 10)), Some(stack(265, 7)));
+        assert_eq!(seen(&cursor), Some((265, 17, 0)));
+        assert_eq!(seen(&output), None);
+    }
+
+    #[test]
+    fn a_merge_past_sixty_four_leaves_the_remainder_in_the_slot() {
+        let (cursor, output) = take_from_output(Some(stack(265, 60)), Some(stack(265, 10)));
+        assert_eq!(seen(&cursor), Some((265, 64, 0)));
+        assert_eq!(seen(&output), Some((265, 6, 0)));
+    }
+
+    #[test]
+    fn a_full_held_stack_leaves_the_output_alone() {
+        let (cursor, output) = take_from_output(Some(stack(265, 64)), Some(stack(265, 10)));
+        assert_eq!(seen(&cursor), Some((265, 64, 0)));
+        assert_eq!(seen(&output), Some((265, 10, 0)));
+    }
+
+    #[test]
+    fn metadata_has_to_match_for_a_merge() {
+        let held = ItemStack {
+            item_id: 351,
+            count: 4,
+            metadata: 4,
+            durability: 0,
+        };
+        let out = ItemStack {
+            item_id: 351,
+            count: 4,
+            metadata: 1,
+            durability: 0,
+        };
+        let (cursor, output) = take_from_output(Some(held), Some(out));
+        assert_eq!(seen(&cursor), Some((351, 4, 4)));
+        assert_eq!(seen(&output), Some((351, 4, 1)));
+    }
 }

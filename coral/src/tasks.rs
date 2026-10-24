@@ -451,7 +451,7 @@ pub fn spawn_projectile_task(
                                 player_registry
                                     .update_health(
                                         &target.uuid,
-                                        target.health,
+                                        new_health,
                                         target.food,
                                         target.food_saturation,
                                     )
@@ -570,7 +570,7 @@ pub fn spawn_xp_orb_task(
                 channels.xp_pickup_tx.send((uuid, amount)).ok();
                 channels
                     .sound_tx
-                    .send(("random.orb".to_string(), 0.0, 0.0, 0.0, 0.5, 63))
+                    .send(("random.orb", 0.0, 0.0, 0.0, 0.5, 63))
                     .ok();
             }
         }
@@ -595,8 +595,24 @@ pub fn spawn_furnace_task(
         loop {
             interval.tick().await;
 
+            let position: Vec<(i32, i32, i32)> = {
+                let storage = tile_entities.read().await;
+                storage
+                    .iter()
+                    .filter(|(_, tile)| matches!(tile, TileEntity::Furnace { .. }))
+                    .map(|(pos, _)| *pos)
+                    .collect()
+            };
+
+            if position.is_empty() {
+                continue;
+            }
+
             let mut storage = tile_entities.write().await;
-            for (pos, tile) in storage.iter_mut() {
+            for pos in &position {
+                let Some(tile) = storage.get_mut(pos) else {
+                    continue;
+                };
                 let TileEntity::Furnace {
                     input,
                     fuel,

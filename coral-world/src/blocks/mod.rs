@@ -102,6 +102,49 @@ pub struct WorldBlocks {
 }
 
 const MAX_CACHED_CHUNKS: usize = 2048;
+const MAX_DECODED_BYTES: usize = 64 * 1024 * 1024;
+
+fn decoded_chunk_bytes(len: usize) -> usize {
+    const PAIR: usize = std::mem::size_of::<(i32, u8, i32)>() + std::mem::size_of::<Block>();
+    let capacity = (len * 8 / 7).next_power_of_two().max(1);
+    capacity * (PAIR + 1)
+}
+
+fn trim_decoded_cache(
+    cache: &mut HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>,
+) {
+    let mut total: usize = cache
+        .values()
+        .map(|(blocks, _)| decoded_chunk_bytes(blocks.len()))
+        .sum();
+    if total <= MAX_DECODED_BYTES {
+        return;
+    }
+    let mut by_age: Vec<((i32, i32), Instant, usize)> = cache
+        .iter()
+        .map(|(k, (blocks, at))| (*k, *at, decoded_chunk_bytes(blocks.len())))
+        .collect();
+    by_age.sort_by_key(|(_, at, _)| *at);
+
+    let mut evicted = 0usize;
+    for (key, _, bytes) in by_age {
+        if total <= MAX_DECODED_BYTES {
+            break;
+        }
+        cache.remove(&key);
+        total -= bytes.min(total);
+        evicted += 1;
+    }
+
+    if evicted > 0 {
+        println!(
+            "[World] Evicted {evicted} decoded chunks ({} remaining, ~{} MiB)",
+            cache.len(),
+            total / (1024 * 1024)
+        );
+    }
+}
+
 impl WorldBlocks {
     pub fn new() -> Self {
         Self {
@@ -153,10 +196,11 @@ impl WorldBlocks {
                 .get(&(x, y, z))
                 .cloned()
                 .unwrap_or_else(Block::air);
-            self.decoded_cache
-                .write()
-                .await
-                .insert((cx, cz), (Arc::new(chunk_blocks), Instant::now()));
+            {
+                let mut cache = self.decoded_cache.write().await;
+                cache.insert((cx, cz), (Arc::new(chunk_blocks), Instant::now()));
+                trim_decoded_cache(&mut cache);
+            }
             return result;
         }
 
@@ -196,6 +240,12 @@ impl WorldBlocks {
     }
 
     pub async fn evict_stale_chunks(&self, max_age: Duration) {
+        {
+            let mut decoded = self.decoded_cache.write().await;
+            let now = Instant::now();
+            decoded.retain(|_, (_, last)| now.duration_since(*last) < max_age);
+            trim_decoded_cache(&mut decoded);
+        }
         let dirty = self.dirty_chunks.read().await;
         let mut cache = self.chunk_cache.write().await;
 
@@ -577,9 +627,8 @@ fn yaw_to_facing(yaw: f32) -> BlockFace {
 
 #[cfg(test)]
 mod region_tests {
-    use crate::blocks::Block;
-    use crate::world::World;
-    use std::collections::HashMap;
+    use super::*;
+    use crate::world::*;
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("coral-region-{tag}-{}", std::process::id()));
@@ -676,5 +725,99 @@ mod region_tests {
         reloaded.load(&dir).await;
         assert_eq!(reloaded.get(1, 70, 1).await.id, 45);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(test)]
+    mod decoded_cache_tests {
+        use crate::blocks::{MAX_DECODED_BYTES, WorldBlocks, trim_decoded_cache};
+
+        use super::*;
+
+        fn chunk(len: usize) -> Arc<HashMap<(i32, u8, i32), Block>> {
+            let mut m = HashMap::with_capacity(len);
+            for i in 0..len {
+                m.insert((i as i32, (i % 256) as u8, i as i32), Block::new(1, 0));
+            }
+            Arc::new(m)
+        }
+
+        fn cache_of(
+            entries: usize,
+            blocks_each: usize,
+        ) -> HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)> {
+            let mut c = HashMap::new();
+            let base = Instant::now();
+            let shared = chunk(blocks_each);
+            for i in 0..entries {
+                let at = base + Duration::from_millis(i as u64);
+                c.insert((i as i32, 0), (shared.clone(), at));
+            }
+            c
+        }
+
+        fn total(c: &HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>) -> usize {
+            c.values().map(|(b, _)| decoded_chunk_bytes(b.len())).sum()
+        }
+
+        #[test]
+        fn the_cost_estimate_tracks_hashbrowns_growth() {
+            assert_eq!(decoded_chunk_bytes(4096), 8192 * 15);
+            assert_eq!(decoded_chunk_bytes(16_384), 32_768 * 15);
+            assert_eq!(decoded_chunk_bytes(65_536), 131_072 * 15);
+            assert!(decoded_chunk_bytes(0) > 0);
+        }
+
+        #[test]
+        fn the_cache_is_trimmed_back_under_budget() {
+            let mut c = cache_of(200, 16_384);
+            assert!(
+                total(&c) > MAX_DECODED_BYTES,
+                "fixture should exceed the budget"
+            );
+
+            trim_decoded_cache(&mut c);
+
+            assert!(
+                total(&c) <= MAX_DECODED_BYTES,
+                "still over budget after trim"
+            );
+            assert!(!c.is_empty(), "the trim emptied the cache");
+        }
+
+        #[test]
+        fn trimming_drops_the_oldest_first() {
+            let mut c = cache_of(200, 16_384);
+            let newest = (199, 0);
+            let oldest = (0, 0);
+
+            trim_decoded_cache(&mut c);
+
+            assert!(c.contains_key(&newest), "evicted the most recent chunk");
+            assert!(!c.contains_key(&oldest), "kept the oldest chunk");
+        }
+
+        #[test]
+        fn a_cache_inside_the_budget_is_left_alone() {
+            let mut c = cache_of(4, 16_384);
+            let before: Vec<(i32, i32)> = {
+                let mut k: Vec<_> = c.keys().copied().collect();
+                k.sort();
+                k
+            };
+            trim_decoded_cache(&mut c);
+            let mut after: Vec<(i32, i32)> = c.keys().copied().collect();
+            after.sort();
+            assert_eq!(before, after);
+        }
+
+        #[tokio::test]
+        async fn repeated_reads_cache_one_entry_per_chunk() {
+            let w = WorldBlocks::new();
+            let g = crate::generator::FlatWorldGenerator::new();
+            for _ in 0..5 {
+                w.get(3, 2, 3, &g).await;
+            }
+            assert_eq!(w.decoded_cache.read().await.len(), 0);
+        }
     }
 }

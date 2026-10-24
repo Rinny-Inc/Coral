@@ -108,9 +108,34 @@ pub struct PlayerListHeaderFooter {
 }
 impl PacketOut for PlayerListHeaderFooter {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
-        writer.write_varint(0x48);
+        writer.write_varint(0x47);
         writer.write_string(&self.header);
         writer.write_string(&self.footer);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod packet_id_tests {
+    use super::*;
+    use crate::reader::Reader;
+    use crate::writer::Writer;
+
+    #[test]
+    fn header_footer_uses_its_own_packet_id() {
+        let mut w = Writer::new();
+        PlayerListHeaderFooter {
+            header: "{\"text\":\"top\"}".into(),
+            footer: "{\"text\":\"bottom\"}".into(),
+        }
+        .encode(&mut w)
+        .unwrap();
+
+        let mut r = Reader::new(&w.data);
+        assert_eq!(r.read_varint(), 0x47);
+        assert_eq!(r.read_string(), "{\"text\":\"top\"}");
+        assert_eq!(r.read_string(), "{\"text\":\"bottom\"}");
+        assert!(r.is_ok());
+        assert_eq!(r.remaining(), 0);
     }
 }

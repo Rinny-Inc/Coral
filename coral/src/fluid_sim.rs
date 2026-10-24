@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,12 +14,44 @@ use crate::Channels;
 
 const DIRS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-pub async fn queue_fluid_update(
-    x: i32,
-    y: i32,
-    z: i32,
-    fluid_queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
-) {
+#[derive(Default)]
+pub struct FluidQueue {
+    order: VecDeque<(i32, i32, i32)>,
+    queued: HashSet<(i32, i32, i32)>,
+}
+impl FluidQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, pos: (i32, i32, i32)) -> bool {
+        if self.queued.insert(pos) {
+            self.order.push_back(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn drain_batch(&mut self, max: usize) -> Vec<(i32, i32, i32)> {
+        let n = self.order.len().min(max);
+        let batch: Vec<(i32, i32, i32)> = self.order.drain(..n).collect();
+        for pos in &batch {
+            self.queued.remove(pos);
+        }
+        batch
+    }
+
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+}
+
+pub async fn queue_fluid_update(x: i32, y: i32, z: i32, fluid_queue: &Arc<RwLock<FluidQueue>>) {
     let mut q = fluid_queue.write().await;
     for (dx, dy, dz) in [
         (0, 0, 0),
@@ -31,14 +63,14 @@ pub async fn queue_fluid_update(
         (0, 0, -1),
     ] {
         let pos = (x + dx, y + dy, z + dz);
-        if (0..=255).contains(&pos.1) && !q.contains(&pos) {
-            q.push_back(pos);
+        if (0..=255).contains(&pos.1) {
+            q.push(pos);
         }
     }
 }
 
 pub fn spawn_fluid_task(
-    fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    fluid_queue: Arc<RwLock<FluidQueue>>,
     world: Arc<World>,
     channels: Channels,
 ) {
@@ -53,9 +85,7 @@ pub fn spawn_fluid_task(
                     tick += 5;
 
                     let batch: Vec<(i32, i32, i32)> = {
-                        let mut q = fluid_queue.write().await;
-                        let n = q.len().min(200);
-                        q.drain(..n).collect()
+                        fluid_queue.write().await.drain_batch(200)
                     };
 
                     for (x, y, z) in batch {
@@ -72,7 +102,7 @@ pub fn spawn_fluid_task(
                             FluidKind::Lava => 30,
                         };
                         if !tick.is_multiple_of(rate) {
-                            fluid_queue.write().await.push_back((x, y, z));
+                            fluid_queue.write().await.push((x, y, z));
                             continue;
                         }
 
@@ -158,7 +188,7 @@ async fn flow_into(
     decay: u8,
     world: &Arc<World>,
     channels: &Channels,
-    queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    queue: &Arc<RwLock<FluidQueue>>,
 ) {
     if !can_flow_into(fluid, x, y, z, world).await {
         return;
@@ -234,7 +264,7 @@ async fn update_tick(
     metadata: u8,
     world: &Arc<World>,
     channels: &Channels,
-    queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    queue: &Arc<RwLock<FluidQueue>>,
 ) {
     if let Some(converted) = check_lava_water_reaction(x, y, z, fluid, metadata, world).await {
         set_block(x, y, z, converted, 0, world, channels, queue).await;
@@ -406,7 +436,7 @@ async fn set_block(
     metadata: u8,
     world: &Arc<World>,
     channels: &Channels,
-    queue: &Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    queue: &Arc<RwLock<FluidQueue>>,
 ) {
     world.set(x, y as u8, z, Block::new(id, metadata)).await;
     channels.block_tx.send((x, y, z, id as i32, metadata)).ok();
@@ -417,7 +447,7 @@ fn fizz(x: i32, y: i32, z: i32, channels: &Channels) {
     channels
         .sound_tx
         .send((
-            "random.fizz".to_string(),
+            "random.fizz",
             x as f64 + 0.5,
             y as f64 + 0.5,
             z as f64 + 0.5,
@@ -425,4 +455,57 @@ fn fizz(x: i32, y: i32, z: i32, channels: &Channels) {
             63,
         ))
         .ok();
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[test]
+    fn a_position_is_only_queued_once() {
+        let mut q = FluidQueue::new();
+        assert!(q.push((1, 2, 3)));
+        assert!(!q.push((1, 2, 3)));
+        assert!(!q.push((1, 2, 3)));
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn draining_releases_a_position_for_requeueing() {
+        let mut q = FluidQueue::new();
+        q.push((1, 2, 3));
+        assert_eq!(q.drain_batch(10), vec![(1, 2, 3)]);
+        assert!(q.is_empty());
+        assert!(q.push((1, 2, 3)));
+        assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn positions_come_back_in_insertion_order() {
+        let mut q = FluidQueue::new();
+        for i in 0..5 {
+            q.push((i, 0, 0));
+        }
+        assert_eq!(q.drain_batch(3), vec![(0, 0, 0), (1, 0, 0), (2, 0, 0)]);
+        assert_eq!(q.drain_batch(10), vec![(3, 0, 0), (4, 0, 0)]);
+    }
+
+    #[test]
+    fn draining_more_than_is_queued_is_fine() {
+        let mut q = FluidQueue::new();
+        q.push((0, 0, 0));
+        assert_eq!(q.drain_batch(200).len(), 1);
+        assert!(q.drain_batch(200).is_empty());
+    }
+
+    #[test]
+    fn a_partial_drain_keeps_the_rest_indexed() {
+        let mut q = FluidQueue::new();
+        for i in 0..5 {
+            q.push((i, 0, 0));
+        }
+        q.drain_batch(2);
+        assert!(!q.push((4, 0, 0)), "still-pending position was re-queued");
+        assert!(q.push((0, 0, 0)), "drained position could not re-enter");
+    }
 }

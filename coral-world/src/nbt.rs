@@ -182,53 +182,125 @@ impl NbtTag {
 pub struct NbtReader<'a> {
     data: &'a [u8],
     pos: usize,
+    failed: bool,
+    depth: u32,
 }
+
+const MAX_DEPTH: u32 = 512;
+
 impl<'a> NbtReader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
+        Self {
+            data,
+            pos: 0,
+            failed: false,
+            depth: 0,
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        !self.failed
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    fn fail(&mut self) {
+        self.failed = true;
+    }
+
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        if self.failed {
+            return None;
+        }
+        let end = self.pos.checked_add(n)?;
+        let slice = self.data.get(self.pos..end)?;
+        self.pos = end;
+        Some(slice)
     }
 
     fn read_u8(&mut self) -> u8 {
-        let v = self.data[self.pos];
-        self.pos += 1;
-        v
+        match self.take(1) {
+            Some(b) => b[0],
+            None => {
+                self.fail();
+                0
+            }
+        }
     }
     fn read_i8(&mut self) -> i8 {
         self.read_u8() as i8
     }
     fn read_i16(&mut self) -> i16 {
-        let v = i16::from_be_bytes(self.data[self.pos..self.pos + 2].try_into().unwrap());
-        self.pos += 2;
-        v
+        match self.take(2) {
+            Some(b) => i16::from_be_bytes([b[0], b[1]]),
+            None => {
+                self.fail();
+                0
+            }
+        }
     }
     fn read_i32(&mut self) -> i32 {
-        let v = i32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
-        self.pos += 4;
-        v
+        match self.take(4) {
+            Some(b) => i32::from_be_bytes([b[0], b[1], b[2], b[3]]),
+            None => {
+                self.fail();
+                0
+            }
+        }
     }
     fn read_i64(&mut self) -> i64 {
-        let v = i64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
-        self.pos += 8;
-        v
+        match self.take(8) {
+            Some(b) => i64::from_be_bytes(b.try_into().expect("8 bytes")),
+            None => {
+                self.fail();
+                0
+            }
+        }
     }
     fn read_f32(&mut self) -> f32 {
-        let v = f32::from_be_bytes(self.data[self.pos..self.pos + 4].try_into().unwrap());
-        self.pos += 4;
-        v
+        f32::from_bits(self.read_i32() as u32)
     }
     fn read_f64(&mut self) -> f64 {
-        let v = f64::from_be_bytes(self.data[self.pos..self.pos + 8].try_into().unwrap());
-        self.pos += 8;
-        v
+        f64::from_bits(self.read_i64() as u64)
     }
+
+    fn read_len(&mut self, element_size: usize) -> Option<usize> {
+        let raw = self.read_i32();
+        if self.failed || raw < 0 {
+            self.fail();
+            return None;
+        }
+        let len = raw as usize;
+        match len.checked_mul(element_size) {
+            Some(bytes) if bytes <= self.remaining() => Some(len),
+            _ => {
+                self.fail();
+                None
+            }
+        }
+    }
+
     fn read_string(&mut self) -> String {
-        let len = self.read_i16() as usize;
-        let s = String::from_utf8_lossy(&self.data[self.pos..self.pos + len]).to_string();
-        self.pos += len;
-        s
+        let raw = self.read_i16();
+        if self.failed || raw < 0 {
+            self.fail();
+            return String::new();
+        }
+        match self.take(raw as usize) {
+            Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+            None => {
+                self.fail();
+                String::new()
+            }
+        }
     }
 
     pub fn read_tag(&mut self, type_id: u8) -> NbtTag {
+        if self.failed {
+            return NbtTag::Byte(0);
+        }
         match type_id {
             1 => NbtTag::Byte(self.read_i8()),
             2 => NbtTag::Short(self.read_i16()),
@@ -237,44 +309,79 @@ impl<'a> NbtReader<'a> {
             5 => NbtTag::Float(self.read_f32()),
             6 => NbtTag::Double(self.read_f64()),
             7 => {
-                let len = self.read_i32() as usize;
-                let bytes = self.data[self.pos..self.pos + len].to_vec();
-                self.pos += len;
+                let Some(len) = self.read_len(1) else {
+                    return NbtTag::ByteArray(Vec::new());
+                };
+                let bytes = self.take(len).map(<[u8]>::to_vec).unwrap_or_default();
                 NbtTag::ByteArray(bytes)
             }
             8 => NbtTag::String(self.read_string()),
             9 => {
                 let elem_type = self.read_u8();
-                let len = self.read_i32() as usize;
-                let mut entries = Vec::with_capacity(len);
+                let Some(len) = self.read_len(1) else {
+                    return NbtTag::List(elem_type, Vec::new());
+                };
+                if elem_type == 0 {
+                    return NbtTag::List(0, Vec::new());
+                }
+                if self.enter() {
+                    return NbtTag::List(elem_type, Vec::new());
+                }
+                let mut entries = Vec::new();
                 for _ in 0..len {
+                    if self.failed {
+                        break;
+                    }
+                    self.leave();
                     entries.push(self.read_tag(elem_type));
                 }
                 NbtTag::List(elem_type, entries)
             }
             10 => {
+                if self.enter() {
+                    return NbtTag::Compound(Vec::new());
+                }
                 let mut entries = vec![];
                 loop {
                     let tag_type = self.read_u8();
-                    if tag_type == 0 {
+                    if tag_type == 0 || self.failed {
                         break;
                     }
                     let name = self.read_string();
                     let tag = self.read_tag(tag_type);
                     entries.push((name, tag));
                 }
+                self.leave();
                 NbtTag::Compound(entries)
             }
             11 => {
-                let len = self.read_i32() as usize;
+                let Some(len) = self.read_len(4) else {
+                    return NbtTag::IntArray(Vec::new());
+                };
                 let mut ints = Vec::with_capacity(len);
                 for _ in 0..len {
                     ints.push(self.read_i32());
                 }
                 NbtTag::IntArray(ints)
             }
-            _ => NbtTag::Byte(0),
+            _ => {
+                self.fail();
+                NbtTag::Byte(0)
+            }
         }
+    }
+
+    fn enter(&mut self) -> bool {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            self.fail();
+            return true;
+        }
+        false
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     pub fn read_named_root(&mut self) -> (String, NbtTag) {
@@ -319,5 +426,135 @@ mod tests {
         assert_eq!(s.as_f32(), None);
         assert_eq!(NbtTag::List(1, vec![]).as_i32(), None);
         assert_eq!(NbtTag::Compound(vec![]).as_f64(), None);
+    }
+}
+
+#[cfg(test)]
+mod reader_safety_tests {
+    use super::*;
+
+    fn encoded(tag: &NbtTag) -> Vec<u8> {
+        let mut out = Vec::new();
+        NbtTag::write_named_root("root", tag, &mut out);
+        out
+    }
+
+    #[test]
+    fn every_truncation_of_a_valid_document_is_survivable() {
+        let tag = NbtTag::Compound(vec![
+            (
+                "Pos".into(),
+                NbtTag::List(6, vec![NbtTag::Double(0.5), NbtTag::Double(64.0)]),
+            ),
+            ("Blocks".into(), NbtTag::ByteArray(vec![7u8; 512])),
+            ("Name".into(), NbtTag::String("Noksio".into())),
+            ("Heights".into(), NbtTag::IntArray(vec![4; 64])),
+            ("Health".into(), NbtTag::Float(20.0)),
+        ]);
+        let full = encoded(&tag);
+
+        for n in 0..full.len() {
+            let mut r = NbtReader::new(&full[..n]);
+            r.read_named_root();
+        }
+
+        let mut r = NbtReader::new(&full);
+        let (name, _) = r.read_named_root();
+        assert_eq!(name, "root");
+        assert!(r.is_ok(), "the complete document should read cleanly");
+    }
+
+    #[test]
+    fn negative_lengths_are_rejected() {
+        let mut data = vec![7u8]; // type
+        data.extend_from_slice(&0i16.to_be_bytes()); // empty name
+        data.extend_from_slice(&(-1i32).to_be_bytes());
+        let mut r = NbtReader::new(&data);
+        let (_, tag) = r.read_named_root();
+        assert!(!r.is_ok());
+        assert!(matches!(tag, NbtTag::ByteArray(v) if v.is_empty()));
+
+        let mut data = vec![8u8];
+        data.extend_from_slice(&0i16.to_be_bytes());
+        data.extend_from_slice(&(-1i16).to_be_bytes());
+        let mut r = NbtReader::new(&data);
+        r.read_named_root();
+        assert!(!r.is_ok());
+    }
+
+    #[test]
+    fn an_oversized_length_is_rejected_without_allocating() {
+        let mut data = vec![11u8]; // IntArray
+        data.extend_from_slice(&0i16.to_be_bytes());
+        data.extend_from_slice(&1_000_000_000i32.to_be_bytes());
+        let mut r = NbtReader::new(&data);
+        let (_, tag) = r.read_named_root();
+        assert!(!r.is_ok());
+        assert!(matches!(tag, NbtTag::IntArray(v) if v.is_empty()));
+    }
+
+    #[test]
+    fn deep_nesting_stops_at_the_depth_limit() {
+        let mut data = vec![10u8, 0, 0];
+        for _ in 0..(MAX_DEPTH + 50) {
+            data.extend_from_slice(&[10u8, 0, 0]);
+        }
+        let mut r = NbtReader::new(&data);
+        r.read_named_root();
+        assert!(!r.is_ok(), "the depth limit should have tripped");
+    }
+
+    #[test]
+    fn a_list_of_end_tags_terminates() {
+        let mut data = vec![9u8]; // List
+        data.extend_from_slice(&0i16.to_be_bytes());
+        data.push(0); // element type End
+        data.extend_from_slice(&100i32.to_be_bytes());
+        let mut r = NbtReader::new(&data);
+        let (_, tag) = r.read_named_root();
+        assert!(matches!(tag, NbtTag::List(0, v) if v.is_empty()));
+    }
+
+    #[test]
+    fn random_bytes_never_panic() {
+        let mut seed = 0x12345678u32;
+        for _ in 0..2000 {
+            let len = (seed % 64) as usize;
+            let data: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 16) as u8
+                })
+                .collect();
+            let mut r = NbtReader::new(&data);
+            r.read_named_root();
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        }
+    }
+
+    #[test]
+    fn valid_documents_are_unaffected() {
+        let tag = NbtTag::Compound(vec![
+            ("a".into(), NbtTag::Int(-5)),
+            ("b".into(), NbtTag::String("hello".into())),
+            ("c".into(), NbtTag::ByteArray(vec![1, 2, 3])),
+            ("d".into(), NbtTag::IntArray(vec![-1, 0, 1])),
+            ("e".into(), NbtTag::Double(-0.5)),
+            ("f".into(), NbtTag::Long(i64::MIN)),
+        ]);
+        let data = encoded(&tag);
+        let mut r = NbtReader::new(&data);
+        let (name, back) = r.read_named_root();
+
+        assert!(r.is_ok());
+        assert_eq!(name, "root");
+        assert_eq!(back.get("a").and_then(|t| t.as_i32()), Some(-5));
+        assert_eq!(back.get("b").and_then(|t| t.as_string()), Some("hello"));
+        assert_eq!(
+            back.get("c").and_then(|t| t.as_byte_array()),
+            Some(&vec![1u8, 2, 3])
+        );
+        assert_eq!(back.get("e").and_then(|t| t.as_f64()), Some(-0.5));
+        assert_eq!(back.get("f").and_then(|t| t.as_i64()), Some(i64::MIN));
     }
 }

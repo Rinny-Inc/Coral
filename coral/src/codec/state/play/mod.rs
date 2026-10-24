@@ -87,6 +87,7 @@ use crate::{
 };
 
 mod interact;
+pub mod inventory_click;
 mod ticking;
 pub mod tile_entity_window;
 mod window_ops;
@@ -209,11 +210,10 @@ pub async fn play(
                     animation: EntityAnimationType::LeaveBed,
                 }).await;
             }
-            Ok((sender_eid, id, x, y, z, ox, oy, oz, data, count)) = particle_rx.recv() => {
+            Ok((sender_eid, _id, _x, _y, _z, _ox, _oy, _oz, _data, _count, _extra)) = particle_rx.recv() => {
                 if state.entity_id == sender_eid {
                     continue;
                 }
-                // FIXME: cause crash
                 /*send_packet(framed, WorldParticles {
                     particle_id: id,
                     long_distance: false,
@@ -222,7 +222,8 @@ pub async fn play(
                     offset_y: oy,
                     offset_z: oz,
                     particle_data: data,
-                    count
+                    count,
+                    extra
                 }).await;*/
             }
             Ok((from, to, message)) = private_msg_rx.recv() => {
@@ -254,22 +255,8 @@ pub async fn play(
                     continue;
                 }
 
-                let kind = match effect_id {
-                    1  => EffectKind::Regeneration,
-                    2  => EffectKind::Speed,
-                    3  => EffectKind::FireResistance,
-                    4  => EffectKind::Poison,
-                    5  => EffectKind::InstantHealth,
-                    6  => EffectKind::NightVision,
-                    7  => EffectKind::InstantDamage,
-                    8  => EffectKind::Weakness,
-                    9  => EffectKind::Strength,
-                    10 => EffectKind::Slowness,
-                    11 => EffectKind::JumpBoost,
-                    12 => EffectKind::InstantDamage,
-                    13 => EffectKind::WaterBreathing,
-                    14 => EffectKind::Invisibility,
-                    _  => continue,
+                let Some(kind) = EffectKind::from_id(effect_id) else {
+                    continue;
                 };
 
                 let pe = PotionEffect { kind, amplifier, duration_ticks: duration };
@@ -318,7 +305,7 @@ pub async fn play(
             Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
                 // TODO: filter sounds that are sent client side & skip sound maker
                 send_packet(framed, NamedSoundEffect {
-                    sound, x, y, z, volume, pitch
+                    sound: sound.to_string(), x, y, z, volume, pitch
                 }).await;
             }
             Ok((collector_eid, _collector_uuid, item_eid)) = pickup_rx.recv() => {
@@ -388,67 +375,67 @@ pub async fn play(
                 if mv.entity_id == state.entity_id {
                     continue;
                 }
-                let visible = if let Some(me) = player_registry.get(&state.uuid).await {
-                    entity_tracker.read().await.is_visible_to(mv.entity_id, me.x, me.z)
-                } else {
-                    false
-                };
-
-                if !visible {
+                let (my_x, my_y, my_z) = state.last_position;
+                if !entity_tracker.read().await.is_visible_to(mv.entity_id, my_x, my_z) {
                     continue;
                 }
 
                 // particles
-                /*let was_on_ground = player_registry.get(&uuid).await
+                /*let was_on_ground = player_registry.get(&state.uuid).await
                     .map(|p| p.on_ground)
                     .unwrap_or(true);
 
-                    if on_ground && !was_on_ground {
+                    if state.was_on_ground && !was_on_ground {
                         let land_block = world.get(
-                            x.floor() as i32,
-                            (y.floor() as i32 - 1).max(0) as u8,
-                            z.floor() as i32,
+                            my_x.floor() as i32,
+                            (my_y.floor() as i32 - 1).max(0) as u8,
+                            my_z.floor() as i32,
                         ).await;
 
                         if !land_block.is_air() {
                             channels.particle_tx.send((
                                 state.entity_id,
                                 37,
-                                x as f32,
-                                y as f32,
-                                z as f32,
+                                my_x as f32,
+                                my_y as f32,
+                                my_z as f32,
                                 0.3, 0.0, 0.3,
                                 land_block.id as f32,
-                                6
+                                6,
+                                [land_block.id as i32 | ((land_block.metadata as i32) << 12), 0]
                             )).ok();
                         }
                     }
 
-                    let is_sprinting = player_registry.get(&uuid).await
+                    let is_sprinting = player_registry.get(&state.uuid).await
                         .map(|p| p.is_sprinting)
                         .unwrap_or(false);
 
-                    if is_sprinting && on_ground {
+                    if is_sprinting && state.was_on_ground {
                         let block_below = world.get(
-                            x.floor() as i32,
-                            (y.floor() as i32 - 1).max(0) as u8,
-                            z.floor() as i32,
+                            my_x.floor() as i32,
+                            (my_y.floor() as i32 - 1).max(0) as u8,
+                            my_z.floor() as i32,
                         ).await;
 
                         if !block_below.is_air() {
+                            let Some(yaw) = mv.head_yaw else {
+                                continue;
+                            };
                             let yaw_rad = (yaw * std::f32::consts::PI / 180.0) as f64;
-                            let behind_x = x + yaw_rad.sin() * 0.2;
-                            let behind_z = z - yaw_rad.cos() * 0.2;
+                            let behind_x = my_x + yaw_rad.sin() * 0.2;
+                            let behind_z = my_z - yaw_rad.cos() * 0.2;
 
                             channels.particle_tx.send((
                                 state.entity_id,
                                 37,
                                 behind_x as f32,
-                                y as f32,
+                                my_y as f32,
                                 behind_z as f32,
                                 0.0, 0.0, 0.0,
                                 block_below.id as f32,
-                                3
+                                3,
+                                [block_below.id as i32 | ((block_below.metadata as i32) << 12), 0]
                             )).ok();
                         }
                     }*/
@@ -544,7 +531,7 @@ pub async fn play(
                     total_experience: state.xp_total
                 }).await;
 
-                channels.sound_tx.send(("random.orb".to_string(), 0.0, 0.0, 0.0, 0.5, 63)).ok();
+                channels.sound_tx.send(("random.orb", 0.0, 0.0, 0.0, 0.5, 63)).ok();
             }
             Ok((eid, x, y, z, amount)) = xp_orb_spawn_rx.recv() => {
                 send_packet(framed, SpawnExperienceOrb {
@@ -685,13 +672,8 @@ pub async fn play(
                 }
             }
             Ok((eid, x, y, z, item_id, count, metadata, vx, vy, vz)) = item_rx.recv() => {
-                let visible = if let Some(me) = player_registry.get(&state.uuid).await {
-                    entity_tracker.read().await.is_visible_to(eid, me.x, me.z)
-                } else {
-                    false
-                };
-
-                if !visible {
+                let (my_x, _, my_z) = state.last_position;
+                if !entity_tracker.read().await.is_visible_to(eid, my_x, my_z) {
                     continue;
                 }
                 let v_max = i16::MAX as f64;
@@ -752,14 +734,14 @@ pub async fn play(
                             if let Some((sent_id, sent_time)) = state.last_sent_keep_alive.take()
                                 && ka.id == sent_id
                             {
-                                let (actual, last) = state.latency_ms;
-                                state.latency_ms.1 = actual;
-                                state.latency_ms.0 = sent_time.elapsed().as_millis() as i32;
-                                player_registry.update_latency(&state.uuid, actual).await;
-                                if ping_to_bar(actual) == ping_to_bar(last) {
+                                let previous = state.latency_ms.0;
+                                let measured = sent_time.elapsed().as_millis() as i32;
+                                state.latency_ms = (measured, previous);
+                                player_registry.update_latency(&state.uuid, measured).await;
+                                if ping_to_bar(measured) == ping_to_bar(previous) {
                                     continue;
                                 }
-                                channels.ping_tx.send((state.uuid, actual)).ok();
+                                channels.ping_tx.send((state.uuid, measured)).ok();
                             }
                             continue;
                         }
@@ -797,7 +779,7 @@ pub async fn play(
                                         world.set(dig.x, dig.y, dig.z, Block::air()).await;
                                         channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
                                         channels.sound_tx.send((
-                                            block_break_sound(block.id).to_string(),
+                                            block_break_sound(block.id),
                                             dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
                                             1.0, 63
                                         )).ok();
@@ -862,10 +844,11 @@ pub async fn play(
                                             bz as f32 + 0.5,
                                             0.3, 0.3, 0.3,
                                             block.id as f32,
-                                            8
+                                            8,
+                                            [block.id as i32 | ((block.metadata as i32) << 12), 0]
                                         )).ok();
                                         channels.sound_tx.send((
-                                            block_break_sound(block.id).to_string(),
+                                            block_break_sound(block.id),
                                             bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
                                             1.0, 63
                                         )).ok();
@@ -1038,7 +1021,7 @@ pub async fn play(
                                                 proj.vx, proj.vy, proj.vz
                                             )).ok();
 
-                                            channels.sound_tx.send(("random.bow".to_string(), p.x, p.y, p.z, 1.0, 63)).ok();
+                                            channels.sound_tx.send(("random.bow", p.x, p.y, p.z, 1.0, 63)).ok();
 
                                             if state.gamemode == GameMode::Survival {
                                                 state.consume_arrow_from_inventory();
@@ -1134,7 +1117,7 @@ pub async fn play(
                             world.blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
                             channels.block_tx.send((tx, ty, tz, block_id, block_meta)).ok();
                             channels.sound_tx.send((
-                                block_break_sound(block_id as u8).to_string(),
+                                block_break_sound(block_id as u8),
                                 tx as f64 + 0.5, ty as f64 + 0.5, tz as f64 + 0.5,
                                 1.0, 63
                             )).ok();
@@ -1456,7 +1439,7 @@ pub async fn play(
                                     state.sync_held_item_registry(creative.item_id, &player_registry, &item_registry, &channels).await;
                                 }
 
-                                if (5..=8).contains(&idx) {
+                                if Inventory::ARMOR_SLOTS.contains(&idx) {
                                     state.sync_armor(&player_registry, &channels.equip_tx).await;
                                 }
                             }
@@ -1474,10 +1457,36 @@ pub async fn play(
                                 continue;
                             }
 
-                            if let Some(idx) = Inventory::packet_to_internal(click.slot)
-                                && (5..=8).contains(&idx)
+                            let mut dropped = Vec::new();
+                            let outcome = inventory_click::apply_click(
+                                &mut state.inventory.slots,
+                                &mut state.cursor_item,
+                                click,
+                                &mut dropped
+                            );
+
+                            for stack in dropped {
+                                if let Some(p) = player_registry.get(&state.uuid).await {
+                                    spawn_dropped_item(
+                                        &p, stack, &channels, &item_spawn_times,
+                                        &entity_tracker, &item_positions,
+                                        config.tracking.item
+                                    ).await;
+                                }
+                            }
+                            match outcome {
+                                inventory_click::ClickOutcome::AppliedArmorChanged => {
+                                    state.sync_armor(&player_registry, &channels.equip_tx).await;
+                                }
+                                inventory_click::ClickOutcome::Applied => {}
+                                inventory_click::ClickOutcome::Resync => {
+                                    state.send_full_inventory(framed).await;
+                                }
+                            }
+                            if Inventory::packet_to_internal(click.slot) == Some(state.held_slot as usize)
                             {
-                                state.sync_armor(&player_registry, &channels.equip_tx).await;
+                                let held = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.item_id).unwrap_or(EMPTY_HAND);
+                                state.sync_held_item_registry(held, &player_registry, &item_registry, &channels).await;
                             }
                             continue;
                         }
@@ -1673,7 +1682,7 @@ pub async fn play(
                                             state.sync_held_slot_after_damage(framed, &player_registry, &item_registry, &channels, broke).await;
 
                                             channels.sound_tx.send((
-                                                "game.player.hurt".to_string(),
+                                                "game.player.hurt",
                                                 target.x, target.y, target.z,
                                                 1.0, 63
                                             )).ok();
@@ -1682,7 +1691,7 @@ pub async fn play(
 
                                             if is_critical {
                                                 channels.anim_tx.send((state.entity_id, EntityAnimationType::CriticalEffect(false))).ok();
-                                                channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8)).ok();
+                                                channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8, [0, 0])).ok();
                                             }
                                         }
                                     }
@@ -1829,6 +1838,66 @@ fn ping_to_bar(ping: i32) -> u8 {
         return 3;
     }
     4
+}
+
+async fn spawn_dropped_item(
+    p: &coral_server::player::Player,
+    stack: ItemStack,
+    channels: &crate::Channels,
+    item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
+    entity_tracker: &Arc<RwLock<coral_server::entity_tracker::EntityTracker>>,
+    item_positions: &Arc<RwLock<HashMap<i32, coral_types::ItemInfo>>>,
+    tracking_range: f64,
+) {
+    let yaw_rad = p.yaw.to_radians();
+    let drop_x = p.x + (-yaw_rad.sin() * 0.3) as f64;
+    let drop_y = p.y + 1.2;
+    let drop_z = p.z + (yaw_rad.cos() * 0.3) as f64;
+
+    let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
+    let vx = vx + p.velocity.0 * 0.3;
+    let vy = vy + (p.velocity.1 * 0.3).max(0.0);
+    let vz = vz + p.velocity.2 * 0.3;
+    let drop_eid = next_entity_id();
+
+    channels
+        .item_tx
+        .send((
+            drop_eid,
+            drop_x,
+            drop_y,
+            drop_z,
+            stack.item_id,
+            stack.count,
+            stack.metadata,
+            vx,
+            vy,
+            vz,
+        ))
+        .ok();
+    item_spawn_times
+        .write()
+        .await
+        .insert(drop_eid, Instant::now());
+    entity_tracker.write().await.track(TrackedEntity::item(
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        tracking_range,
+    ));
+    item_positions.write().await.insert(
+        drop_eid,
+        (
+            drop_eid,
+            drop_x,
+            drop_y,
+            drop_z,
+            stack.item_id,
+            stack.count,
+            stack.metadata,
+        ),
+    );
 }
 
 async fn apply_potion_effect(
@@ -2176,7 +2245,7 @@ async fn handle_landing(
             } else {
                 "game.player.hurt.fall.small"
             };
-            sound_tx.send((sound.to_string(), x, y, z, 1.0, 63)).ok();
+            sound_tx.send((sound, x, y, z, 1.0, 63)).ok();
             if died {
                 chat_tx
                     .send(ChatBuilder::plain_json(&format!(

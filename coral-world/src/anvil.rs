@@ -384,7 +384,13 @@ pub fn nbt_to_blocks(
         let Some(block_ids) = section.get("Blocks").and_then(|v| v.as_byte_array()) else {
             continue;
         };
-        let block_data = section.get("Data").and_then(|v| v.as_byte_array());
+        if block_ids.len() < 4096 {
+            continue;
+        }
+        let block_data = section
+            .get("Data")
+            .and_then(|v| v.as_byte_array())
+            .filter(|d| d.len() >= 2048);
 
         let y_start = section_y as i32 * 16;
 

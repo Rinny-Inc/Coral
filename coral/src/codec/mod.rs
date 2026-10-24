@@ -381,9 +381,18 @@ impl PlayerState {
         self.velocity = (0.0, 0.0, 0.0);
     }
 
+    /// Helmet, chestplate, leggings, boots
+    ///
+    /// `Inventory::packet_to_internal` maps packet armor slots 5..=8 to internal 36..=39
+    /// This read internal 5..=8, which are ordinary main-inventory slots
     fn get_equipped_armor(&self) -> (i16, i16, i16, i16) {
         let slot = |i: usize| -> i16 { self.inventory.slots[i].as_ref().map_or(-1, |s| s.item_id) };
-        (slot(5), slot(6), slot(7), slot(8))
+        (
+            slot(Inventory::ARMOR_HELMET),
+            slot(Inventory::ARMOR_CHESTPLATE),
+            slot(Inventory::ARMOR_LEGGINGS),
+            slot(Inventory::ARMOR_BOOTS),
+        )
     }
 
     fn consume_arrow_from_inventory(&mut self) {
@@ -417,6 +426,38 @@ impl PlayerState {
             return true;
         }
         false
+    }
+
+    pub async fn send_full_inventory(&self, framed: &mut Framed<TcpStream, Codec>) {
+        let mut slots = Vec::with_capacity(46);
+        for i in 0..46 {
+            if let Some(idx) = Inventory::packet_to_internal(i as i16)
+                && let Some(Some(s)) = self.inventory.slots.get(idx)
+            {
+                slots.push((s.item_id, s.count, s.metadata));
+                continue;
+            }
+            slots.push((-1, 0, 0));
+        }
+        send_packet(
+            framed,
+            WindowItems {
+                window_id: 0,
+                slots,
+            },
+        )
+        .await;
+        send_packet(
+            framed,
+            SetSlot {
+                window_id: -1,
+                slot: -1,
+                item_id: self.cursor_item.as_ref().map_or(-1, |s| s.item_id),
+                count: self.cursor_item.as_ref().map_or(0, |s| s.count),
+                metadata: self.cursor_item.as_ref().map_or(0, |s| s.metadata),
+            },
+        )
+        .await;
     }
 
     async fn sync_armor(
@@ -619,14 +660,7 @@ impl PlayerState {
             if !has_fire_resistance && self.tick_count % 10 == 0 {
                 let died = self.damage_player(framed, 4.0, player_registry).await;
                 sound_tx
-                    .send((
-                        "damage.fireburn".to_string(),
-                        player.x,
-                        player.y,
-                        player.z,
-                        1.0,
-                        63,
-                    ))
+                    .send(("damage.fireburn", player.x, player.y, player.z, 1.0, 63))
                     .ok();
                 if died {
                     chat_tx

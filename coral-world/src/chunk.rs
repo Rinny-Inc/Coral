@@ -29,27 +29,19 @@ impl ChunkData {
             let mut chunk_blocks: HashMap<(i32, u8, i32), Block> = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
 
-            let mut found_sections: Vec<i32> = chunk_blocks
-                .keys()
-                .map(|(_, y, _)| (*y as i32) / 16)
-                .collect();
-            found_sections.sort();
-            found_sections.dedup();
-
-            let player_blocks = world.blocks.blocks.read().await;
-            for x in 0..16i32 {
-                for z in 0..16i32 {
-                    for y in 0u8..=255 {
-                        let wx = chunk_x * 16 + x;
-                        let wz = chunk_z * 16 + z;
-                        if let Some(b) = player_blocks.get(&(wx, y, wz)) {
-                            chunk_blocks.insert((wx, y, wz), b.clone());
-                        }
+            {
+                let player_blocks = world.blocks.blocks.read().await;
+                for (&(x, y, z), block) in player_blocks.iter() {
+                    if (x >> 4) == chunk_x && (z >> 4) == chunk_z {
+                        chunk_blocks.insert((x, y, z), block.clone());
                     }
                 }
             }
-            let (data, primary_bitmask) =
-                build_chunk_data_18_from_map(chunk_x, chunk_z, &chunk_blocks);
+            let (data, primary_bitmask) = if client_protocol == 47 {
+                build_chunk_data_18_from_map(chunk_x, chunk_z, &chunk_blocks)
+            } else {
+                todo!()
+            };
 
             //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
 
@@ -198,75 +190,42 @@ pub fn build_chunk_data_18_from_map(
     chunk_z: i32,
     chunk_blocks: &HashMap<(i32, u8, i32), Block>,
 ) -> (Vec<u8>, u16) {
-    let mut bitmask: u16 = 0;
+    const VOLUME: usize = 16 * 16 * 256;
 
+    let mut dense = vec![0u16; VOLUME];
     let mut section_has_blocks = [false; 16];
-    for section_y in 0..16u8 {
-        let y_start = section_y as i32 * 16;
-        let mut has_blocks = false;
-        'check: for y in 0..16i32 {
-            for z in 0..16i32 {
-                for x in 0..16i32 {
-                    let wx = chunk_x * 16 + x;
-                    let wz = chunk_z * 16 + z;
-                    let wy = (y_start + y) as u8;
-                    if chunk_blocks
-                        .get(&(wx, wy, wz))
-                        .map(|b| b.id != 0)
-                        .unwrap_or(false)
-                    {
-                        has_blocks = true;
-                        break 'check;
-                    }
-                }
-            }
-        }
-        section_has_blocks[section_y as usize] = has_blocks || section_y == 0;
-        if section_has_blocks[section_y as usize] {
-            bitmask |= 1 << section_y;
-        }
-    }
-
-    let mut block_arrays = Vec::new();
-    for section_y in 0..16u8 {
-        if !section_has_blocks[section_y as usize] {
+    for (&(x, y, z), block) in chunk_blocks {
+        if block.is_air() || (x >> 4) != chunk_x || (z >> 4) != chunk_z {
             continue;
         }
-        let y_start = section_y as i32 * 16;
-        let mut block_section = Vec::with_capacity(4096 * 2);
-        for y in 0..16i32 {
-            for z in 0..16i32 {
-                for x in 0..16i32 {
-                    let wx = chunk_x * 16 + x;
-                    let wz = chunk_z * 16 + z;
-                    let wy = (y_start + y) as u8;
-                    let block = chunk_blocks
-                        .get(&(wx, wy, wz))
-                        .cloned()
-                        .unwrap_or_else(Block::air);
-                    let state = ((block.id as u16) << 4) | (block.metadata as u16 & 0xF);
-                    block_section.extend_from_slice(&state.to_le_bytes());
-                }
-            }
-        }
-        block_arrays.push(block_section);
+        let idx = ((y as usize) << 8) | (((z & 15) as usize) << 4) | ((x & 15) as usize);
+        dense[idx] = ((block.id as u16) << 4) | (block.metadata as u16 & 0xF);
+        section_has_blocks[(y >> 4) as usize] = true;
     }
+    section_has_blocks[0] = true;
 
-    let mut block_light_count = 0;
-    for section_y in 0..16u8 {
-        if section_has_blocks[section_y as usize] {
-            block_light_count += 1;
+    let mut bitmask = 0u16;
+    let mut section_count = 0usize;
+    for (section_y, present) in section_has_blocks.iter().enumerate() {
+        if *present {
+            bitmask |= 1 << section_y;
+            section_count += 1;
         }
     }
 
-    let mut data = Vec::new();
-    for arr in &block_arrays {
-        data.extend_from_slice(arr);
+    let mut data = Vec::with_capacity(section_count * (8192 + 4096) + 256);
+    for (section_y, present) in section_has_blocks.iter().enumerate() {
+        if !*present {
+            continue;
+        }
+        for state in &dense[section_y * 4096..(section_y + 1) * 4096] {
+            data.extend_from_slice(&state.to_le_bytes());
+        }
     }
-    for _ in 0..block_light_count {
+    for _ in 0..section_count {
         data.extend_from_slice(&[0xFFu8; 2048]); // block light
     }
-    for _ in 0..block_light_count {
+    for _ in 0..section_count {
         data.extend_from_slice(&[0xFFu8; 2048]); // sky light
     }
     data.extend_from_slice(&[1u8; 256]); // biomes
@@ -390,5 +349,101 @@ mod tests {
         assert_eq!(at(0, 0, 0), 7);
         assert_eq!(at(0, 3, 0), 2);
         assert_eq!(at(0, 4, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod from_map_tests {
+    use super::*;
+
+    fn states(data: &[u8], section: usize) -> Vec<u16> {
+        data[section * 8192..(section + 1) * 8192]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    }
+
+    fn at(data: &[u8], section: usize, x: usize, y: usize, z: usize) -> (u8, u8) {
+        let s = states(data, section)[(y << 8) | (z << 4) | x];
+        ((s >> 4) as u8, (s & 0xF) as u8)
+    }
+
+    #[test]
+    fn an_empty_chunk_still_ships_section_zero() {
+        let (data, bitmask) = build_chunk_data_18_from_map(0, 0, &HashMap::new());
+        assert_eq!(bitmask, 0x0001);
+        assert_eq!(data.len(), 8192 + 2048 + 2048 + 256);
+    }
+
+    #[test]
+    fn the_bitmask_names_exactly_the_populated_sections() {
+        let mut blocks = HashMap::new();
+        blocks.insert((0, 20, 0), Block::new(1, 0)); // section 1
+        blocks.insert((0, 200, 0), Block::new(1, 0)); // section 12
+        let (data, bitmask) = build_chunk_data_18_from_map(0, 0, &blocks);
+
+        // 0 is always sent, plus 1 & 12
+        assert_eq!(bitmask, (1 << 0) | (1 << 1) | (1 << 12));
+        assert_eq!(data.len(), 3 * (8192 + 2048 + 2048) + 256);
+    }
+
+    #[test]
+    fn blocks_land_at_the_yzx_index_the_client_reads() {
+        let mut blocks = HashMap::new();
+        blocks.insert((3, 5, 7), Block::new(1, 0));
+        blocks.insert((15, 0, 15), Block::new(7, 0));
+        let (data, _) = build_chunk_data_18_from_map(0, 0, &blocks);
+
+        assert_eq!(at(&data, 0, 3, 5, 7), (1, 0));
+        assert_eq!(at(&data, 0, 15, 0, 15), (7, 0));
+        assert_eq!(at(&data, 0, 0, 0, 0), (0, 0), "untouched positions are air");
+    }
+
+    #[test]
+    fn every_metadata_value_survives() {
+        let mut blocks = HashMap::new();
+        for i in 0..16u8 {
+            blocks.insert((i as i32, 1, 0), Block::new(35, i));
+        }
+        let (data, _) = build_chunk_data_18_from_map(0, 0, &blocks);
+        for i in 0..16usize {
+            assert_eq!(at(&data, 0, i, 1, 0), (35, i as u8), "metadata {i}");
+        }
+    }
+
+    #[test]
+    fn negative_chunk_coordinates_use_the_low_nibble() {
+        let mut blocks = HashMap::new();
+        blocks.insert((-48, 4, 112), Block::new(1, 0));
+        blocks.insert((-33, 4, 127), Block::new(2, 0));
+        let (data, _) = build_chunk_data_18_from_map(-3, 7, &blocks);
+        assert_eq!(at(&data, 0, 0, 4, 0), (1, 0));
+        assert_eq!(at(&data, 0, 15, 4, 15), (2, 0));
+    }
+
+    #[test]
+    fn blocks_from_another_chunk_are_ignored() {
+        let mut blocks = HashMap::new();
+        blocks.insert((3, 10, 3), Block::new(1, 0));
+        blocks.insert((19, 10, 3), Block::new(49, 0)); // chunk (1,0)
+        let (data, _) = build_chunk_data_18_from_map(0, 0, &blocks);
+        assert_eq!(at(&data, 0, 3, 10, 3), (1, 0));
+    }
+
+    #[test]
+    fn explicit_air_does_not_create_a_section() {
+        let mut blocks = HashMap::new();
+        blocks.insert((1, 200, 1), Block::new(0, 0));
+        let (_, bitmask) = build_chunk_data_18_from_map(0, 0, &blocks);
+        assert_eq!(bitmask, 0x0001, "air created section 12");
+    }
+
+    #[test]
+    fn a_block_on_the_top_layer_is_in_the_last_section() {
+        let mut blocks = HashMap::new();
+        blocks.insert((0, 255, 0), Block::new(1, 0));
+        let (data, bitmask) = build_chunk_data_18_from_map(0, 0, &blocks);
+        assert_eq!(bitmask, 0x0001 | (1 << 15));
+        assert_eq!(at(&data, 1, 0, 15, 0), (1, 0));
     }
 }

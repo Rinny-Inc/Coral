@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
@@ -36,6 +36,8 @@ use coral_world::{
     level::{read_spawn_point, write_level_dat},
     world::World,
 };
+
+use crate::fluid_sim::FluidQueue;
 
 mod codec;
 mod fluid_sim;
@@ -234,7 +236,7 @@ pub struct ServerContext {
     spawn_point: Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
-    fluid_queue: Arc<RwLock<VecDeque<(i32, i32, i32)>>>,
+    fluid_queue: Arc<RwLock<FluidQueue>>,
     tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     server_loaded_chunks: Arc<RwLock<HashSet<(i32, i32)>>>,
     scoreboard: Arc<ScoreboardManager>,
@@ -273,7 +275,7 @@ impl ServerContext {
             spawn_point: Arc::new(RwLock::new(spawn_point)),
             world_dir: Arc::new(world_dir),
             xp_orbs: Arc::new(RwLock::new(Vec::new())),
-            fluid_queue: Arc::new(RwLock::new(VecDeque::new())),
+            fluid_queue: Arc::new(RwLock::new(FluidQueue::new())),
             tile_entities: Arc::new(RwLock::new(HashMap::new())),
             server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
             scoreboard: Arc::new(ScoreboardManager::new()),
