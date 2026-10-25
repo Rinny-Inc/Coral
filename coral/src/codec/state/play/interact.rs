@@ -146,9 +146,11 @@ pub async fn try_with_item_on_block(
 ) -> bool {
     match place.held_item_id {
         325 => {
-            println!(
+            tracing::info!(
                 "[BUCKET] entered branch, checking ({}, {}, {})",
-                place.x, place.y, place.z
+                place.x,
+                place.y,
+                place.z
             );
 
             let Some(p) = player_registry.get(&state.uuid).await else {
@@ -164,7 +166,7 @@ pub async fn try_with_item_on_block(
                 }
             };
 
-            println!("[BUCKET] raytrace hit = {:?}", hit);
+            tracing::info!("[BUCKET] raytrace hit = {:?}", hit);
 
             let Some(hit) = hit else {
                 return false;
@@ -177,25 +179,25 @@ pub async fn try_with_item_on_block(
 
             let target = world.get(bx, by as u8, bz).await;
 
-            println!("[BUCKET] target id={} meta={}", target.id, target.metadata);
+            tracing::info!("[BUCKET] target id={} meta={}", target.id, target.metadata);
 
             let Some(fluid) = Fluid::from_block_id(target.id) else {
-                println!("[BUCKET] not a fluid block, aborting");
+                tracing::info!("[BUCKET] not a fluid block, aborting");
                 return false;
             };
             if !Fluid::is_source(target.id, target.metadata) {
-                println!("[BUCKET] fluid found but not a source (falling/edge), aborting");
+                tracing::info!("[BUCKET] fluid found but not a source (falling/edge), aborting");
                 return false;
             }
 
-            println!("[BUCKET] confirmed source, removing");
+            tracing::info!("[BUCKET] confirmed source, removing");
             // remove the source
             world.set(bx, by as u8, bz, Block::air()).await;
             channels.block_tx.send((bx, by, bz, 0, 0)).ok();
 
             // recalculate neighbor fluids (it may now drain)
             queue_fluid_update(bx, by, bz, fluid_queue).await;
-            println!(
+            tracing::info!(
                 "[BUCKET] queued, queue len = {}",
                 fluid_queue.read().await.len()
             );

@@ -227,9 +227,10 @@ impl Decoder for Codec {
             Some(Err(e)) => Err(e),
             None => {
                 if self.state == EnumProtocol::Play {
-                    println!(
+                    tracing::info!(
                         "WARN: Ignoring unknown Play packet ID: 0x{:02X} ({})",
-                        id, id
+                        id,
+                        id
                     );
                     Ok(None)
                 } else if self.state == EnumProtocol::Status {
@@ -290,7 +291,7 @@ async fn send_packet<P: PacketOut + 'static>(framed: &mut Framed<TcpStream, Code
     if let Err(e) = framed.send(packet).await
         && !is_normal_disconnect(&e)
     {
-        eprintln!("Failed to cleanly dispatch packet frame: {e}");
+        tracing::error!("Failed to cleanly dispatch packet frame: {e}");
     }
 }
 
@@ -940,13 +941,14 @@ async fn make_player_join(
 
     let (px, py, pz) = if floating && saved.is_none() {
         let y = surface.map_or(py, f64::from);
-        println!(
+        tracing::info!(
             "[World] Spawn point ({px:.1}, {py:.1}, {pz:.1}) is floating; using surface y={y}"
         );
+
         (px, y, pz)
     } else {
         if floating {
-            println!(
+            tracing::info!(
                 "[World] {} joins at ({px:.1}, {py:.1}, {pz:.1}) but the surface there is y={}; \
                 they will fall {:.0} blocks. This is their saved position, so it is not \
                 overridden — clear their playerdata, or /setworldspawn somewhere solid.",
@@ -1128,7 +1130,7 @@ async fn make_player_join(
             ChatColor::Yellow,
         ))
         .ok();
-    println!(
+    tracing::info!(
         "[INFO] {}[/{}] logged in with entity id {}, at ([{:?}] {}, {}, {})",
         profile.username,
         peer_ip

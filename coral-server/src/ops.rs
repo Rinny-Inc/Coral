@@ -16,7 +16,7 @@ pub struct OpsFile {
 impl OpsFile {
     pub fn load() -> Self {
         if !fs::exists("ops.json").unwrap_or(false) {
-            println!("ops.json not found, creating empty file..");
+            tracing::info!("ops.json not found, creating empty file..");
             fs::write("ops.json", "[]").ok();
             return Self { entries: vec![] };
         }
@@ -24,17 +24,18 @@ impl OpsFile {
         let content = fs::read_to_string("ops.json").unwrap_or_else(|_| "[]".to_string());
 
         let entries: Vec<OpEntry> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse ops.json: {}", e);
+            tracing::error!("Failed to parse ops.json: {}", e);
             vec![]
         });
 
-        println!("Loaded {} opped players!", entries.len());
+        tracing::info!("Loaded {} opped players!", entries.len());
         Self { entries }
     }
 
     pub fn save(&self) {
         let json = serde_json::to_string_pretty(&self.entries).unwrap_or_else(|_| "[]".to_string());
-        fs::write("ops.json", json).unwrap_or_else(|e| eprintln!("Failed to save ops.json: {}", e));
+        fs::write("ops.json", json)
+            .unwrap_or_else(|e| tracing::error!("Failed to save ops.json: {}", e));
     }
 
     pub fn is_op(&self, uuid: Uuid) -> bool {

@@ -44,6 +44,13 @@ impl World {
         self.blocks.get(x, y, z, self.generator.as_ref()).await
     }
 
+    /// See [`WorldBLocks::get_many`]
+    pub async fn get_many(&self, positions: &[(i32, u8, i32)], out: &mut Vec<Option<Block>>) {
+        self.blocks
+            .get_many(positions, self.generator.as_ref(), out)
+            .await
+    }
+
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
         self.blocks.set(x, y, z, block).await;
     }
@@ -164,5 +171,104 @@ mod tests {
     async fn both_generators_report_a_level_type_the_client_understands() {
         assert_eq!(World::flat().level_type(), "flat");
         assert_eq!(void().level_type(), "flat");
+    }
+}
+
+#[cfg(test)]
+mod get_many_tests {
+    use super::*;
+    use crate::generator::{FlatWorldGenerator, VoidWorldGenerator};
+
+    fn void() -> World {
+        World::new(Arc::new(VoidWorldGenerator::new()))
+    }
+
+    fn flat() -> World {
+        World::new(Arc::new(FlatWorldGenerator::new()))
+    }
+
+    async fn agrees_with_get(world: &World, positions: &[(i32, u8, i32)]) {
+        let mut batch = Vec::new();
+        world.get_many(positions, &mut batch).await;
+
+        assert_eq!(batch.len(), positions.len(), "one result per position");
+        for (pos, got) in positions.iter().zip(&batch) {
+            let one = world.get(pos.0, pos.1, pos.2).await;
+            let got = got.as_ref().expect("every slot is filled");
+            assert_eq!(
+                (got.id, got.metadata),
+                (one.id, one.metadata),
+                "disagreed at {pos:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_batch_is_empty() {
+        let mut out = vec![Some(Block::new(1, 0))];
+        void().get_many(&[], &mut out).await;
+        assert!(out.is_empty(), "the buffer was not cleared");
+    }
+
+    #[tokio::test]
+    async fn it_matches_get_on_an_untouched_generated_world() {
+        let world = flat();
+        let positions: Vec<_> = (0..12).map(|i| (i, (60 + i) as u8, -i)).collect();
+        agrees_with_get(&world, &positions).await;
+    }
+
+    #[tokio::test]
+    async fn it_matches_get_with_edits_mixed_in() {
+        let world = flat();
+        world.set(3, 64, 3, Block::new(1, 0)).await;
+        world.set(4, 64, 3, Block::air()).await;
+        world.set(5, 70, 5, Block::new(9, 3)).await;
+
+        let mut positions = Vec::new();
+        for x in 0..8 {
+            for z in 0..8 {
+                positions.push((x, 64, z));
+            }
+        }
+        positions.push((5, 70, 5));
+        positions.push((5, 71, 5));
+        agrees_with_get(&world, &positions).await;
+    }
+
+    #[tokio::test]
+    async fn it_matches_get_across_a_chunk_border() {
+        let world = flat();
+        world.set(-1, 64, -1, Block::new(1, 0)).await;
+        world.set(0, 64, 0, Block::new(9, 0)).await;
+
+        let positions: Vec<_> = (-20..=20)
+            .flat_map(|x| (-20..=20).map(move |z| (x, 64u8, z)))
+            .collect();
+        agrees_with_get(&world, &positions).await;
+    }
+
+    #[tokio::test]
+    async fn a_repeated_position_gets_the_same_answer_every_time() {
+        let world = flat();
+        world.set(2, 64, 2, Block::new(9, 5)).await;
+
+        let positions = vec![(2, 64, 2); 5];
+        let mut batch = Vec::new();
+        world.get_many(&positions, &mut batch).await;
+
+        for slot in &batch {
+            let b = slot.as_ref().unwrap();
+            assert_eq!((b.id, b.metadata), (9, 5));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_buffer_is_reused_without_leaking_the_last_batch() {
+        let world = flat();
+        let mut batch = Vec::new();
+        world.get_many(&[(0, 64, 0); 10], &mut batch).await;
+        assert_eq!(batch.len(), 10);
+        world.get_many(&[(0, 64, 0); 3], &mut batch).await;
+        assert_eq!(batch.len(), 3, "stale entries survived");
     }
 }

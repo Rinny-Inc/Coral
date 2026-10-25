@@ -254,7 +254,7 @@ impl ChatBuilder {
         let formatted = format
             .replace("{username}", username)
             .replace("{message}", message);
-        println!("[CHAT] {}", formatted);
+        tracing::info!("[CHAT] {}", formatted);
         Self::new(formatted).build()
     }
 }

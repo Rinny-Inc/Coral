@@ -31,7 +31,7 @@ impl BanList {
     pub fn load() -> Self {
         let players = Self::load_players();
         let ips = Self::load_ips();
-        println!(
+        tracing::info!(
             "Loaded {} banned player(s) and {} banned IP(s)",
             players.len(),
             ips.len()
@@ -47,7 +47,7 @@ impl BanList {
         let content =
             fs::read_to_string("banned-players.json").unwrap_or_else(|_| "[]".to_string());
         serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse banned-players.json: {}", e);
+            tracing::error!("Failed to parse banned-players.json: {}", e);
             vec![]
         })
     }
@@ -59,7 +59,7 @@ impl BanList {
         }
         let content = fs::read_to_string("banned-ips.json").unwrap_or_else(|_| "[]".to_string());
         serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse banned-ips.json: {}", e);
+            tracing::error!("Failed to parse banned-ips.json: {}", e);
             vec![]
         })
     }
@@ -67,12 +67,12 @@ impl BanList {
     fn save_players(&self) {
         let json = serde_json::to_string_pretty(&self.players).unwrap_or_else(|_| "[]".to_string());
         fs::write("banned-players.json", json)
-            .unwrap_or_else(|e| eprintln!("Failed to save banned-players.json: {}", e));
+            .unwrap_or_else(|e| tracing::error!("Failed to save banned-players.json: {}", e));
     }
     fn save_ips(&self) {
         let json = serde_json::to_string_pretty(&self.ips).unwrap_or_else(|_| "[]".to_string());
         fs::write("banned-ips.json", json)
-            .unwrap_or_else(|e| eprintln!("Failed to save banned-ips.json: {}", e));
+            .unwrap_or_else(|e| tracing::error!("Failed to save banned-ips.json: {}", e));
     }
 
     fn timestamp() -> String {

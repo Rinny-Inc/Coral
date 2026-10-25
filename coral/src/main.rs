@@ -45,19 +45,25 @@ mod tasks;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_target(false)
+        .with_level(true)
+        .init();
+
     let config = Arc::new(coral_config::Config::load());
 
     let addr = format!("0.0.0.0:{}", config.server.port);
     let listener = match bind_with_retry(&addr).await {
         Ok(l) => {
-            println!("Minecraft Server 1.8.x started at {}", addr);
+            tracing::info!("Minecraft Server 1.8.x started at {}", addr);
             l
         }
         Err(e) => {
             if e.kind() == ErrorKind::AddrInUse {
-                eprintln!("Port {} is already in use!", config.server.port);
+                tracing::error!("Port {} is already in use!", config.server.port);
             } else {
-                eprintln!("Failed to bind a port to {}: {}", addr, e);
+                tracing::error!("Failed to bind a port to {}: {}", addr, e);
             }
             std::process::exit(1);
         }
@@ -72,9 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cwd = std::env::current_dir()?;
 
     let server_icon = load_server_icon_file(&cwd)
-        .inspect(|_| println!("Server icon loaded successfully"))
+        .inspect(|_| tracing::info!("Server icon loaded successfully"))
         .or_else(|| {
-            println!("No server icon found or invalid size");
+            tracing::info!("No server icon found or invalid size");
             None
         });
 
@@ -84,9 +90,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let world_dir = cwd.join(&config.world.world_name);
 
     let generator = coral_world::generator::from_name(&config.world.generator);
-    println!("[World] generator: {}", generator.name());
+    tracing::info!("[World] generator: {}", generator.name());
     if generator.is_empty() {
-        println!(
+        tracing::info!(
             "[World] this world generates nothing! players will fall unless there is \
             something saved under the spawn point"
         );
@@ -293,7 +299,7 @@ fn load_server_icon_file(cwd: &Path) -> Option<String> {
         let width = u32::from_be_bytes(bytes[16..20].try_into().ok()?);
         let height = u32::from_be_bytes(bytes[20..24].try_into().ok()?);
         if width != 64 || height != 64 {
-            eprintln!("server-icon.png must be 64x64, got {}x{}", width, height);
+            tracing::error!("server-icon.png must be 64x64, got {}x{}", width, height);
             return None;
         }
     }
@@ -308,7 +314,7 @@ async fn bind_with_retry(addr: &str) -> std::io::Result<TcpListener> {
             Ok(l) => return Ok(l),
             Err(e) if e.kind() == ErrorKind::AddrInUse && attempt < ATTEMPTS => {
                 if attempt == 1 {
-                    println!("[Server] {addr} is busy, waiting for it to free up..");
+                    tracing::warn!("[Server] {addr} is busy, waiting for it to free up..");
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }

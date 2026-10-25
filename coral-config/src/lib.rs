@@ -137,22 +137,23 @@ impl Default for BungeecordConfig {
 impl Config {
     pub fn load() -> Self {
         let config = Self::load_from(Path::new("config.toml"));
-        println!("Loaded config: {:#?}", config);
+        tracing::info!("Loaded config: {:#?}", config);
         config
     }
 
     pub fn load_from(path: &Path) -> Self {
         let Ok(content) = fs::read_to_string(path) else {
-            println!("[Config] {} not found, creating it..", path.display());
-            fs::write(path, DEFAULT_CONFIG.trim_start())
-                .unwrap_or_else(|e| eprintln!("[Config] failed to create {}: {e}", path.display()));
+            tracing::info!("[Config] {} not found, creating it..", path.display());
+            fs::write(path, DEFAULT_CONFIG.trim_start()).unwrap_or_else(|e| {
+                tracing::error!("[Config] failed to create {}: {e}", path.display())
+            });
             return toml::from_str(DEFAULT_CONFIG).expect("built-in default config is valid");
         };
         let config: Self = match toml::from_str(&content) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[Config] {} could not be parsed: {e}", path.display());
-                eprintln!(
+                tracing::error!("[Config] {} could not be parsed: {e}", path.display());
+                tracing::error!(
                     "[Config] running with built-in defaults for the start! The file has NOT been modified - fix the error above and restart!"
                 );
                 return Self::default();
@@ -166,18 +167,18 @@ impl Config {
                 unknown,
             }) => {
                 for key in &unknown {
-                    eprintln!(
+                    tracing::error!(
                         "[Config] unknown key `{key}` - ignored, but kept in the file! Typo?"
                     );
                 }
                 if !added.is_empty() {
-                    println!("[Config] adding missing keys: {}", added.join(", "));
+                    tracing::info!("[Config] adding missing keys: {}", added.join(", "));
                     fs::write(path, &text).unwrap_or_else(|e| {
-                        eprintln!("[Config] failed to update {}: {e}", path.display())
+                        tracing::error!("[Config] failed to update {}: {e}", path.display())
                     });
                 }
             }
-            Err(e) => eprintln!(
+            Err(e) => tracing::error!(
                 "[Config] could not check {} for missing keys: {e}",
                 path.display()
             ),

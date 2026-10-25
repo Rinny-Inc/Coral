@@ -67,7 +67,7 @@ pub fn spawn_shutdown_task(
                 Stop::Restart(exe)
             }
         };
-        println!("Shutting down, kicking players..");
+        tracing::info!("Shutting down, kicking players..");
         shutdown_signal.send(stop != Stop::Exit).ok();
 
         for _ in 0..50 {
@@ -76,7 +76,7 @@ pub fn spawn_shutdown_task(
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        println!("Saving world..");
+        tracing::info!("Saving world..");
 
         let tile_entities_by_chunk: HashMap<(i32, i32), Vec<NbtTag>> = {
             let all_tiles = tile_entities.read().await;
@@ -91,11 +91,11 @@ pub fn spawn_shutdown_task(
         world.save(&world_dir, &tile_entities_by_chunk).await;
         match stop {
             Stop::Exit => {
-                println!("World saved. Server closed!");
+                tracing::info!("World saved. Server closed!");
                 std::process::exit(0);
             }
             Stop::Restart(exe) => {
-                println!("World saved. Restarting..");
+                tracing::info!("World saved. Restarting..");
                 restart_into(&restart_plan, &exe);
             }
         }
@@ -154,26 +154,26 @@ fn restart_into(plan: &RestartPlan, exe: &std::path::Path) -> ! {
     {
         use std::os::unix::process::CommandExt;
         let err = command.exec();
-        eprintln!("[Updater] Could not exec {}: {err}", program.display());
+        tracing::error!("[Updater] Could not exec {}: {err}", program.display());
     }
 
     #[cfg(windows)]
     {
         match command.spawn() {
             Ok(child) => {
-                println!("[Updater] Restarted as pid {}", child.id());
+                tracing::info!("[Updater] Restarted as pid {}", child.id());
                 std::process::exit(0);
             }
-            Err(e) => eprintln!("[Updater] Could not start {}: {e}", program.display()),
+            Err(e) => tracing::error!("[Updater] Could not start {}: {e}", program.display()),
         }
     }
 
     if matches!(plan, RestartPlan::Command { .. }) {
-        eprintln!("[Updater] Falling back to the updated binary");
+        tracing::error!("[Updater] Falling back to the updated binary");
         restart_into(&RestartPlan::Binary, exe);
     }
 
-    eprintln!("[Updater] Start it again manually to pick up the update.");
+    tracing::error!("[Updater] Start it again manually to pick up the update.");
     std::process::exit(70);
 }
 
@@ -299,8 +299,8 @@ pub fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sende
             };
 
             match dispatcher.dispatch(ctx).await {
-                CommandResult::Success(msg) => println!("[CONSOLE] {}", msg),
-                CommandResult::Error(msg) => eprintln!("[CONSOLE ERROR] {}", msg),
+                CommandResult::Success(msg) => tracing::info!("[CONSOLE] {}", msg),
+                CommandResult::Error(msg) => tracing::error!("[CONSOLE ERROR] {}", msg),
                 CommandResult::Broadcast(msg) => {
                     chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
                 }
@@ -330,7 +330,7 @@ pub fn spawn_world_save_task(
                 map
             };
             world.save(&world_dir, &tile_entities_by_chunk).await;
-            println!("[World] Auto-Saved.");
+            tracing::info!("[World] Auto-Saved.");
         }
     });
 }

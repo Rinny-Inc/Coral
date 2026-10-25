@@ -87,7 +87,7 @@ impl Writer {
             while end > 0 && !value.is_char_boundary(end) {
                 end -= 1;
             }
-            eprintln!(
+            tracing::error!(
                 "[Protocol] truncating a {}-byte string to {end} bytes",
                 bytes.len()
             );

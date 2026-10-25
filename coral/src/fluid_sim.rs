@@ -45,10 +45,6 @@ impl FluidQueue {
     pub fn len(&self) -> usize {
         self.order.len()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.order.is_empty()
-    }
 }
 
 pub async fn queue_fluid_update(x: i32, y: i32, z: i32, fluid_queue: &Arc<RwLock<FluidQueue>>) {
@@ -120,7 +116,7 @@ pub fn spawn_fluid_task(
                     }
                 }
                 Ok(_) = shutdown_rx.recv() => {
-                    println!("[Fluid] shutting down");
+                    tracing::info!("[Fluid] shutting down");
                     break;
                 }
             }
@@ -350,15 +346,89 @@ async fn update_tick(
     }
 }
 
-async fn passable(x: i32, y: i32, z: i32, fluid: Fluid, world: &Arc<World>) -> bool {
-    if is_blocked(x, y, z, world).await {
-        return false;
+const MAX_FLOW_DEPTH: i32 = 4;
+const FLOW_SCAN_RADIUS: i32 = 1 + MAX_FLOW_DEPTH;
+const SCAN_SIDE: usize = (2 * FLOW_SCAN_RADIUS + 1) as usize;
+const SCAN_PLANE: usize = SCAN_SIDE * SCAN_SIDE;
+const SCAN_LEN: usize = 2 * SCAN_PLANE;
+
+struct FlowScan {
+    origin: (i32, i32, i32),
+    blocks: [Block; SCAN_LEN],
+}
+impl FlowScan {
+    async fn around(x: i32, y: i32, z: i32, world: &Arc<World>) -> Self {
+        let mut positions = Vec::with_capacity(SCAN_LEN);
+        for level in [y, y - 1] {
+            for dx in -FLOW_SCAN_RADIUS..=FLOW_SCAN_RADIUS {
+                for dz in -FLOW_SCAN_RADIUS..=FLOW_SCAN_RADIUS {
+                    let clamped = level.clamp(0, 255) as u8;
+                    positions.push((x + dx, clamped, z + dz));
+                }
+            }
+        }
+        let mut fetched = Vec::with_capacity(SCAN_LEN);
+        world.get_many(&positions, &mut fetched).await;
+
+        let mut blocks: [Block; SCAN_LEN] = std::array::from_fn(|_| Block::air());
+        for (slot, block) in blocks.iter_mut().zip(fetched) {
+            if let Some(block) = block {
+                *slot = block;
+            }
+        }
+
+        Self {
+            origin: (x, y, z),
+            blocks,
+        }
     }
-    let b = world.get(x, y as u8, z).await;
-    if Fluid::same_kind(b.id, fluid.block_id()) {
-        !Fluid::is_source(b.id, b.metadata)
-    } else {
-        true
+
+    fn index(level: usize, dx: i32, dz: i32) -> Option<usize> {
+        if dx.abs() > FLOW_SCAN_RADIUS || dz.abs() > FLOW_SCAN_RADIUS {
+            return None;
+        }
+        let row = (dx + FLOW_SCAN_RADIUS) as usize;
+        let col = (dz + FLOW_SCAN_RADIUS) as usize;
+        Some(level * SCAN_PLANE + row * SCAN_SIDE + col)
+    }
+
+    fn get(&self, x: i32, y: i32, z: i32) -> Block {
+        let (ox, oy, oz) = self.origin;
+        let level = match oy - y {
+            0 => 0,
+            1 => 1,
+            _ => {
+                debug_assert!(false, "flow scan read y={y}, which is not a scanned level");
+                return Block::air();
+            }
+        };
+        match Self::index(level, x - ox, z - oz) {
+            Some(i) => self.blocks[i].clone(),
+            None => {
+                debug_assert!(false, "flow scan read ({x}, {y}, {z}), outside its radius");
+                return Block::air();
+            }
+        }
+    }
+
+    fn is_blocked(&self, x: i32, y: i32, z: i32) -> bool {
+        if !(0..255).contains(&y) {
+            return true;
+        }
+        let b = self.get(x, y, z);
+        !(b.is_air() || is_replaceable(b.id) || Fluid::is_fluid(b.id))
+    }
+
+    fn passable(&self, x: i32, y: i32, z: i32, fluid: Fluid) -> bool {
+        if self.is_blocked(x, y, z) {
+            return false;
+        }
+        let b = self.get(x, y, z);
+        if Fluid::same_kind(b.id, fluid.block_id()) {
+            !Fluid::is_source(b.id, b.metadata)
+        } else {
+            true
+        }
     }
 }
 
@@ -369,16 +439,21 @@ async fn optimal_flow_directions(
     fluid: Fluid,
     world: &Arc<World>,
 ) -> [bool; 4] {
+    let scan = FlowScan::around(x, y, z, world).await;
+    optimal_flow_directions_in(x, y, z, fluid, &scan)
+}
+
+fn optimal_flow_directions_in(x: i32, y: i32, z: i32, fluid: Fluid, scan: &FlowScan) -> [bool; 4] {
     let mut costs = [1000i32; 4];
 
     for (i, (dx, dz)) in DIRS.iter().enumerate() {
         let (nx, nz) = (x + dx, z + dz);
-        if !passable(nx, y, nz, fluid, world).await {
+        if !scan.passable(nx, y, nz, fluid) {
             continue;
         }
-        let below_blocked = is_blocked(nx, y - 1, nz, world).await;
+        let below_blocked = scan.is_blocked(nx, y - 1, nz);
         costs[i] = if below_blocked {
-            flow_cost(nx, y, nz, 1, i, fluid, world).await
+            flow_cost(nx, y, nz, 1, i, fluid, scan)
         } else {
             0
         };
@@ -392,14 +467,14 @@ async fn optimal_flow_directions(
     out
 }
 
-async fn flow_cost(
+fn flow_cost(
     x: i32,
     y: i32,
     z: i32,
     depth: i32,
     from_dir: usize,
     fluid: Fluid,
-    world: &Arc<World>,
+    scan: &FlowScan,
 ) -> i32 {
     let mut best = 1000;
     let opposite = match from_dir {
@@ -414,15 +489,14 @@ async fn flow_cost(
             continue;
         }
         let (nx, nz) = (x + dx, z + dz);
-        if !passable(nx, y, nz, fluid, world).await {
+        if !scan.passable(nx, y, nz, fluid) {
             continue;
         }
-        if !is_blocked(nx, y - 1, nz, world).await {
+        if !scan.is_blocked(nx, y - 1, nz) {
             return depth;
         }
-        if depth < 4 {
-            let c = Box::pin(flow_cost(nx, y, nz, depth + 1, i, fluid, world)).await;
-            best = best.min(c);
+        if depth < MAX_FLOW_DEPTH {
+            best = best.min(flow_cost(nx, y, nz, depth + 1, i, fluid, scan));
         }
     }
     best
@@ -475,7 +549,7 @@ mod queue_tests {
         let mut q = FluidQueue::new();
         q.push((1, 2, 3));
         assert_eq!(q.drain_batch(10), vec![(1, 2, 3)]);
-        assert!(q.is_empty());
+        assert!(q.order.is_empty());
         assert!(q.push((1, 2, 3)));
         assert_eq!(q.len(), 1);
     }
@@ -507,5 +581,214 @@ mod queue_tests {
         q.drain_batch(2);
         assert!(!q.push((4, 0, 0)), "still-pending position was re-queued");
         assert!(q.push((0, 0, 0)), "drained position could not re-enter");
+    }
+}
+
+#[cfg(test)]
+mod flow_scan_tests {
+    use std::sync::Arc;
+
+    use coral_world::{
+        blocks::{Block, fluid::Fluid},
+        generator::VoidWorldGenerator,
+        world::World,
+    };
+
+    use super::{
+        DIRS, FlowScan, MAX_FLOW_DEPTH, is_blocked, optimal_flow_directions,
+        optimal_flow_directions_in,
+    };
+
+    const STONE: u8 = 1;
+    const WATER: u8 = 9;
+
+    async fn oracle_passable(x: i32, y: i32, z: i32, fluid: Fluid, world: &Arc<World>) -> bool {
+        if is_blocked(x, y, z, world).await {
+            return false;
+        }
+        let b = world.get(x, y as u8, z).await;
+        if Fluid::same_kind(b.id, fluid.block_id()) {
+            !Fluid::is_source(b.id, b.metadata)
+        } else {
+            true
+        }
+    }
+
+    async fn oracle_cost(
+        x: i32,
+        y: i32,
+        z: i32,
+        depth: i32,
+        from_dir: usize,
+        fluid: Fluid,
+        world: &Arc<World>,
+    ) -> i32 {
+        let mut best = 1000;
+        let opposite = match from_dir {
+            0 => 1,
+            1 => 0,
+            2 => 3,
+            _ => 2,
+        };
+        for (i, (dx, dz)) in DIRS.iter().enumerate() {
+            if i == opposite {
+                continue;
+            }
+            let (nx, nz) = (x + dx, z + dz);
+            if !oracle_passable(nx, y, nz, fluid, world).await {
+                continue;
+            }
+            if !is_blocked(nx, y - 1, nz, world).await {
+                return depth;
+            }
+            if depth < MAX_FLOW_DEPTH {
+                let c = Box::pin(oracle_cost(nx, y, nz, depth + 1, i, fluid, world)).await;
+                best = best.min(c);
+            }
+        }
+        best
+    }
+
+    async fn oracle_directions(
+        x: i32,
+        y: i32,
+        z: i32,
+        fluid: Fluid,
+        world: &Arc<World>,
+    ) -> [bool; 4] {
+        let mut costs = [1000i32; 4];
+        for (i, (dx, dz)) in DIRS.iter().enumerate() {
+            let (nx, nz) = (x + dx, z + dz);
+            if !oracle_passable(nx, y, nz, fluid, world).await {
+                continue;
+            }
+            costs[i] = if is_blocked(nx, y - 1, nz, world).await {
+                oracle_cost(nx, y, nz, 1, i, fluid, world).await
+            } else {
+                0
+            };
+        }
+        let min = *costs.iter().min().unwrap_or(&1000);
+        let mut out = [false; 4];
+        for i in 0..4 {
+            out[i] = costs[i] == min;
+        }
+        out
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    fn void_world() -> Arc<World> {
+        Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
+    }
+
+    async fn random_terrain(seed: u64, y: i32, hole_in: u64, wall_in: u64) -> Arc<World> {
+        let world = void_world();
+        let mut rng = Rng(seed | 1);
+        let reach = super::FLOW_SCAN_RADIUS + 2;
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                if rng.below(hole_in) != 0 {
+                    world.set(x, (y - 1) as u8, z, Block::new(STONE, 0)).await;
+                }
+                match rng.below(wall_in) {
+                    0 => world.set(x, y as u8, z, Block::new(STONE, 0)).await,
+                    1 => world.set(x, y as u8, z, Block::new(WATER, 0)).await,
+                    _ => {}
+                }
+            }
+        }
+        world.set(0, y as u8, 0, Block::new(WATER, 1)).await;
+        world
+    }
+
+    #[tokio::test]
+    async fn the_prefetched_search_agrees_with_the_one_that_reads_the_world() {
+        let fluid = Fluid::STATIONARY_WATER;
+        for seed in 1..=60u64 {
+            let (hole_in, wall_in) = match seed % 3 {
+                0 => (40, 12),
+                1 => (12, 6),
+                _ => (6, 4),
+            };
+            let world = random_terrain(seed, 64, hole_in, wall_in).await;
+
+            let expected = oracle_directions(0, 64, 0, fluid, &world).await;
+            let actual = optimal_flow_directions(0, 64, 0, fluid, &world).await;
+
+            assert_eq!(actual, expected, "seed {seed} disagreed");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sealed_floor_forces_the_search_to_its_full_depth() {
+        let world = void_world();
+        let reach = super::FLOW_SCAN_RADIUS + 2;
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                world.set(x, 63, z, Block::new(STONE, 0)).await;
+            }
+        }
+        world.set(0, 64, 0, Block::new(WATER, 1)).await;
+
+        let fluid = Fluid::STATIONARY_WATER;
+        let expected = oracle_directions(0, 64, 0, fluid, &world).await;
+        let actual = optimal_flow_directions(0, 64, 0, fluid, &world).await;
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual, [true; 4], "a flat sealed floor spreads every way");
+    }
+
+    #[tokio::test]
+    async fn the_scan_covers_everything_the_search_reads() {
+        let world = void_world();
+        let reach = super::FLOW_SCAN_RADIUS + 2;
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                world.set(x, 63, z, Block::new(STONE, 0)).await;
+            }
+        }
+        world.set(0, 64, 0, Block::new(WATER, 1)).await;
+
+        let scan = FlowScan::around(0, 64, 0, &world).await;
+        optimal_flow_directions_in(0, 64, 0, Fluid::STATIONARY_WATER, &scan);
+    }
+
+    #[tokio::test]
+    async fn the_search_still_picks_the_nearest_hole() {
+        let world = void_world();
+        let reach = super::FLOW_SCAN_RADIUS + 2;
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                world.set(x, 63, z, Block::new(STONE, 0)).await;
+            }
+        }
+        world.set(3, 63, 0, Block::air()).await;
+        world.set(0, 64, 0, Block::new(WATER, 1)).await;
+
+        let dirs = optimal_flow_directions(0, 64, 0, Fluid::STATIONARY_WATER, &world).await;
+        assert_eq!(dirs, [false, true, false, false], "water ignored the hole");
+    }
+
+    #[tokio::test]
+    async fn a_scan_at_the_world_floor_does_not_read_below_it() {
+        let world = void_world();
+        world.set(0, 0, 0, Block::new(WATER, 1)).await;
+
+        let dirs = optimal_flow_directions(0, 0, 0, Fluid::STATIONARY_WATER, &world).await;
+        assert_eq!(dirs, [true; 4]);
     }
 }

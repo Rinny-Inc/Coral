@@ -36,7 +36,7 @@ pub fn plan_restart(command: &RestartCommand) -> RestartPlan {
     let program = match resolved {
         Ok(p) => p,
         Err(e) => {
-            eprintln!(
+            tracing::error!(
                 "
                 [Updater] restart command `{}` cannot be resolved ({e}); update restarts will \
                 execute the binary instead!",
@@ -53,7 +53,7 @@ pub fn plan_restart(command: &RestartCommand) -> RestartPlan {
             .map(|m| m.permissions().mode() & 0o111 != 0)
             .unwrap_or(false);
         if program.is_absolute() && !executable {
-            println!(
+            tracing::info!(
                 "[Updater] restart command `{}` is not executable; it will be run with `sh`!",
                 program.display()
             );
@@ -65,7 +65,7 @@ pub fn plan_restart(command: &RestartCommand) -> RestartPlan {
         }
     };
 
-    println!(
+    tracing::info!(
         "[Updater] update restarts will run `{}{}`",
         program.display(),
         args.iter().map(|a| format!(" {a}")).collect::<String>()
@@ -276,11 +276,11 @@ pub async fn run(config: UpdaterConfig, restart_tx: Arc<Sender<PathBuf>>) {
         return;
     }
     let Some(current) = BUILD_TAG.and_then(Version::parse) else {
-        println!("[Updater] Development build, automatic updates disabled!");
+        tracing::info!("[Updater] Development build, automatic updates disabled!");
         return;
     };
     let channel = Channel::from_config(config.channel).unwrap_or(current.channel());
-    println!("[Updater] Running {current}, following the {channel} channel!");
+    tracing::info!("[Updater] Running {current}, following the {channel} channel!");
 
     let client = match reqwest::Client::builder()
         .user_agent(USER_AGENT)
@@ -290,7 +290,7 @@ pub async fn run(config: UpdaterConfig, restart_tx: Arc<Sender<PathBuf>>) {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[Updater] Could not build HTTP client: {e}");
+            tracing::error!("[Updater] Could not build HTTP client: {e}");
             return;
         }
     };
@@ -298,14 +298,14 @@ pub async fn run(config: UpdaterConfig, restart_tx: Arc<Sender<PathBuf>>) {
     match check(&client, &current, channel, config.mode).await {
         Ok(Some(exe)) => {
             if restart_tx.send(exe).is_err() {
-                eprintln!(
+                tracing::error!(
                     "[Updater] Nothing is listening for the restart request; the update is \
                           installed and will apply on next restart!"
                 );
             }
         }
         Ok(None) => {}
-        Err(e) => eprintln!("[Updater] Update check failed: {e}"),
+        Err(e) => tracing::error!("[Updater] Update check failed: {e}"),
     }
 }
 
@@ -327,12 +327,12 @@ async fn check(
         .await?;
 
     let Some((release, version)) = select(&releases, current, channel) else {
-        println!("[Updater] Up to date!");
+        tracing::info!("[Updater] Up to date!");
         return Ok(None);
     };
 
     if mode == UpdateMode::Notify {
-        println!(
+        tracing::info!(
             "[Updater] {version} is available (running {current}): https://github.com/{REPO}/releases/tag/{}",
             release.tag_name
         );
@@ -357,7 +357,7 @@ async fn check(
         return Err(UpdateError::TooLarge(asset.size));
     }
 
-    println!(
+    tracing::info!(
         "[Updater] Downloading {version} ({name}, {} KiB)...",
         asset.size / 1024
     );
@@ -384,7 +384,7 @@ async fn check(
     .await
     .map_err(|e| UpdateError::Io(io::Error::other(e)))??;
 
-    println!(
+    tracing::info!(
         "[Updater] Installed {version} to {}. the previous binary is kept as {}",
         exe.display(),
         backup_path(&exe).display()

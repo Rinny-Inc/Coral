@@ -1225,7 +1225,7 @@ pub async fn play(
                                 }
 
                                 if expired && !arrived {
-                                    println!(
+                                    tracing::warn!(
                                         "[WARN] {} never confirmed a teleport to ({tx:.1}, {ty:.1}, {tz:.1}); accepting ({x:.1}, {y:.1}, {z:.1})",
                                         state.name
                                     );
@@ -1756,12 +1756,12 @@ pub async fn play(
                             continue;
                         }
 
-                        println!("WARN: Unhandled packet: {:?}", packet);
+                        tracing::warn!("WARN: Unhandled packet: {:?}", packet);
                         continue;
                     }
                     Err(e) => {
                         if !is_normal_disconnect(&e) {
-                            eprintln!("Error processing packet: {:?}", e);
+                            tracing::error!("Error processing packet: {:?}", e);
                         }
                         break;
                     }
@@ -1813,7 +1813,7 @@ pub async fn play(
             ))
             .ok();
     }
-    println!(
+    tracing::info!(
         "{} left the game; Online: {}",
         state.name,
         player_registry.get_online_count().await
@@ -2231,7 +2231,7 @@ async fn handle_landing(
 
         if damage_eligible && state.fall_distance > 3.0 {
             let damage = (state.fall_distance - 3.0).round();
-            println!(
+            tracing::info!(
                 "[FALL] landing: fall_distance={}, was_on_ground={}, y={}, gamemode={:?}, first_pos={}",
                 state.fall_distance,
                 state.was_on_ground,

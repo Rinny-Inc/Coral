@@ -35,3 +35,5 @@ toml = "1.1.8+spec-1.1.0"
 toml_edit = "0.25.17+spec-1.1.0"
 uuid = { version = "1.28.0", features = ["v3", "v4"] }
 sysinfo = "0.39.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

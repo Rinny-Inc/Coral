@@ -18,6 +18,8 @@ pub mod definitions;
 pub mod fluid;
 pub mod registry;
 
+pub type ChunkBlock = Arc<HashMap<(i32, u8, i32), Block>>;
+
 pub trait BlockBehavior: Send + Sync {
     fn id(&self) -> u8;
 
@@ -137,7 +139,7 @@ fn trim_decoded_cache(
     }
 
     if evicted > 0 {
-        println!(
+        tracing::info!(
             "[World] Evicted {evicted} decoded chunks ({} remaining, ~{} MiB)",
             cache.len(),
             total / (1024 * 1024)
@@ -207,6 +209,73 @@ impl WorldBlocks {
         generator.block_at(x, y, z)
     }
 
+    pub async fn get_many(
+        &self,
+        positions: &[(i32, u8, i32)],
+        generator: &dyn WorldGenerator,
+        out: &mut Vec<Option<Block>>,
+    ) {
+        out.clear();
+        out.resize(positions.len(), None);
+
+        {
+            let blocks = self.blocks.read().await;
+            for (slot, pos) in out.iter_mut().zip(positions) {
+                *slot = blocks.get(pos).cloned();
+            }
+        }
+        {
+            let decoded = self.decoded_cache.read().await;
+            let mut current: Option<((i32, i32), &ChunkBlock)> = None;
+            for (slot, pos) in out.iter_mut().zip(positions) {
+                if slot.is_some() {
+                    continue;
+                }
+                let key = (pos.0 >> 4, pos.2 >> 4);
+                if current.map(|(k, _)| k) != Some(key) {
+                    current = decoded.get(&key).map(|(chunk, _)| (key, chunk));
+                }
+                if let Some((_, chunk)) = current {
+                    *slot = Some(chunk.get(pos).cloned().unwrap_or_else(Block::air));
+                }
+            }
+        }
+
+        let mut unresolved: Vec<(i32, i32)> = out
+            .iter()
+            .zip(positions)
+            .filter(|(slot, _)| slot.is_none())
+            .map(|(_, pos)| (pos.0 >> 4, pos.2 >> 4))
+            .collect();
+        unresolved.sort_unstable();
+        unresolved.dedup();
+
+        for key in unresolved {
+            let decoded = match self.get_chunk_nbt(key.0, key.1).await {
+                Some(nbt) => {
+                    let mut chunk_blocks = HashMap::new();
+                    nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
+                    let chunk_blocks = Arc::new(chunk_blocks);
+                    let mut cache = self.decoded_cache.write().await;
+                    cache.insert(key, (chunk_blocks.clone(), Instant::now()));
+                    trim_decoded_cache(&mut cache);
+                    Some(chunk_blocks)
+                }
+                None => None,
+            };
+
+            for (slot, pos) in out.iter_mut().zip(positions) {
+                if slot.is_some() || (pos.0 >> 4, pos.2 >> 4) != key {
+                    continue;
+                }
+                *slot = Some(match &decoded {
+                    Some(chunk) => chunk.get(pos).cloned().unwrap_or_else(Block::air),
+                    None => generator.block_at(pos.0, pos.1, pos.2),
+                });
+            }
+        }
+    }
+
     pub async fn chunk_has_edits(&self, cx: i32, cz: i32) -> bool {
         self.blocks
             .read()
@@ -262,7 +331,7 @@ impl WorldBlocks {
 
         let evicted = before - cache.len();
         if evicted > 0 {
-            println!(
+            tracing::info!(
                 "[World] Evicted {} stale chunks from cache ({} remaining).",
                 evicted,
                 cache.len()
@@ -273,7 +342,7 @@ impl WorldBlocks {
     pub async fn load(&self, world_dir: &Path) {
         let region_dir = world_dir.join("region");
         if !region_dir.exists() {
-            println!("[World] No existing world found, starting fresh!");
+            tracing::info!("[World] No existing world found, starting fresh!");
             return;
         }
         *self.world_dir.write().await = Some(world_dir.to_path_buf());
@@ -290,7 +359,7 @@ impl WorldBlocks {
                     .count()
             })
             .unwrap_or(0);
-        println!(
+        tracing::info!(
             "[World] Loaded {} region files. Chunks will load on demand.",
             count
         );
@@ -305,7 +374,7 @@ impl WorldBlocks {
         let dirty = {
             let d = self.dirty_chunks.read().await;
             if d.is_empty() {
-                println!("[World] Nothing to save.");
+                tracing::info!("[World] Nothing to save.");
                 return;
             }
             d.clone()
@@ -529,9 +598,10 @@ impl WorldBlocks {
 
         self.dirty_chunks.write().await.clear();
 
-        println!(
+        tracing::info!(
             "[World] Saved {} chunks across {} region files.",
-            dirty_count, region_count
+            dirty_count,
+            region_count
         );
     }
 }

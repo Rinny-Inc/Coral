@@ -337,7 +337,7 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
     .await;
 
     let Ok(Some(compressed)) = compressed else {
-        eprintln!("[World] Could not encode playerdata for {uuid}");
+        tracing::error!("[World] Could not encode playerdata for {uuid}");
         return;
     };
 

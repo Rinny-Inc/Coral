@@ -95,7 +95,7 @@ pub fn from_name(name: &str) -> Arc<dyn WorldGenerator> {
         "void" => Arc::new(VoidWorldGenerator::new()),
         "flat" => Arc::new(FlatWorldGenerator::new()),
         other => {
-            eprintln!("[World] unknown generator `{other}`, using `flat`");
+            tracing::error!("[World] unknown generator `{other}`, using `flat`");
             Arc::new(FlatWorldGenerator::new())
         }
     }

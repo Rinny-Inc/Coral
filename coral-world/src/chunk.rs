@@ -43,7 +43,7 @@ impl ChunkData {
                 todo!()
             };
 
-            //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
+            //tracing::debug!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
 
             return Self {
                 chunk_x,
@@ -70,7 +70,7 @@ impl ChunkData {
             build_chunk_data_17(chunk_x, chunk_z, &world.blocks, world.generator.as_ref()).await
         };
 
-        //println!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
+        //tracing::debug!("DEBUG ChunkData ({},{}) data_len={}", chunk_x, chunk_z, data.len());
 
         Self {
             chunk_x,

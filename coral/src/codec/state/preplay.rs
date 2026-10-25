@@ -117,7 +117,7 @@ pub async fn pre_play(
                                                     forwarded_properties = data.properties;
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("Invalid bungee forwarding data, rejecting connection! {:?}", e);
+                                                    tracing::error!("Invalid bungee forwarding data, rejecting connection! {:?}", e);
                                                     return None;
                                                 }
                                             }
@@ -271,7 +271,7 @@ pub async fn pre_play(
                         }
                         Err(e) => {
                             if !is_normal_disconnect(&e) {
-                                eprintln!("Error processing packet: {:?}", e);
+                                tracing::error!("Error processing packet: {:?}", e);
                             }
                             return None;
                         }

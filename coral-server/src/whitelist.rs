@@ -15,17 +15,17 @@ pub struct WhitelistFile {
 impl WhitelistFile {
     pub fn load() -> Self {
         if !fs::exists("whitelist.json").unwrap_or(false) {
-            println!("whitelist.json not found, creating empty file..");
+            tracing::info!("whitelist.json not found, creating empty file..");
             fs::write("whitelist.json", "[]").ok();
             return Self { entries: vec![] };
         }
 
         let content = fs::read_to_string("whitelist.json").unwrap_or_else(|_| "[]".to_string());
         let entries: Vec<WhitelistEntry> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("Failed to parse whitelist.json: {}", e);
+            tracing::error!("Failed to parse whitelist.json: {}", e);
             vec![]
         });
-        println!("Loaded {} whitelisted players!", entries.len());
+        tracing::info!("Loaded {} whitelisted players!", entries.len());
 
         Self { entries }
     }
@@ -33,7 +33,7 @@ impl WhitelistFile {
     pub fn save(&self) {
         let json = serde_json::to_string_pretty(&self.entries).unwrap_or_else(|_| "[]".to_string());
         fs::write("whitelist.json", json)
-            .unwrap_or_else(|e| eprintln!("Failed to save whitelist.json {}", e));
+            .unwrap_or_else(|e| tracing::error!("Failed to save whitelist.json {}", e));
     }
 
     pub fn is_whitelisted(&self, uuid: Uuid) -> bool {

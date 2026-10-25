@@ -18,3 +18,4 @@ sha1.workspace = true
 uuid.workspace = true
 rand.workspace = true
 flate2.workspace = true
+tracing.workspace = true
