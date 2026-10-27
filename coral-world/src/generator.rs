@@ -15,6 +15,10 @@ pub trait WorldGenerator: Debug + Send + Sync {
     fn is_empty(&self) -> bool {
         false
     }
+
+    fn generates_in_chunk(&self, _cx: i32, _cz: i32) -> bool {
+        !self.is_empty()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,17 +68,34 @@ impl WorldGenerator for FlatWorldGenerator {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct VoidWorldGenerator;
+pub struct VoidWorldGenerator {
+    platform: Option<(i32, u8, i32)>,
+}
 
 impl VoidWorldGenerator {
     pub fn new() -> Self {
-        Self
+        Self { platform: None }
+    }
+
+    pub fn with_spawn_platform(spawn_x: i32, spawn_y: f64, spawn_z: i32) -> Self {
+        let below = spawn_y.floor() as i32 - 1;
+        let platform = (0..=255)
+            .contains(&below)
+            .then(|| (spawn_x, below as u8, spawn_z));
+        Self { platform }
+    }
+
+    pub fn platform(&self) -> Option<(i32, u8, i32)> {
+        self.platform
     }
 }
 
 impl WorldGenerator for VoidWorldGenerator {
-    fn block_at(&self, _x: i32, _y: u8, _z: i32) -> Block {
-        Block::air()
+    fn block_at(&self, x: i32, y: u8, z: i32) -> Block {
+        match self.platform {
+            Some(pos) if pos == (x, y, z) => Block::new(1, 0),
+            _ => Block::air(),
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -88,6 +109,11 @@ impl WorldGenerator for VoidWorldGenerator {
     fn is_empty(&self) -> bool {
         true
     }
+
+    fn generates_in_chunk(&self, cx: i32, cz: i32) -> bool {
+        self.platform
+            .is_some_and(|(x, _, z)| (x >> 4) == cx && (z >> 4) == cz)
+    }
 }
 
 pub fn from_name(name: &str) -> Arc<dyn WorldGenerator> {
@@ -98,6 +124,20 @@ pub fn from_name(name: &str) -> Arc<dyn WorldGenerator> {
             tracing::error!("[World] unknown generator `{other}`, using `flat`");
             Arc::new(FlatWorldGenerator::new())
         }
+    }
+}
+
+pub fn from_name_at_spawn(
+    name: &str,
+    spawn_x: i32,
+    spawn_y: f64,
+    spawn_z: i32,
+) -> Arc<dyn WorldGenerator> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "void" => Arc::new(VoidWorldGenerator::with_spawn_platform(
+            spawn_x, spawn_y, spawn_z,
+        )),
+        other => from_name(other),
     }
 }
 
@@ -135,6 +175,81 @@ mod tests {
         assert!(g.block_at(i32::MIN, 0, i32::MAX).is_air());
         assert!(g.is_empty());
         assert!(!FlatWorldGenerator::new().is_empty());
+    }
+
+    #[test]
+    fn a_bare_void_is_still_air_everywhere() {
+        let g = VoidWorldGenerator::new();
+        assert_eq!(g.platform(), None);
+        for y in [0u8, 64, 65, 255] {
+            assert!(g.block_at(0, y, 0).is_air(), "y={y}");
+        }
+        assert!(!g.generates_in_chunk(0, 0), "nothing to send");
+    }
+
+    #[test]
+    fn the_platform_sits_one_block_under_the_spawn() {
+        let g = VoidWorldGenerator::with_spawn_platform(0, 65.0, 0);
+        assert_eq!(g.platform(), Some((0, 64, 0)));
+        assert_eq!(g.block_at(0, 64, 0).id, 1);
+        assert!(g.block_at(0, 65, 0).is_air(), "the spawn itself is solid");
+    }
+
+    #[test]
+    fn it_is_exactly_one_block() {
+        let g = VoidWorldGenerator::with_spawn_platform(0, 65.0, 0);
+        let mut solid = 0;
+        for x in -2..=2 {
+            for z in -2..=2 {
+                for y in 60..=70u8 {
+                    if !g.block_at(x, y, z).is_air() {
+                        solid += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(solid, 1, "the void grew a platform");
+    }
+
+    #[test]
+    fn the_platform_follows_the_spawn_column() {
+        let g = VoidWorldGenerator::with_spawn_platform(-40, 20.0, 137);
+        assert_eq!(g.platform(), Some((-40, 19, 137)));
+        assert_eq!(g.block_at(-40, 19, 137).id, 1);
+        assert!(g.block_at(0, 64, 0).is_air(), "still air at the origin");
+    }
+
+    #[test]
+    fn a_spawn_on_the_world_floor_gets_no_platform() {
+        let g = VoidWorldGenerator::with_spawn_platform(0, 0.0, 0);
+        assert_eq!(g.platform(), None);
+        assert!(g.block_at(0, 0, 0).is_air());
+    }
+
+    #[test]
+    fn only_the_spawn_chunk_reports_content() {
+        let g = VoidWorldGenerator::with_spawn_platform(-40, 65.0, 137);
+        assert!(g.generates_in_chunk(-3, 8), "(-40, 137) is chunk (-3, 8)");
+        assert!(!g.generates_in_chunk(0, 0));
+        assert!(!g.generates_in_chunk(-3, 9));
+    }
+
+    #[test]
+    fn a_flat_world_generates_in_every_chunk() {
+        let g = FlatWorldGenerator::new();
+        assert!(g.generates_in_chunk(0, 0));
+        assert!(g.generates_in_chunk(-1000, 1000));
+    }
+
+    #[test]
+    fn resolving_at_a_spawn_only_changes_the_void() {
+        let v = from_name_at_spawn("void", 5, 65.0, -5);
+        assert_eq!(v.name(), "void");
+        assert_eq!(v.block_at(5, 64, -5).id, 1);
+
+        let f = from_name_at_spawn("flat", 5, 65.0, -5);
+        assert_eq!(f.name(), "flat");
+        assert_eq!(from_name_at_spawn("amplified", 0, 65.0, 0).name(), "flat");
     }
 
     #[test]

@@ -43,6 +43,8 @@ pub struct Player {
     pub is_sleeping: bool,
     pub air_tick: i16,
     pub on_fire: bool,
+    pub xp_total: i32,
+    pub xp_level: i32,
 }
 
 impl Player {
@@ -61,6 +63,8 @@ impl Player {
         health: f32,
         food: i32,
         food_saturation: f32,
+        xp_total: i32,
+        xp_level: i32,
     ) -> Self {
         Self {
             entity_id,
@@ -94,6 +98,8 @@ impl Player {
             velocity: (0.0, 0.0, 0.0),
             air_tick: 300,
             on_fire: false,
+            xp_total,
+            xp_level,
         }
     }
 
@@ -164,6 +170,8 @@ mod tests {
             20.0,
             20,
             5.0,
+            0,
+            0,
         )
     }
 

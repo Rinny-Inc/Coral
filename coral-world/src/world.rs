@@ -70,7 +70,9 @@ impl World {
     }
 
     pub async fn surface_y(&self, x: i32, z: i32) -> Option<u8> {
-        if self.generator.is_empty() && self.blocks.is_untouched_column(x, z).await {
+        if !self.generator.generates_in_chunk(x >> 4, z >> 4)
+            && self.blocks.is_untouched_column(x, z).await
+        {
             return None;
         }
         for y in (0..=255u8).rev() {

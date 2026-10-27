@@ -19,6 +19,7 @@ pub mod fluid;
 pub mod registry;
 
 pub type ChunkBlock = Arc<HashMap<(i32, u8, i32), Block>>;
+pub type ChunkEdits = HashMap<(i32, u8, i32), Block>;
 
 pub trait BlockBehavior: Send + Sync {
     fn id(&self) -> u8;
@@ -93,7 +94,7 @@ impl Block {
 
 pub struct WorldBlocks {
     // only player modified blocks
-    pub blocks: RwLock<HashMap<(i32, u8, i32), Block>>,
+    pub blocks: RwLock<HashMap<(i32, i32), ChunkEdits>>,
     // chunks loaded from disk into mem
     pub chunk_cache: RwLock<HashMap<(i32, i32), (Arc<Vec<u8>>, Instant)>>,
     // cache for better peformances
@@ -180,12 +181,18 @@ impl WorldBlocks {
     }
 
     pub async fn get(&self, x: i32, y: u8, z: i32, generator: &dyn WorldGenerator) -> Block {
-        if let Some(b) = self.blocks.read().await.get(&(x, y, z)) {
-            return b.clone();
-        }
-
         let cx = x >> 4;
         let cz = z >> 4;
+
+        if let Some(b) = self
+            .blocks
+            .read()
+            .await
+            .get(&(cx, cz))
+            .and_then(|edits| edits.get(&(x, y, z)))
+        {
+            return b.clone();
+        }
 
         if let Some((decoded, _)) = self.decoded_cache.read().await.get(&(cx, cz)) {
             return decoded.get(&(x, y, z)).cloned().unwrap_or_else(Block::air);
@@ -220,8 +227,13 @@ impl WorldBlocks {
 
         {
             let blocks = self.blocks.read().await;
+            let mut current: Option<((i32, i32), &ChunkEdits)> = None;
             for (slot, pos) in out.iter_mut().zip(positions) {
-                *slot = blocks.get(pos).cloned();
+                let key = (pos.0 >> 4, pos.2 >> 4);
+                if current.map(|(k, _)| k) != Some(key) {
+                    current = blocks.get(&key).map(|edits| (key, edits));
+                }
+                *slot = current.and_then(|(_, edits)| edits.get(pos).cloned());
             }
         }
         {
@@ -280,8 +292,17 @@ impl WorldBlocks {
         self.blocks
             .read()
             .await
-            .keys()
-            .any(|(x, _, z)| (x >> 4) == cx && (z >> 4) == cz)
+            .get(&(cx, cz))
+            .is_some_and(|edits| !edits.is_empty())
+    }
+
+    pub async fn chunk_edits(&self, cx: i32, cz: i32) -> ChunkEdits {
+        self.blocks
+            .read()
+            .await
+            .get(&(cx, cz))
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub async fn is_untouched_column(&self, x: i32, z: i32) -> bool {
@@ -293,8 +314,8 @@ impl WorldBlocks {
             .blocks
             .read()
             .await
-            .keys()
-            .any(|(bx, _, bz)| *bx == x && *bz == z)
+            .get(&(cx, cz))
+            .is_some_and(|edits| edits.keys().any(|(bx, _, bz)| *bx == x && *bz == z))
     }
 
     pub async fn set(&self, x: i32, y: u8, z: i32, block: Block) {
@@ -303,7 +324,12 @@ impl WorldBlocks {
 
         self.get_chunk_nbt(cx, cz).await;
 
-        self.blocks.write().await.insert((x, y, z), block);
+        self.blocks
+            .write()
+            .await
+            .entry((cx, cz))
+            .or_default()
+            .insert((x, y, z), block);
         self.dirty_chunks.write().await.insert((cx, cz));
         self.decoded_cache.write().await.remove(&(cx, cz));
     }
@@ -380,7 +406,13 @@ impl WorldBlocks {
             d.clone()
         };
 
-        let player_blocks = self.blocks.read().await.clone();
+        let diffs_by_chunk: HashMap<(i32, i32), ChunkEdits> = {
+            let blocks = self.blocks.read().await;
+            dirty
+                .iter()
+                .filter_map(|key| blocks.get(key).map(|edits| (*key, edits.clone())))
+                .collect()
+        };
         let world_dir = world_dir.to_path_buf();
         let region_dir = world_dir.join("region");
 
@@ -394,15 +426,6 @@ impl WorldBlocks {
         }
 
         tokio::fs::create_dir_all(&region_dir).await.ok();
-
-        // group ALL diffs by chunk ONCE
-        let mut diffs_by_chunk: HashMap<(i32, i32), Vec<((i32, u8, i32), Block)>> = HashMap::new();
-        for (&(x, y, z), block) in &player_blocks {
-            diffs_by_chunk
-                .entry((x >> 4, z >> 4))
-                .or_default()
-                .push(((x, y, z), block.clone()));
-        }
 
         // build merged block maps + is_new flags for each dirty chunk
         let mut chunk_block_maps: HashMap<(i32, i32), HashMap<(i32, u8, i32), Block>> =
@@ -889,5 +912,143 @@ mod region_tests {
             }
             assert_eq!(w.decoded_cache.read().await.len(), 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod chunk_edit_index_tests {
+    use super::*;
+    use crate::generator::FlatWorldGenerator;
+
+    fn blocks() -> WorldBlocks {
+        WorldBlocks::new()
+    }
+
+    fn flat() -> FlatWorldGenerator {
+        FlatWorldGenerator::new()
+    }
+
+    #[tokio::test]
+    async fn an_edit_is_filed_under_its_own_chunk() {
+        let b = blocks();
+        b.set(5, 64, 5, Block::new(1, 0)).await;
+
+        assert!(b.chunk_has_edits(0, 0).await);
+        assert!(!b.chunk_has_edits(1, 0).await);
+        assert!(!b.chunk_has_edits(0, 1).await);
+        assert!(!b.chunk_has_edits(-1, -1).await);
+    }
+
+    #[tokio::test]
+    async fn negative_coordinates_land_in_the_right_chunk() {
+        let b = blocks();
+        b.set(-1, 64, -1, Block::new(1, 0)).await;
+
+        assert!(b.chunk_has_edits(-1, -1).await, "(-1,-1) went elsewhere");
+        assert!(!b.chunk_has_edits(0, 0).await);
+    }
+
+    #[tokio::test]
+    async fn chunk_edits_returns_only_that_chunks_edits() {
+        let b = blocks();
+        b.set(1, 64, 1, Block::new(1, 0)).await;
+        b.set(2, 64, 2, Block::new(2, 0)).await;
+        b.set(20, 64, 1, Block::new(3, 0)).await; // chunk (1, 0)
+
+        let here = b.chunk_edits(0, 0).await;
+        assert_eq!(here.len(), 2);
+        assert!(here.contains_key(&(1, 64, 1)));
+        assert!(here.contains_key(&(2, 64, 2)));
+
+        let next = b.chunk_edits(1, 0).await;
+        assert_eq!(next.len(), 1);
+        assert!(next.contains_key(&(20, 64, 1)));
+
+        assert!(b.chunk_edits(9, 9).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_still_sees_every_edit() {
+        let b = blocks();
+        let generator = flat();
+        let edits = [
+            (0, 64u8, 0, 1u8),
+            (15, 64, 15, 2),
+            (16, 64, 16, 3),
+            (-1, 64, -1, 4),
+            (-16, 70, -16, 5),
+            (-17, 70, -17, 6),
+            (300, 20, -400, 7),
+        ];
+        for (x, y, z, id) in edits {
+            b.set(x, y, z, Block::new(id, 0)).await;
+        }
+        for (x, y, z, id) in edits {
+            assert_eq!(
+                b.get(x, y, z, &generator).await.id,
+                id,
+                "at ({x}, {y}, {z})"
+            );
+        }
+        assert_eq!(
+            b.get(1000, 64, 1000, &generator).await.id,
+            generator.block_at(1000, 64, 1000).id
+        );
+    }
+
+    #[tokio::test]
+    async fn overwriting_a_position_replaces_rather_than_duplicates() {
+        let b = blocks();
+        let generator = flat();
+        b.set(3, 64, 3, Block::new(1, 0)).await;
+        b.set(3, 64, 3, Block::new(9, 2)).await;
+
+        assert_eq!(b.chunk_edits(0, 0).await.len(), 1);
+        let got = b.get(3, 64, 3, &generator).await;
+        assert_eq!((got.id, got.metadata), (9, 2));
+    }
+
+    #[tokio::test]
+    async fn get_many_agrees_with_get_across_chunks() {
+        let b = blocks();
+        let generator = flat();
+        b.set(-1, 64, -1, Block::new(1, 0)).await;
+        b.set(0, 64, 0, Block::new(2, 0)).await;
+        b.set(16, 64, 16, Block::new(3, 0)).await;
+
+        let positions: Vec<_> = (-18..=18)
+            .flat_map(|x| (-18..=18).map(move |z| (x, 64u8, z)))
+            .collect();
+        let mut batch = Vec::new();
+        b.get_many(&positions, &generator, &mut batch).await;
+
+        for (pos, got) in positions.iter().zip(&batch) {
+            let one = b.get(pos.0, pos.1, pos.2, &generator).await;
+            let got = got.as_ref().unwrap();
+            assert_eq!((got.id, got.metadata), (one.id, one.metadata), "at {pos:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_untouched_column_stays_untouched_until_it_is_edited() {
+        let b = WorldBlocks::new();
+        assert!(b.is_untouched_column(4, 4).await);
+
+        b.set(4, 64, 4, Block::new(1, 0)).await;
+        assert!(!b.is_untouched_column(4, 4).await);
+        assert!(b.is_untouched_column(5, 4).await);
+        assert!(b.is_untouched_column(40, 4).await);
+    }
+
+    #[tokio::test]
+    async fn a_void_world_only_reports_edits_in_the_chunk_asked_about() {
+        let b = blocks();
+        for i in 0..64 {
+            b.set(i * 16, 64, 0, Block::new(1, 0)).await;
+        }
+        for i in 0..64 {
+            assert!(b.chunk_has_edits(i, 0).await, "chunk ({i}, 0)");
+        }
+        assert!(!b.chunk_has_edits(0, 1).await);
     }
 }

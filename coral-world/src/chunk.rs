@@ -29,13 +29,8 @@ impl ChunkData {
             let mut chunk_blocks: HashMap<(i32, u8, i32), Block> = HashMap::new();
             nbt_to_blocks_raw(&nbt, &mut chunk_blocks);
 
-            {
-                let player_blocks = world.blocks.blocks.read().await;
-                for (&(x, y, z), block) in player_blocks.iter() {
-                    if (x >> 4) == chunk_x && (z >> 4) == chunk_z {
-                        chunk_blocks.insert((x, y, z), block.clone());
-                    }
-                }
+            for (pos, block) in world.blocks.chunk_edits(chunk_x, chunk_z).await {
+                chunk_blocks.insert(pos, block);
             }
             let (data, primary_bitmask) = if client_protocol == 47 {
                 build_chunk_data_18_from_map(chunk_x, chunk_z, &chunk_blocks)
@@ -54,7 +49,9 @@ impl ChunkData {
             };
         }
 
-        if world.generator.is_empty() && !world.blocks.chunk_has_edits(chunk_x, chunk_z).await {
+        if !world.generator.generates_in_chunk(chunk_x, chunk_z)
+            && !world.blocks.chunk_has_edits(chunk_x, chunk_z).await
+        {
             return Self {
                 chunk_x,
                 chunk_z,
@@ -109,7 +106,7 @@ impl PacketOut for ChunkData {
 }
 
 fn get_block_state(
-    snapshot: &std::collections::HashMap<(i32, u8, i32), Block>,
+    snapshot: &crate::blocks::ChunkEdits,
     wx: i32,
     wy: u8,
     wz: i32,
@@ -128,8 +125,8 @@ async fn build_chunk_data_18(
     world_blocks: &WorldBlocks,
     generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
+    let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
     let block_data = {
-        let snapshot = world_blocks.blocks.read().await;
         let mut data = Vec::with_capacity(8192);
         for y in 0..16usize {
             for z in 0..16usize {
@@ -161,6 +158,7 @@ async fn build_chunk_data_17(
     generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
     let mut blocks = vec![0u8; 4096];
+    let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
 
     for y in 0..16usize {
         for z in 0..16usize {
@@ -169,7 +167,10 @@ async fn build_chunk_data_17(
                 let wy = y as u8;
                 let wz = chunk_z * 16 + z as i32;
 
-                let block = world_blocks.get(wx, wy, wz, generator).await;
+                let block = snapshot
+                    .get(&(wx, wy, wz))
+                    .cloned()
+                    .unwrap_or_else(|| generator.block_at(wx, wy, wz));
                 let index = y * 256 + z * 16 + x;
                 blocks[index] = block.id;
             }
@@ -445,5 +446,71 @@ mod from_map_tests {
         let (data, bitmask) = build_chunk_data_18_from_map(0, 0, &blocks);
         assert_eq!(bitmask, 0x0001 | (1 << 15));
         assert_eq!(at(&data, 1, 0, 15, 0), (1, 0));
+    }
+}
+
+#[cfg(test)]
+mod spawn_platform_tests {
+    use std::sync::Arc;
+
+    use super::ChunkData;
+    use crate::{generator::VoidWorldGenerator, world::World};
+
+    const STONE: u8 = 1;
+
+    fn void_at_spawn(x: i32, y: f64, z: i32) -> Arc<World> {
+        Arc::new(World::new(Arc::new(
+            VoidWorldGenerator::with_spawn_platform(x, y, z),
+        )))
+    }
+
+    #[tokio::test]
+    async fn the_world_reads_the_platform_back() {
+        let world = void_at_spawn(0, 65.0, 0);
+        assert_eq!(world.get(0, 64, 0).await.id, STONE);
+        assert!(world.get(0, 65, 0).await.is_air());
+        assert!(world.get(1, 64, 0).await.is_air());
+    }
+
+    #[tokio::test]
+    async fn the_spawn_is_not_floating_above_the_platform() {
+        let world = void_at_spawn(0, 65.0, 0);
+        assert_eq!(world.surface_y(0, 0).await, Some(65));
+        assert!(
+            !world.is_floating_spawn(0.5, 65.0, 0.5).await,
+            "the player would still be told they are about to fall"
+        );
+        assert_eq!(world.surface_y(1, 0).await, None);
+    }
+
+    #[tokio::test]
+    async fn the_spawn_chunk_is_not_sent_as_empty() {
+        let world = void_at_spawn(0, 65.0, 0);
+        let chunk = ChunkData::build(0, 0, 47, &world).await;
+        assert_ne!(
+            chunk.primary_bitmask, 0x0000,
+            "the spawn chunk went out empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_other_chunk_is_still_sent_empty() {
+        let world = void_at_spawn(0, 65.0, 0);
+        for (cx, cz) in [(1, 0), (0, 1), (-1, -1), (40, -40)] {
+            let chunk = ChunkData::build(cx, cz, 47, &world).await;
+            assert_eq!(
+                chunk.primary_bitmask, 0x0000,
+                "chunk ({cx}, {cz}) was built when it had nothing in it"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_platform_away_from_the_origin_lands_in_its_own_chunk() {
+        // (-40, 137) is chunk (-3, 8)
+        let world = void_at_spawn(-40, 65.0, 137);
+        assert_ne!(ChunkData::build(-3, 8, 47, &world).await.primary_bitmask, 0);
+        assert_eq!(ChunkData::build(0, 0, 47, &world).await.primary_bitmask, 0);
+        assert_eq!(world.get(-40, 64, 137).await.id, STONE);
     }
 }

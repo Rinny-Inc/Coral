@@ -42,7 +42,7 @@ use coral_server::{
     bounding_box::EntityBounds,
     effects::{ActiveEffect, EffectKind},
     entity_tracker::TrackedEntity,
-    experience::{self, XpOrb, xp_needed_for_level},
+    experience::{self, XpOrb},
     items::{
         armor::{apply_armor_reduction, total_defense},
         drop_physics::{break_drop_velocity, manual_drop_velocity},
@@ -192,7 +192,7 @@ pub async fn play(
                 ).await;
             }
             Ok((eid, x, y, z)) = bed_rx.recv() => {
-                if eid == state.entity_id {
+                if eid == state.entity_id || !state.has_chunk_at(x, z) {
                     continue;
                 }
                 send_packet(framed, UseBed {
@@ -210,8 +210,8 @@ pub async fn play(
                     animation: EntityAnimationType::LeaveBed,
                 }).await;
             }
-            Ok((sender_eid, _id, _x, _y, _z, _ox, _oy, _oz, _data, _count, _extra)) = particle_rx.recv() => {
-                if state.entity_id == sender_eid {
+            Ok((sender_eid, _id, x, _y, z, _ox, _oy, _oz, _data, _count, _extra)) = particle_rx.recv() => {
+                if state.entity_id == sender_eid || !state.has_chunk_at_pos(x as f64, z as f64) {
                     continue;
                 }
                 /*send_packet(framed, WorldParticles {
@@ -277,6 +277,9 @@ pub async fn play(
                 }).await;
             }
             Ok((eid, x, y, z)) = projectile_move_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
                     x, y, z,
@@ -303,6 +306,9 @@ pub async fn play(
                 // TODO SEND 0x41 Server -> Client
             }
             Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
                 // TODO: filter sounds that are sent client side & skip sound maker
                 send_packet(framed, NamedSoundEffect {
                     sound: sound.to_string(), x, y, z, volume, pitch
@@ -524,6 +530,7 @@ pub async fn play(
                 let (level, progress) = experience::xp_to_level(state.xp_total);
                 state.xp_level = level;
                 state.xp_progress = progress;
+                player_registry.update_experience(&state.uuid, state.xp_total, state.xp_level).await;
 
                 send_packet(framed, SetExperience {
                     experience_bar: progress,
@@ -531,7 +538,8 @@ pub async fn play(
                     total_experience: state.xp_total
                 }).await;
 
-                channels.sound_tx.send(("random.orb", 0.0, 0.0, 0.0, 0.5, 63)).ok();
+                let (sx, sy, sz) = state.last_position;
+                channels.sound_tx.send(("random.orb", sx, sy, sz, 0.5, 63)).ok();
             }
             Ok((eid, x, y, z, amount)) = xp_orb_spawn_rx.recv() => {
                 send_packet(framed, SpawnExperienceOrb {
@@ -541,6 +549,9 @@ pub async fn play(
                 }).await;
             }
             Ok((eid, x, y, z)) = xp_orb_move_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
                     x, y, z,
@@ -565,6 +576,9 @@ pub async fn play(
                 send_packet(framed, update).await;
             }
             Ok((x, y, z, block_id, metadata)) = block_rx.recv() => {
+                if !state.has_chunk_at(x, z) {
+                    continue;
+                }
                 send_packet(framed, BlockChange {
                     x, y, z,
                     block_id,
@@ -572,7 +586,7 @@ pub async fn play(
                 }).await;
             }
             Ok((eid, x, y, z, stage)) = break_rx.recv() => {
-                if eid == state.entity_id {
+                if eid == state.entity_id || !state.has_chunk_at(x, z) {
                     continue;
                 }
                 send_packet(framed, BlockBreakAnimation {
@@ -617,6 +631,9 @@ pub async fn play(
                 }
             }
             Ok((x, y, z, lines)) = sign_update_rx.recv() => {
+                if !(state.has_chunk_at(x, z)) {
+                    continue;
+                }
                 send_packet(framed, UpdateSign { x, y, z, lines }).await;
             }
             Ok((uuid, health, food, food_saturation, attacker_eid)) = dmg_rx.recv() => {
@@ -627,6 +644,9 @@ pub async fn play(
                 state.food = food;
                 state.food_saturation = food_saturation;
                 state.is_dead = health <= 0.0;
+                if state.is_dead {
+                    state.clear_experience(framed, &player_registry).await;
+                }
 
                 send_packet(framed, UpdateHealth {
                     health,
@@ -784,9 +804,7 @@ pub async fn play(
                                             1.0, 63
                                         )).ok();
 
-                                        if matches!(block.id, 63 | 68) {
-                                            tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
-                                        }
+                                        tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
                                         continue;
                                     }
                                     let required = break_time_ticks(
@@ -853,9 +871,7 @@ pub async fn play(
                                             1.0, 63
                                         )).ok();
 
-                                        if matches!(block.id, 63 | 68) {
-                                            tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
-                                        }
+                                        tile_entities.write().await.remove(&(bx, by, bz));
 
                                         if !block.is_air() && block.id > 0 {
                                             let can_drop = if let Some(req_mat) = block_registry.required_material(block.id) {
@@ -1662,7 +1678,7 @@ pub async fn play(
                                                     state.name.clone()
                                                 ))).ok();
 
-                                                let xp_amount = level_to_xp_drop(1); // TODO: add xp_level, xp_total to coral_server::Player
+                                                let xp_amount = level_to_xp_drop(target.xp_level);
                                                 if xp_amount > 0 {
                                                     let orb_eid = next_entity_id();
                                                     xp_orbs.write().await.push(XpOrb {
@@ -2128,13 +2144,7 @@ fn normalize_yaw(yaw: f32) -> f32 {
 }
 
 fn level_to_xp_drop(level: i32) -> i32 {
-    if level == 0 {
-        return 0;
-    }
-
-    let xp_in_current_level = xp_needed_for_level(level - 1);
-    let drop = (xp_in_current_level * 7).min(100);
-    drop.max(0)
+    level.max(0).saturating_mul(7).min(100)
 }
 
 fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
@@ -2352,5 +2362,47 @@ async fn send_player_equipment(
             },
         )
         .await;
+    }
+}
+
+#[cfg(test)]
+mod xp_drop_tests {
+    use super::level_to_xp_drop;
+
+    #[test]
+    fn it_is_seven_per_level() {
+        assert_eq!(level_to_xp_drop(1), 7);
+        assert_eq!(level_to_xp_drop(2), 14);
+        assert_eq!(level_to_xp_drop(5), 35);
+        assert_eq!(level_to_xp_drop(14), 98);
+    }
+
+    #[test]
+    fn a_player_with_no_levels_drops_nothing() {
+        assert_eq!(level_to_xp_drop(0), 0);
+    }
+
+    #[test]
+    fn it_is_capped_at_a_hundred() {
+        assert_eq!(level_to_xp_drop(15), 100);
+        assert_eq!(level_to_xp_drop(100), 100);
+        assert_eq!(level_to_xp_drop(i32::MAX), 100);
+    }
+
+    #[test]
+    fn a_negative_level_drops_nothing() {
+        assert_eq!(level_to_xp_drop(-1), 0);
+        assert_eq!(level_to_xp_drop(i32::MIN), 0);
+    }
+
+    #[test]
+    fn the_drop_rises_with_the_level_until_the_cap() {
+        let mut last = 0;
+        for level in 0..40 {
+            let drop = level_to_xp_drop(level);
+            assert!(drop >= last, "level {level} dropped less than {level} - 1");
+            assert!((0..=100).contains(&drop), "level {level} gave {drop}");
+            last = drop;
+        }
     }
 }

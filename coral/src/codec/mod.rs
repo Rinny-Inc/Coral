@@ -19,6 +19,7 @@ use coral_protocol::reader::ReadError;
 use coral_protocol::{CONTINUE_BIT, SEGMENT_BITS};
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
+use coral_server::experience::xp_to_level;
 use coral_server::items::ids::EMPTY_HAND;
 use coral_server::items::{Item, ItemRegistry};
 use coral_server::projectile::Projectile;
@@ -357,6 +358,14 @@ struct PlayerState {
     in_lava: bool,
 }
 impl PlayerState {
+    fn has_chunk_at(&self, x: i32, z: i32) -> bool {
+        self.loaded_chunks.contains(&(x >> 4, z >> 4))
+    }
+
+    fn has_chunk_at_pos(&self, x: f64, z: f64) -> bool {
+        self.has_chunk_at(x.floor() as i32, z.floor() as i32)
+    }
+
     fn new(uuid: Uuid, name: String, item_registry: &ItemRegistry) -> Self {
         Self {
             uuid,
@@ -539,7 +548,30 @@ impl PlayerState {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
+    async fn clear_experience(
+        &mut self,
+        framed: &mut Framed<TcpStream, Codec>,
+        player_registry: &Arc<PlayerRegistry>,
+    ) {
+        if self.xp_total == 0 && self.xp_level == 0 {
+            return;
+        }
+        self.xp_total = 0;
+        self.xp_level = 0;
+        self.xp_progress = 0.0;
+        player_registry.update_experience(&self.uuid, 0, 0).await;
+
+        send_packet(
+            framed,
+            SetExperience {
+                experience_bar: 0.0,
+                level: 0,
+                total_experience: 0,
+            },
+        )
+        .await;
+    }
+
     async fn damage_player(
         &mut self,
         framed: &mut Framed<TcpStream, Codec>,
@@ -564,6 +596,7 @@ impl PlayerState {
 
         if self.health <= 0.0 {
             self.is_dead = true;
+            self.clear_experience(framed, player_registry).await;
             return true;
         }
         false
@@ -1107,6 +1140,8 @@ async fn make_player_join(
     state.await_teleport(px, py, pz);
     state.was_on_ground = true;
 
+    let (xp_level, xp_progress) = xp_to_level(xp_total);
+
     let player = Player::new(
         entity_id,
         state.uuid,
@@ -1121,6 +1156,8 @@ async fn make_player_join(
         phealth,
         pfood,
         psat,
+        xp_total,
+        xp_level,
     );
     player_registry.add(player.clone()).await;
 
@@ -1131,7 +1168,7 @@ async fn make_player_join(
         ))
         .ok();
     tracing::info!(
-        "[INFO] {}[/{}] logged in with entity id {}, at ([{:?}] {}, {}, {})",
+        "{}[/{}] logged in with entity id {}, at ([{:?}] {:02}, {:02}, {:02})",
         profile.username,
         peer_ip
             .map(|a| a.to_string())
@@ -1226,9 +1263,8 @@ async fn make_player_join(
     send_packet(
         framed,
         SetExperience {
-            // TODO: complete save and load to player world files
-            experience_bar: 0.0,
-            level: 0,
+            experience_bar: xp_progress,
+            level: xp_level,
             total_experience: xp_total,
         },
     )
@@ -1247,6 +1283,9 @@ async fn make_player_join(
     state.health = phealth;
     state.food = pfood;
     state.food_saturation = psat;
+    state.xp_total = xp_total;
+    state.xp_level = xp_level;
+    state.xp_progress = xp_progress;
     state.is_op = is_op;
     state.last_position = (px, py, pz);
     state.last_position_tick = Instant::now();
@@ -1478,5 +1517,63 @@ mod encode_tests {
             compressed_cap,
             "compression buffer regrew"
         );
+    }
+}
+
+#[cfg(test)]
+mod chunk_visibility_tests {
+    use super::*;
+
+    fn state_with(chunks: &[(i32, i32)]) -> PlayerState {
+        let registry = ItemRegistry::new();
+        let mut state = PlayerState::new(Uuid::nil(), "tester".to_string(), &registry);
+        state.loaded_chunks = chunks.iter().copied().collect();
+        state
+    }
+
+    #[test]
+    fn a_position_inside_a_loaded_chunk_is_visible() {
+        let state = state_with(&[(0, 0)]);
+        for (x, z) in [(0, 0), (15, 15), (7, 3)] {
+            assert!(state.has_chunk_at(x, z), "({x}, {z}) should be visible");
+        }
+    }
+
+    #[test]
+    fn a_position_outside_every_loaded_chunk_is_not() {
+        let state = state_with(&[(0, 0)]);
+        for (x, z) in [(16, 0), (0, 16), (-1, 0), (0, -1), (1000, 1000)] {
+            assert!(!state.has_chunk_at(x, z), "({x}, {z}) should be hidden");
+        }
+    }
+
+    #[test]
+    fn negative_coordinates_map_to_the_chunk_below_zero() {
+        let state = state_with(&[(-1, -1)]);
+        assert!(state.has_chunk_at(-1, -1));
+        assert!(state.has_chunk_at(-16, -16));
+        assert!(!state.has_chunk_at(0, 0));
+        assert!(!state.has_chunk_at(-17, -17));
+    }
+
+    #[test]
+    fn a_client_with_nothing_loaded_sees_nothing() {
+        let state = state_with(&[]);
+        assert!(!state.has_chunk_at(0, 0));
+        assert!(!state.has_chunk_at_pos(0.5, 0.5));
+    }
+
+    #[test]
+    fn float_positions_floor_rather_than_truncate() {
+        let state = state_with(&[(-1, -1)]);
+        assert!(state.has_chunk_at_pos(-0.5, -0.5));
+        assert!(!state.has_chunk_at_pos(0.5, 0.5));
+    }
+
+    #[test]
+    fn a_position_on_a_chunk_border_belongs_to_the_higher_chunk() {
+        let state = state_with(&[(1, 1)]);
+        assert!(state.has_chunk_at_pos(16.0, 16.0));
+        assert!(!state.has_chunk_at_pos(15.999, 15.999));
     }
 }

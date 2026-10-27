@@ -3,7 +3,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -36,6 +36,7 @@ use coral_world::{
     level::{read_spawn_point, write_level_dat},
     world::World,
 };
+use tracing_subscriber::fmt::time::FormatTime;
 
 use crate::fluid_sim::FluidQueue;
 
@@ -46,7 +47,7 @@ mod tasks;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .without_time()
+        .with_timer(TimeOfDay)
         .with_target(false)
         .with_level(true)
         .init();
@@ -89,28 +90,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let world_path = world_path(&config.world.world_name)?;
     let world_dir = cwd.join(&config.world.world_name);
 
-    let generator = coral_world::generator::from_name(&config.world.generator);
+    let spawn_y = coral_world::generator::from_name(&config.world.generator).spawn_y();
+
+    if !world_dir.join("level.dat").exists() {
+        write_level_dat(world_path, &config.world.world_name, spawn_y as i32);
+    }
+
+    let spawn_point = read_spawn_point(world_path)
+        .await
+        .unwrap_or((0.5, spawn_y, 0.5, 0.0, 0.0));
+    let generator = coral_world::generator::from_name_at_spawn(
+        &config.world.generator,
+        spawn_point.0.floor() as i32,
+        spawn_point.1,
+        spawn_point.2.floor() as i32,
+    );
+
     tracing::info!("[World] generator: {}", generator.name());
     if generator.is_empty() {
         tracing::info!(
-            "[World] this world generates nothing! players will fall unless there is \
-            something saved under the spawn point"
+            "[World] this world generates nothing beyond a single block at the spawn point"
         );
     }
-
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(
-            world_path,
-            &config.world.world_name,
-            generator.spawn_y() as i32,
-        );
-    }
-
-    let spawn_point =
-        read_spawn_point(world_path)
-            .await
-            .unwrap_or((0.5, generator.spawn_y(), 0.5, 0.0, 0.0));
-
     let world = Arc::new(World::new(generator));
     world.load(world_path).await;
 
@@ -218,6 +219,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+struct TimeOfDay;
+impl FormatTime for TimeOfDay {
+    fn format_time(&self, w: &mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|since_epoch| since_epoch.as_secs())
+            .unwrap_or(0);
+        write_time_of_day(w, secs)
+    }
+}
+fn write_time_of_day(w: &mut impl std::fmt::Write, secs: u64) -> std::fmt::Result {
+    let day = secs % 86_400;
+    write!(
+        w,
+        "{:02}:{:02}:{:02}",
+        day / 3600,
+        (day % 3600) / 60,
+        day % 60
+    )
+}
+
 #[derive(Clone)]
 pub struct ServerContext {
     packet_registry: Arc<PacketRegistry>,
@@ -322,4 +344,56 @@ async fn bind_with_retry(addr: &str) -> std::io::Result<TcpListener> {
         }
     }
     unreachable!("the last attempt returns")
+}
+
+#[cfg(test)]
+mod time_of_day_tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::write_time_of_day;
+
+    fn render(secs: u64) -> String {
+        let mut out = String::new();
+        write_time_of_day(&mut out, secs).expect("writing to a String");
+        out
+    }
+
+    #[test]
+    fn midnight_is_all_zeroes() {
+        assert_eq!(render(0), "00:00:00");
+    }
+
+    #[test]
+    fn the_last_second_of_the_day_is_not_the_first_of_the_next() {
+        assert_eq!(render(86_399), "23:59:59");
+        assert_eq!(render(86_400), "00:00:00");
+    }
+
+    #[test]
+    fn each_field_is_two_digits() {
+        assert_eq!(render(3_661), "01:01:01");
+        assert_eq!(render(45_296), "12:34:56");
+    }
+
+    #[test]
+    fn the_day_number_does_not_leak_into_the_hours() {
+        let secs = 1_000 * 86_400 + 13 * 3600 + 45 * 60 + 30;
+        assert_eq!(render(secs), "13:45:30");
+    }
+
+    #[test]
+    fn any_instant_renders_to_a_valid_time() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+        for offset in [0, 1, 59, 60, 3_599, 3_600, 86_399, 86_400, 1_000_000] {
+            let out = render(now.wrapping_add(offset));
+            let parts: Vec<u32> = out.split(':').map(|p| p.parse().unwrap()).collect();
+            assert_eq!(out.len(), 8, "{out} is not HH:MM:SS");
+            assert!(parts[0] < 24, "{out} has an impossible hour");
+            assert!(parts[1] < 60, "{out} has an impossible minute");
+            assert!(parts[2] < 60, "{out} has an impossible second");
+        }
+    }
 }

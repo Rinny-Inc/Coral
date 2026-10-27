@@ -111,6 +111,13 @@ impl PlayerRegistry {
         }
     }
 
+    pub async fn update_experience(&self, uuid: &Uuid, xp_total: i32, xp_level: i32) {
+        if let Some(player) = self.roster.write().await.by_uuid.get_mut(uuid) {
+            player.xp_total = xp_total;
+            player.xp_level = xp_level;
+        }
+    }
+
     pub async fn update_held_item(&self, uuid: &Uuid, item_id: i16) {
         if let Some(player) = self.roster.write().await.by_uuid.get_mut(uuid) {
             player.held_item_id = item_id;
@@ -271,6 +278,8 @@ mod entity_id_index_tests {
             20.0,
             20,
             5.0,
+            0,
+            0,
         )
     }
 
@@ -291,6 +300,33 @@ mod entity_id_index_tests {
             let found = registry.get_by_entity_id(*eid).await;
             assert_eq!(found.map(|p| p.uuid), Some(*uuid), "entity id {eid}");
         }
+    }
+
+    #[tokio::test]
+    async fn experience_is_visible_through_the_registry() {
+        let uuid = Uuid::new_v4();
+        let registry = registry_with(&[(1, uuid)]).await;
+
+        assert_eq!(registry.get(&uuid).await.map(|p| p.xp_level), Some(0));
+
+        registry.update_experience(&uuid, 394, 15).await;
+
+        let p = registry.get(&uuid).await.expect("still online");
+        assert_eq!((p.xp_total, p.xp_level), (394, 15));
+        let by_eid = registry.get_by_entity_id(1).await.expect("tracked");
+        assert_eq!((by_eid.xp_total, by_eid.xp_level), (394, 15));
+    }
+
+    #[tokio::test]
+    async fn clearing_experience_is_visible_too() {
+        let uuid = Uuid::new_v4();
+        let registry = registry_with(&[(1, uuid)]).await;
+        registry.update_experience(&uuid, 394, 15).await;
+
+        registry.update_experience(&uuid, 0, 0).await;
+
+        let p = registry.get(&uuid).await.expect("still online");
+        assert_eq!((p.xp_total, p.xp_level), (0, 0));
     }
 
     #[tokio::test]

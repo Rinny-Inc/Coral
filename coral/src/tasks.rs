@@ -568,10 +568,6 @@ pub fn spawn_xp_orb_task(
             }
             for (uuid, amount) in picked_up_per_player.1 {
                 channels.xp_pickup_tx.send((uuid, amount)).ok();
-                channels
-                    .sound_tx
-                    .send(("random.orb", 0.0, 0.0, 0.0, 0.5, 63))
-                    .ok();
             }
         }
     });
