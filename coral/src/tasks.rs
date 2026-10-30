@@ -16,11 +16,12 @@ use coral_protocol::packets::play::{
 };
 use coral_server::{
     experience::XpOrb,
+    items::drops::DroppedItems,
     player::registry::PlayerRegistry,
     projectile::{Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, smelt_result},
 };
-use coral_types::{DespawnEntity, ItemInfo, dist_sq3, dist3, ext::TicksExt};
+use coral_types::{DespawnEntity, dist_sq3, dist3, ext::TicksExt};
 use coral_world::{
     anvil::tile_entity_to_nbt,
     blocks::Block,
@@ -37,12 +38,16 @@ use uuid::Uuid;
 
 use crate::Channels;
 
+const SPLASH_RADIUS: f64 = 4.0;
+const ARROW_SCAN_RADIUS: f64 = 2.0;
+const ORB_PICKUP_RADIUS: f64 = 1.0;
+
 /// Why the server is stopping
 #[derive(PartialEq)]
 enum Stop {
     Exit,
-    /// Re-exec this binary. The path comes from the updater rather than from `current_exe()`;
-    /// see [`coral::updater::RestartRequest`]
+    /// Re-exec this binary
+    /// The path comes from the updater rather than from `current_exe()` see [`coral::updater::RestartRequest`]
     Restart(PathBuf),
 }
 
@@ -237,7 +242,7 @@ pub fn spawn_item_despawn_task(
     despawn_tx: Arc<Sender<DespawnEntity>>,
     item_despawn_secs: u64,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
-    item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    item_positions: Arc<RwLock<DroppedItems>>,
 ) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(1));
@@ -260,7 +265,7 @@ pub fn spawn_item_despawn_task(
 
             for eid in &expired {
                 times.remove(eid);
-                positions.remove(eid);
+                positions.remove(*eid);
             }
             if !expired.is_empty() {
                 despawn_tx.send(expired).ok();
@@ -357,6 +362,8 @@ pub fn spawn_projectile_task(
         loop {
             interval.tick().await;
 
+            let positions = player_registry.position_snapshot().await;
+
             let (to_remove, moves, splash_effects) = {
                 let mut list = projectiles.write().await;
                 let mut to_remove = vec![];
@@ -364,7 +371,6 @@ pub fn spawn_projectile_task(
                 let mut splash_effects: Vec<(Uuid, u8, u8, i32)> = vec![];
 
                 for proj in list.iter_mut() {
-                    // ^^^^^ TODO: future me -> get players inside the chunks where the projectile is
                     proj.ticks_alive += 1;
 
                     let gravity = proj.kind.gravity();
@@ -397,12 +403,13 @@ pub fn spawn_projectile_task(
                             }
                             ProjectileKind::SplashPotion(meta) => {
                                 let effects = coral_server::items::potions::potion_effects(meta);
-                                let players = player_registry.get_all().await;
-                                for target in &players {
+                                for target in
+                                    positions.candidates_near(proj.x, proj.z, SPLASH_RADIUS)
+                                {
                                     let dist =
                                         dist3(target.x, target.y, target.z, proj.x, proj.y, proj.z);
 
-                                    if dist <= 4.0 {
+                                    if dist <= SPLASH_RADIUS {
                                         let potency = 1.0 - (dist / 4.0);
                                         for pe in &effects {
                                             let scaled_duration =
@@ -426,8 +433,7 @@ pub fn spawn_projectile_task(
                     }
 
                     if proj.kind == ProjectileKind::Arrow {
-                        let players = player_registry.get_all().await;
-                        for target in &players {
+                        for target in positions.candidates_near(proj.x, proj.z, ARROW_SCAN_RADIUS) {
                             if target.is_dead {
                                 continue;
                             }
@@ -443,17 +449,22 @@ pub fn spawn_projectile_task(
 
                             if dist_sq3(target.x, target.y, target.z, proj.x, proj.y, proj.z) < 0.64
                             {
+                                let Some(hit) =
+                                    player_registry.get_by_entity_id(target.entity_id).await
+                                else {
+                                    continue;
+                                };
                                 let speed =
                                     (proj.vx.powi(2) + proj.vy.powi(2) + proj.vz.powi(2)).sqrt();
                                 let damage = (speed * 3.0).clamp(2.0, 10.0) as f32;
-                                let new_health = (target.health - damage).max(0.0);
+                                let new_health = (hit.health - damage).max(0.0);
 
                                 player_registry
                                     .update_health(
                                         &target.uuid,
                                         new_health,
-                                        target.food,
-                                        target.food_saturation,
+                                        hit.food,
+                                        hit.food_saturation,
                                     )
                                     .await;
                                 channels
@@ -461,8 +472,8 @@ pub fn spawn_projectile_task(
                                     .send((
                                         target.uuid,
                                         new_health,
-                                        target.food,
-                                        target.food_saturation,
+                                        hit.food,
+                                        hit.food_saturation,
                                         proj.owner_entity_id,
                                     ))
                                     .ok();
@@ -511,13 +522,14 @@ pub fn spawn_xp_orb_task(
         loop {
             interval.tick().await;
 
+            let positions = player_registry.position_snapshot().await;
+
             let (moves, picked_up_per_player) = {
                 let mut orbs = xp_orbs.write().await;
                 let mut moves = vec![];
                 let mut to_remove = vec![];
                 let mut pickups: Vec<(Uuid, i32)> = vec![];
 
-                let players = player_registry.get_all().await;
                 for orb in orbs.iter_mut() {
                     orb.ticks_alive += 1;
                     orb.vy -= 0.01;
@@ -533,11 +545,11 @@ pub fn spawn_xp_orb_task(
                     }
 
                     let mut picked = false;
-                    for p in &players {
+                    for p in positions.candidates_near(orb.x, orb.z, ORB_PICKUP_RADIUS) {
                         if p.is_dead {
                             continue;
                         }
-                        if dist3(p.x, p.y, p.z, orb.x, orb.y, orb.z) < 1.0 {
+                        if dist3(p.x, p.y, p.z, orb.x, orb.y, orb.z) < ORB_PICKUP_RADIUS {
                             pickups.push((p.uuid, orb.amount));
                             to_remove.push(orb.entity_id);
                             picked = true;

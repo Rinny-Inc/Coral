@@ -50,6 +50,11 @@ pub struct UpdateHealth {
 }
 
 #[derive(Debug)]
+pub struct ServerDifficulty {
+    pub difficulty: u8,
+}
+
+#[derive(Debug)]
 pub struct Respawn {
     pub dimension: i32,
     pub difficulty: u8,
@@ -88,6 +93,13 @@ impl PacketOut for UpdateHealth {
         writer.write_f32(self.health);
         writer.write_varint(self.food);
         writer.write_f32(self.food_saturation);
+        Ok(())
+    }
+}
+impl PacketOut for ServerDifficulty {
+    fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
+        writer.write_varint(0x41);
+        writer.write_byte(self.difficulty);
         Ok(())
     }
 }
@@ -260,5 +272,30 @@ mod effect_packet_tests {
         let mut r = Reader::new(&w.data);
         r.read_varint();
         assert_eq!(r.read_varint(), 300_000);
+    }
+}
+
+#[cfg(test)]
+mod server_difficulty_tests {
+    use super::ServerDifficulty;
+    use crate::{packets::PacketOut, writer::Writer};
+
+    fn encoded(difficulty: u8) -> Vec<u8> {
+        let mut w = Writer::new();
+        ServerDifficulty { difficulty }.encode(&mut w).unwrap();
+        w.data
+    }
+
+    #[test]
+    fn it_is_the_id_and_one_byte() {
+        assert_eq!(encoded(0), vec![0x41, 0]);
+        assert_eq!(encoded(1), vec![0x41, 1]);
+        assert_eq!(encoded(2), vec![0x41, 2]);
+        assert_eq!(encoded(3), vec![0x41, 3]);
+    }
+
+    #[test]
+    fn the_id_is_one_byte_as_a_varint() {
+        assert_eq!(encoded(2).len(), 2);
     }
 }

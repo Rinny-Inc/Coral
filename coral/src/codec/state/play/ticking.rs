@@ -7,7 +7,7 @@ use coral_protocol::packets::play::{
 use coral_server::{
     bounding_box::EntityBounds,
     effects::EffectKind,
-    items::ItemRegistry,
+    items::{ItemRegistry, drops::DroppedItems},
     player::{Player, registry::PlayerRegistry},
 };
 use coral_types::{GameMode, ext::TicksExt};
@@ -35,7 +35,7 @@ pub async fn handle_tick(
     item_registry: &Arc<ItemRegistry>,
     config: &Config,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
-    item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
     world: &Arc<World>,
     channels: &Channels,
 ) {
@@ -127,6 +127,9 @@ async fn tick_void_damage(
         }
     }
 }
+
+const PICKUP_REACH: f64 = 2.0;
+
 #[allow(clippy::too_many_arguments)]
 async fn tick_item_pickup(
     framed: &mut Framed<TcpStream, Codec>,
@@ -134,43 +137,51 @@ async fn tick_item_pickup(
     player: &Player,
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
-    item_positions: &Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     pickup_tx: &Arc<Sender<ItemPickup>>,
     equip_tx: &Arc<Sender<EquipmentUpdate>>,
     sound_tx: &Arc<Sender<SoundEffect>>,
 ) {
-    let mut items = item_positions.write().await;
-    let mut picked_up = vec![];
-    let mut partial: Vec<(i32, u8)> = vec![];
-
     let player_bb = EntityBounds::player(state.is_sneaking);
     let item_bb = EntityBounds::item();
-    let ages: HashMap<i32, u64> = {
-        let spawn_time = item_spawn_times.read().await;
-        spawn_time
-            .iter()
-            .map(|(eid, t)| (*eid, t.elapsed().as_ticks()))
-            .collect()
-    };
 
-    for (eid, (_item_eid, ix, iy, iz, item_id, count, metadata)) in items.iter() {
-        if player_bb.intersects(player.x, player.y, player.z, &item_bb, *ix, *iy, *iz) {
-            let age = ages.get(eid).copied().unwrap_or(0);
+    let mut picked_up: Vec<i32> = vec![];
+    let mut to_send: Vec<(i16, i16, u8, i16)> = vec![];
+    let mut held_item_changed: Option<i16> = None;
+
+    {
+        let spawn_times = item_spawn_times.read().await;
+        let mut items = item_positions.write().await;
+
+        let nearby: Vec<ItemInfo> = items
+            .candidates_near(player.x, player.z, PICKUP_REACH)
+            .copied()
+            .collect();
+
+        for (eid, ix, iy, iz, item_id, count, metadata) in nearby {
+            if !player_bb.intersects(player.x, player.y, player.z, &item_bb, ix, iy, iz) {
+                continue;
+            }
+            let age = spawn_times
+                .get(&eid)
+                .map(|t| t.elapsed().as_ticks())
+                .unwrap_or(0);
 
             if age < 5 {
                 continue;
             }
 
-            let outcome = state.inventory.add_item(*item_id, *count, *metadata);
+            let outcome = state.inventory.add_item(item_id, count, metadata);
             if outcome.touched.is_empty() {
                 continue;
             }
 
             if outcome.leftover == 0 {
-                picked_up.push(*eid);
+                items.remove(eid);
+                picked_up.push(eid);
             } else {
-                partial.push((*eid, outcome.leftover));
+                items.set_count(eid, outcome.leftover);
             }
             for (packet_slot, internal_idx) in &outcome.touched {
                 let actual_count = state.inventory.slots[*internal_idx]
@@ -178,32 +189,35 @@ async fn tick_item_pickup(
                     .map(|s| s.count)
                     .unwrap_or(0);
 
-                send_packet(
-                    framed,
-                    SetSlot {
-                        window_id: 0,
-                        slot: *packet_slot,
-                        item_id: *item_id,
-                        count: actual_count,
-                        metadata: *metadata,
-                    },
-                )
-                .await;
+                to_send.push((*packet_slot, item_id, actual_count, metadata));
 
                 if *internal_idx == state.held_slot as usize {
-                    state.held_item = item_registry.resolve(*item_id);
-                    player_registry
-                        .update_held_item(&state.uuid, *item_id)
-                        .await;
-                    state.send_held_equip(equip_tx);
+                    held_item_changed = Some(item_id);
                 }
             }
         }
     }
-    for (eid, remaining) in partial {
-        if let Some(entry) = items.get_mut(&eid) {
-            entry.5 = remaining;
-        }
+    if to_send.is_empty() {
+        return;
+    }
+
+    for (slot, item_id, count, metadata) in to_send {
+        send_packet(
+            framed,
+            SetSlot {
+                window_id: 0,
+                slot,
+                item_id,
+                count,
+                metadata,
+            },
+        )
+        .await;
+    }
+    if let Some(item_id) = held_item_changed {
+        state.held_item = item_registry.resolve(item_id);
+        player_registry.update_held_item(&state.uuid, item_id).await;
+        state.send_held_equip(equip_tx);
     }
     if !picked_up.is_empty() {
         let mut spawn_times = item_spawn_times.write().await;
@@ -212,7 +226,6 @@ async fn tick_item_pickup(
         }
     }
     for eid in picked_up {
-        items.remove(&eid);
         pickup_tx.send((state.entity_id, state.uuid, eid)).ok();
         let pitch = (63i16 + rand::rng().random_range(-12i16..=12)).clamp(0, 255) as u8;
         sound_tx
@@ -233,7 +246,7 @@ async fn tick_eating(
     {
         state.eating = None;
 
-        if state.held_item.id() == 373 {
+        if state.held_item.id() == coral_server::items::ids::SPLASH_POTION {
             let meta = state.inventory.slots[state.held_slot as usize]
                 .as_ref()
                 .map(|s| s.metadata)

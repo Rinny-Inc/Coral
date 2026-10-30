@@ -149,8 +149,18 @@ async fn build_chunk_data_18(
     data
 }
 
-// FIXME: packet length too large by 1 byte
-// is it fixed???
+fn pack_metadata_nibbles(metadata: &[u8]) -> Vec<u8> {
+    let mut packed = vec![0u8; metadata.len().div_ceil(2)];
+    for (i, value) in metadata.iter().enumerate() {
+        let nibble = value & 0x0F;
+        if i & 1 == 0 {
+            packed[i / 2] |= nibble;
+        } else {
+            packed[i / 2] |= nibble << 4;
+        }
+    }
+    packed
+}
 async fn build_chunk_data_17(
     chunk_x: i32,
     chunk_z: i32,
@@ -158,6 +168,7 @@ async fn build_chunk_data_17(
     generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
     let mut blocks = vec![0u8; 4096];
+    let mut metadata = vec![0u8; 4096];
     let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
 
     for y in 0..16usize {
@@ -173,13 +184,14 @@ async fn build_chunk_data_17(
                     .unwrap_or_else(|| generator.block_at(wx, wy, wz));
                 let index = y * 256 + z * 16 + x;
                 blocks[index] = block.id;
+                metadata[index] = block.metadata;
             }
         }
     }
 
     let mut data = Vec::with_capacity(10496);
     data.extend_from_slice(&blocks);
-    data.extend_from_slice(&vec![0u8; 2048]); // metadata
+    data.extend_from_slice(&pack_metadata_nibbles(&metadata));
     data.extend_from_slice(&vec![0xFFu8; 2048]); // block light
     data.extend_from_slice(&vec![0xFFu8; 2048]); // sky light
     data.extend_from_slice(&vec![1u8; 256]); // biomes
@@ -512,5 +524,56 @@ mod spawn_platform_tests {
         assert_ne!(ChunkData::build(-3, 8, 47, &world).await.primary_bitmask, 0);
         assert_eq!(ChunkData::build(0, 0, 47, &world).await.primary_bitmask, 0);
         assert_eq!(world.get(-40, 64, 137).await.id, STONE);
+    }
+
+    #[tokio::test]
+    async fn breaking_the_platform_sticks() {
+        let world = void_at_spawn(0, 65.0, 0);
+        assert_eq!(world.get(0, 64, 0).await.id, STONE);
+        world.set(0, 64, 0, crate::blocks::Block::air()).await;
+        assert!(world.get(0, 64, 0).await.is_air(), "the platform came back");
+    }
+}
+
+#[cfg(test)]
+mod metadata_nibble_tests {
+    use super::pack_metadata_nibbles;
+
+    #[test]
+    fn two_blocks_share_a_byte_low_nibble_first() {
+        assert_eq!(pack_metadata_nibbles(&[0x0A, 0x0B]), vec![0xBA]);
+        assert_eq!(pack_metadata_nibbles(&[0x01, 0x00]), vec![0x01]);
+        assert_eq!(pack_metadata_nibbles(&[0x00, 0x01]), vec![0x10]);
+    }
+
+    #[test]
+    fn it_halves_the_length() {
+        assert_eq!(pack_metadata_nibbles(&[0; 4096]).len(), 2048);
+        assert_eq!(pack_metadata_nibbles(&[]).len(), 0);
+    }
+
+    #[test]
+    fn a_value_over_fifteen_is_masked_rather_than_spilling() {
+        assert_eq!(pack_metadata_nibbles(&[0xFF, 0x00]), vec![0x0F]);
+        assert_eq!(pack_metadata_nibbles(&[0x00, 0xFF]), vec![0xF0]);
+        assert_eq!(pack_metadata_nibbles(&[0x1A, 0x2B]), vec![0xBA]);
+    }
+
+    #[test]
+    fn every_value_survives_a_round_trip() {
+        let metadata: Vec<u8> = (0..4096).map(|i| (i % 16) as u8).collect();
+        let packed = pack_metadata_nibbles(&metadata);
+
+        for (i, expected) in metadata.iter().enumerate() {
+            let byte = packed[i / 2];
+            let got = if i & 1 == 0 { byte & 0x0F } else { byte >> 4 };
+            assert_eq!(got, *expected, "block {i}");
+        }
+    }
+
+    #[test]
+    fn an_odd_length_still_fits() {
+        assert_eq!(pack_metadata_nibbles(&[0x03]), vec![0x03]);
+        assert_eq!(pack_metadata_nibbles(&[0x01, 0x02, 0x03]), vec![0x21, 0x03]);
     }
 }

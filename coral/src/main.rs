@@ -23,7 +23,7 @@ use coral_server::{
     banlist::BanList,
     entity_tracker::EntityTracker,
     experience::XpOrb,
-    items::ItemRegistry,
+    items::{ItemRegistry, drops::DroppedItems},
     ops::OpsFile,
     player::registry::PlayerRegistry,
     projectile::Projectile,
@@ -113,6 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let world = Arc::new(World::new(generator));
+    world.set_difficulty(config.world.difficulty);
     world.load(world_path).await;
 
     let (private_key, public_key_der) = generate_rsa_key();
@@ -137,6 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &ctx.spawn_point,
         &ctx.world_dir,
         &ctx.world.time,
+        &ctx.world.difficulty,
     )
     .await;
 
@@ -252,7 +254,7 @@ pub struct ServerContext {
     dispatcher: Arc<CommandDispatcher>,
     entity_tracker: Arc<RwLock<EntityTracker>>,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
-    item_positions: Arc<RwLock<HashMap<i32, ItemInfo>>>,
+    item_positions: Arc<RwLock<DroppedItems>>,
     projectiles: Arc<RwLock<Vec<Projectile>>>,
     channels: Channels,
     world: Arc<World>,
@@ -290,7 +292,7 @@ impl ServerContext {
             dispatcher: Arc::new(CommandDispatcher::new()),
             entity_tracker: Arc::new(RwLock::new(EntityTracker::new())),
             item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
-            item_positions: Arc::new(RwLock::new(HashMap::new())),
+            item_positions: Arc::new(RwLock::new(DroppedItems::new())),
             projectiles: Arc::new(RwLock::new(Vec::new())),
             channels: Channels::new(),
             world,

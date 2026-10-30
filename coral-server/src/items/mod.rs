@@ -64,6 +64,13 @@ pub trait Item: Send + Sync {
     }
 }
 
+pub struct UnknownItem(pub i16);
+impl Item for UnknownItem {
+    fn id(&self) -> i16 {
+        self.0
+    }
+}
+
 pub struct EmptyHand;
 impl Item for EmptyHand {
     fn id(&self) -> i16 {

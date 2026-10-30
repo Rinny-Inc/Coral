@@ -25,7 +25,7 @@ use coral_protocol::packets::play::{
     },
     game::{
         ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
-        GameStateChangeReason, Respawn, SetExperience, UpdateHealth,
+        GameStateChangeReason, Respawn, ServerDifficulty, SetExperience, UpdateHealth,
     },
     inventory::{
         ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
@@ -46,18 +46,18 @@ use coral_server::{
     items::{
         armor::{apply_armor_reduction, total_defense},
         drop_physics::{break_drop_velocity, manual_drop_velocity},
-        drops::block_drop,
+        drops::{DroppedItems, block_drop},
         ids::EMPTY_HAND,
         potions::PotionEffect,
     },
-    mining::break_time_ticks,
+    mining::{break_time_ticks, can_harvest},
     player::{
         Player,
         registry::{PlayerRegistry, next_entity_id},
     },
     projectile::{Projectile, ProjectileKind},
 };
-use coral_types::{GameMode, ToolMaterial, dist_xz, dist3};
+use coral_types::{GameMode, dist_xz, dist3};
 use coral_world::{
     blocks::{Block, placement_metadata},
     chunk::{ChunkData, UnloadChunk},
@@ -303,7 +303,7 @@ pub async fn play(
                 }).await;
             }
             Ok(difficulty) = difficulty_rx.recv() => {
-                // TODO SEND 0x41 Server -> Client
+                send_packet(framed, ServerDifficulty { difficulty }).await;
             }
             Ok((sound, x, y, z, volume, pitch)) = sound_rx.recv() => {
                 if !state.has_chunk_at_pos(x, z) {
@@ -381,7 +381,7 @@ pub async fn play(
                 if mv.entity_id == state.entity_id {
                     continue;
                 }
-                let (my_x, my_y, my_z) = state.last_position;
+                let (my_x, _, my_z) = state.last_position;
                 if !entity_tracker.read().await.is_visible_to(mv.entity_id, my_x, my_z) {
                     continue;
                 }
@@ -807,12 +807,13 @@ pub async fn play(
                                         tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
                                         continue;
                                     }
+                                    let in_water = state.is_head_in_water(&world).await;
                                     let required = break_time_ticks(
                                         &item_registry,
                                         &block_registry,
                                         state.held_item.id(),
                                         block.id,
-                                        false,
+                                        in_water,
                                         state.was_on_ground,
                                     );
 
@@ -833,12 +834,13 @@ pub async fn play(
                                     if let Some((bx, by, bz)) = state.breaking_block.take() {
                                         let block = world.get(bx, by as u8, bz).await;
 
+                                        let in_water = state.is_head_in_water(&world).await;
                                         let required_ticks = break_time_ticks(
                                             &item_registry,
                                             &block_registry,
                                             state.held_item.id(),
                                             block.id,
-                                            false,
+                                            in_water,
                                             state.was_on_ground,
                                         );
                                         let elapsed = (state.tick_count - state.breaking_started_tick).max(0) as u32;
@@ -874,14 +876,12 @@ pub async fn play(
                                         tile_entities.write().await.remove(&(bx, by, bz));
 
                                         if !block.is_air() && block.id > 0 {
-                                            let can_drop = if let Some(req_mat) = block_registry.required_material(block.id) {
-                                                item_registry.get(state.held_item.id())
-                                                    .and_then(|item| item.tool_material())
-                                                    .map(|mat| material_meets(mat, req_mat))
-                                                    .unwrap_or(false)
-                                            } else {
-                                                true
-                                            };
+                                            let can_drop = can_harvest(
+                                                &item_registry,
+                                                &block_registry,
+                                                state.held_item.id(),
+                                                block.id
+                                            );
 
                                             if can_drop
                                                 && let Some((drop_id, drop_count, drop_metadata)) = block_drop(block.id, block.metadata)
@@ -909,7 +909,6 @@ pub async fn play(
                                                     )
                                                 );
                                                 item_positions.write().await.insert(
-                                                    drop_eid,
                                                     (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
                                                 );
                                             }
@@ -965,36 +964,16 @@ pub async fn play(
                                     if let Some(dropped) = item {
                                         state.sync_hotbar_slot(framed, &player_registry, &item_registry, &channels).await;
 
-                                        if let Some(p) = player_registry.get_by_entity_id(state.entity_id).await {
-                                            let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
-                                            let drop_x = p.x + (-yaw_rad.sin() * 0.3) as f64;
-                                            let drop_y = p.y + 1.2;
-                                            let drop_z = p.z + (yaw_rad.cos() * 0.3) as f64;
-
-                                            let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
-                                            let vx = vx + p.velocity.0 * 0.3;
-                                            let vy = vy + (p.velocity.1 * 0.3).max(0.0);
-                                            let vz = vz + p.velocity.1 * 0.3;
-                                            let drop_eid = next_entity_id();
-
-                                            channels.item_tx.send((
-                                                drop_eid,
-                                                drop_x, drop_y, drop_z,
-                                                dropped.item_id,
-                                                dropped.count,
-                                                dropped.metadata,
-                                                vx, vy, vz
-                                            )).ok();
-                                            item_spawn_times.write().await.insert(drop_eid, Instant::now());
-                                            entity_tracker.write().await.track(
-                                                TrackedEntity::item(drop_eid, drop_x, drop_y, drop_z, config.tracking.item)
-                                            );
-                                            item_positions.write().await.insert(
-                                                drop_eid,
-                                                (drop_eid, drop_x, drop_y, drop_z,
-                                                dropped.item_id, dropped.count, dropped.metadata)
-                                            );
-                                        }
+                                        drop_item_in_world(
+                                            dropped,
+                                            state.entity_id,
+                                            &player_registry,
+                                            &channels,
+                                            &item_spawn_times,
+                                            &entity_tracker,
+                                            &item_positions,
+                                            config.tracking.item
+                                        ).await;
 
                                         send_packet(framed, HeldItemChange {
                                             slot: state.held_slot as i16
@@ -1003,7 +982,7 @@ pub async fn play(
                                 }
                                 DigStatus::ShootOrFinishEating => {
                                     if let Some(charge_start) = state.bow_charging.take()
-                                        && state.held_item.id() == 261 // TODO: In the future identify magic numbers!
+                                        && state.held_item.id() == coral_server::items::ids::BOW // TODO: In the future identify magic numbers!
                                     {
                                         let charge_secs = charge_start.elapsed().as_secs_f32().min(1.0);
 
@@ -1045,7 +1024,7 @@ pub async fn play(
                                         }
                                         continue;
                                     }
-                                    if state.held_item.id() == 373 {
+                                    if state.held_item.id() == coral_server::items::ids::SPLASH_POTION {
                                         let meta = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.metadata).unwrap_or(0);
                                         let is_splash = (meta & 0x4000i16) != 0;
                                         if is_splash
@@ -1394,13 +1373,19 @@ pub async fn play(
                         }
 
                         if packet.as_any().downcast_ref::<CloseWindow>().is_some() {
-                            if let Some(cursor) = state.cursor_item.take() {
-                                let leftover = state.inventory.insert_itemstack(cursor);
-                                if let Some(dropped) = leftover {
-                                    // TODO
-                                    // drop in world if inventory full - spawn item entoty at player pos
-                                    // reuse existing drop logic
-                                }
+                            if let Some(cursor) = state.cursor_item.take()
+                                && let Some(dropped) = state.inventory.insert_itemstack(cursor)
+                            {
+                                drop_item_in_world(
+                                    dropped,
+                                    state.entity_id,
+                                    &player_registry,
+                                    &channels,
+                                    &item_spawn_times,
+                                    &entity_tracker,
+                                    &item_positions,
+                                    config.tracking.item
+                                ).await;
                             }
                             close_tile_entity_window(state, &tile_entities, &channels.chest_anim_tx, &channels.sound_tx).await;
                             continue;
@@ -1622,9 +1607,8 @@ pub async fn play(
                                     if state.gamemode == GameMode::Spectator {
                                         continue;
                                     }
-                                    let players = player_registry.get_all().await;
-                                    if let Some(target) = players.iter()
-                                        .find(|p| p.entity_id == use_entity.target_entity_id)
+                                    if let Some(target) =
+                                        player_registry.get_by_entity_id(use_entity.target_entity_id).await.as_ref()
                                     {
                                         if target.is_dead || target.no_damage_ticks > 0 {
                                             continue;
@@ -1862,7 +1846,7 @@ async fn spawn_dropped_item(
     channels: &crate::Channels,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     entity_tracker: &Arc<RwLock<coral_server::entity_tracker::EntityTracker>>,
-    item_positions: &Arc<RwLock<HashMap<i32, coral_types::ItemInfo>>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
     tracking_range: f64,
 ) {
     let yaw_rad = p.yaw.to_radians();
@@ -1902,18 +1886,15 @@ async fn spawn_dropped_item(
         drop_z,
         tracking_range,
     ));
-    item_positions.write().await.insert(
+    item_positions.write().await.insert((
         drop_eid,
-        (
-            drop_eid,
-            drop_x,
-            drop_y,
-            drop_z,
-            stack.item_id,
-            stack.count,
-            stack.metadata,
-        ),
-    );
+        drop_x,
+        drop_y,
+        drop_z,
+        stack.item_id,
+        stack.count,
+        stack.metadata,
+    ));
 }
 
 async fn apply_potion_effect(
@@ -2147,15 +2128,66 @@ fn level_to_xp_drop(level: i32) -> i32 {
     level.max(0).saturating_mul(7).min(100)
 }
 
-fn material_meets(have: ToolMaterial, need: ToolMaterial) -> bool {
-    let rank = |m: ToolMaterial| match m {
-        ToolMaterial::Wood | ToolMaterial::Gold => 0,
-        ToolMaterial::Stone => 1,
-        ToolMaterial::Iron => 2,
-        ToolMaterial::Diamond => 3,
-        ToolMaterial::Any => 0,
+#[allow(clippy::too_many_arguments)]
+async fn drop_item_in_world(
+    stack: ItemStack,
+    entity_id: i32,
+    player_registry: &Arc<PlayerRegistry>,
+    channels: &crate::Channels,
+    item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
+    entity_tracker: &Arc<RwLock<coral_server::entity_tracker::EntityTracker>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
+    tracking_range: f64,
+) {
+    let Some(p) = player_registry.get_by_entity_id(entity_id).await else {
+        return;
     };
-    rank(have) >= rank(need)
+    let yaw_rad = p.yaw * std::f32::consts::PI / 180.0;
+    let drop_x = p.x + (-yaw_rad.sin() * 0.3) as f64;
+    let drop_y = p.y + 1.2;
+    let drop_z = p.z + (yaw_rad.cos() * 0.3) as f64;
+
+    let (vx, vy, vz) = manual_drop_velocity(p.yaw, p.pitch);
+    let vx = vx + p.velocity.0 * 0.3;
+    let vy = vy + (p.velocity.1 * 0.3).max(0.0);
+    let vz = vz + p.velocity.2 * 0.3;
+    let drop_eid = next_entity_id();
+
+    channels
+        .item_tx
+        .send((
+            drop_eid,
+            drop_x,
+            drop_y,
+            drop_z,
+            stack.item_id,
+            stack.count,
+            stack.metadata,
+            vx,
+            vy,
+            vz,
+        ))
+        .ok();
+    item_spawn_times
+        .write()
+        .await
+        .insert(drop_eid, Instant::now());
+    entity_tracker.write().await.track(TrackedEntity::item(
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        tracking_range,
+    ));
+    item_positions.write().await.insert((
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        stack.item_id,
+        stack.count,
+        stack.metadata,
+    ));
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,6 +1,9 @@
 use std::{
     path::{Component, Path, PathBuf},
-    sync::{Arc, atomic::AtomicI64},
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU8},
+    },
 };
 
 use coral_command::{
@@ -151,6 +154,7 @@ pub async fn register_commands(
     spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
     world_dir: &Arc<PathBuf>,
     world_time: &Arc<AtomicI64>,
+    world_difficulty: &Arc<AtomicU8>,
 ) {
     dispatcher.register(list::version::command()).await;
     dispatcher
@@ -225,7 +229,10 @@ pub async fn register_commands(
         .register(list::time::command(world_time.clone()))
         .await;
     dispatcher
-        .register(list::difficulty::command(channels.difficulty_tx.clone()))
+        .register(list::difficulty::command(
+            channels.difficulty_tx.clone(),
+            world_difficulty.clone(),
+        ))
         .await;
 }
 

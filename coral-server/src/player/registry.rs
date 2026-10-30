@@ -7,7 +7,7 @@ use coral_types::GameMode;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::{effects::ActiveEffect, player::Player};
+use crate::{effects::ActiveEffect, items::drops::chunk_of, player::Player};
 
 static ENTITY_ID_COUNTER: AtomicI32 = AtomicI32::new(1);
 
@@ -33,6 +33,123 @@ impl Roster {
         if let Some(player) = self.by_uuid.remove(uuid) {
             self.by_entity_id.remove(&player.entity_id);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NearbyPlayer {
+    pub uuid: Uuid,
+    pub entity_id: i32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub is_dead: bool,
+}
+impl From<&Player> for NearbyPlayer {
+    fn from(p: &Player) -> Self {
+        Self {
+            uuid: p.uuid,
+            entity_id: p.entity_id,
+            x: p.x,
+            y: p.y,
+            z: p.z,
+            is_dead: p.is_dead,
+        }
+    }
+}
+
+const BUCKET_THRESHOLD: usize = 32;
+
+#[derive(Debug, Default)]
+pub struct PlayerPositions {
+    all: Vec<NearbyPlayer>,
+    by_chunk: Option<HashMap<(i32, i32), Vec<NearbyPlayer>>>,
+}
+
+/// Iterator over the players a query reaches, from whichever representation the snapshot chose
+pub enum NearIter<'a> {
+    /// Every player, filtered by the caller's own exact test
+    All(std::slice::Iter<'a, NearbyPlayer>),
+    /// Only the chunks the radius touches
+    Buckets {
+        by_chunk: &'a HashMap<(i32, i32), Vec<NearbyPlayer>>,
+        min_cx: i32,
+        min_cz: i32,
+        width: i64,
+        total: i64,
+        visited: i64,
+        current: std::slice::Iter<'a, NearbyPlayer>,
+    },
+}
+impl NearIter<'_> {
+    fn chunk_at(min_cx: i32, min_cz: i32, width: i64, step: i64) -> (i32, i32) {
+        (
+            min_cx + (step / width) as i32,
+            min_cz + (step % width) as i32,
+        )
+    }
+}
+impl<'a> Iterator for NearIter<'a> {
+    type Item = &'a NearbyPlayer;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::All(iter) => iter.next(),
+            Self::Buckets {
+                by_chunk,
+                min_cx,
+                min_cz,
+                width,
+                total,
+                visited,
+                current,
+            } => loop {
+                if let Some(player) = current.next() {
+                    return Some(player);
+                }
+                if *visited >= *total {
+                    return None;
+                }
+                let key = Self::chunk_at(*min_cx, *min_cz, *width, *visited);
+                *visited += 1;
+                *current = by_chunk
+                    .get(&key)
+                    .map(|v| v.iter())
+                    .unwrap_or_else(|| [].iter());
+            },
+        }
+    }
+}
+
+impl PlayerPositions {
+    #[inline]
+    pub fn candidates_near(&self, x: f64, z: f64, radius: f64) -> NearIter<'_> {
+        let radius = radius.max(0.0);
+        let Some(by_chunk) = &self.by_chunk else {
+            return NearIter::All(self.all.iter());
+        };
+        let (min_cx, min_cz) = chunk_of(x - radius, z - radius);
+        let (max_cx, max_cz) = chunk_of(x + radius, z + radius);
+        let width = i64::from(max_cz - min_cz) + 1;
+        let height = i64::from(max_cx - min_cx) + 1;
+        NearIter::Buckets {
+            by_chunk,
+            min_cx,
+            min_cz,
+            width,
+            total: width * height,
+            visited: 0,
+            current: [].iter(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.all.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.all.len()
     }
 }
 
@@ -252,6 +369,24 @@ impl PlayerRegistry {
             player.on_ground = on_ground;
         }
     }
+
+    pub async fn position_snapshot(&self) -> PlayerPositions {
+        let roster = self.roster.read().await;
+        let all: Vec<NearbyPlayer> = roster.by_uuid.values().map(NearbyPlayer::from).collect();
+
+        let by_chunk = (all.len() >= BUCKET_THRESHOLD).then(|| {
+            let mut buckets: HashMap<(i32, i32), Vec<NearbyPlayer>> = HashMap::new();
+            for player in &all {
+                buckets
+                    .entry(chunk_of(player.x, player.z))
+                    .or_default()
+                    .push(*player);
+            }
+            buckets
+        });
+
+        PlayerPositions { all, by_chunk }
+    }
 }
 impl Default for PlayerRegistry {
     fn default() -> Self {
@@ -393,5 +528,313 @@ mod entity_id_index_tests {
             let actual = registry.get_by_entity_id(i).await.map(|p| p.uuid);
             assert_eq!(actual, expected, "entity id {i} disagreed with a scan");
         }
+    }
+}
+
+#[cfg(test)]
+mod position_snapshot_tests {
+    use super::*;
+
+    fn at(entity_id: i32, uuid: Uuid, x: f64, z: f64) -> Player {
+        Player::new(
+            entity_id,
+            uuid,
+            format!("p{entity_id}"),
+            vec![],
+            x,
+            64.0,
+            z,
+            0.0,
+            0.0,
+            GameMode::Survival,
+            20.0,
+            20,
+            5.0,
+            0,
+            0,
+        )
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn coord(&mut self) -> f64 {
+            (self.next() % 4000) as f64 - 2000.0
+        }
+    }
+
+    async fn pad_past_threshold(r: &PlayerRegistry) {
+        for i in 0..BUCKET_THRESHOLD as i32 {
+            r.add(at(
+                10_000 + i,
+                Uuid::new_v4(),
+                50_000.0 + i as f64 * 64.0,
+                50_000.0,
+            ))
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_registry_finds_nobody() {
+        let r = PlayerRegistry::new();
+        let snapshot = r.position_snapshot().await;
+        assert!(snapshot.is_empty());
+        assert_eq!(snapshot.candidates_near(0.0, 0.0, 16.0).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_player_in_the_same_chunk_is_a_candidate() {
+        let r = PlayerRegistry::new();
+        let uuid = Uuid::new_v4();
+        r.add(at(1, uuid, 8.0, 8.0)).await;
+
+        let snapshot = r.position_snapshot().await;
+        let near: Vec<_> = snapshot.candidates_near(8.0, 8.0, 1.0).collect();
+        assert_eq!(near.len(), 1);
+        assert_eq!(near[0].uuid, uuid);
+    }
+
+    #[tokio::test]
+    async fn below_the_threshold_everyone_is_a_candidate() {
+        let r = PlayerRegistry::new();
+        r.add(at(1, Uuid::new_v4(), 1000.0, 1000.0)).await;
+
+        let snapshot = r.position_snapshot().await;
+        assert!(snapshot.by_chunk.is_none(), "bucketed too eagerly");
+        assert_eq!(snapshot.candidates_near(0.0, 0.0, 1.0).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn above_the_threshold_distant_players_are_skipped() {
+        let r = PlayerRegistry::new();
+        pad_past_threshold(&r).await;
+        r.add(at(1, Uuid::new_v4(), 1000.0, 1000.0)).await;
+
+        let snapshot = r.position_snapshot().await;
+        assert!(snapshot.by_chunk.is_some(), "should have bucketed");
+        assert_eq!(snapshot.candidates_near(0.0, 0.0, 1.0).count(), 0);
+        assert_eq!(snapshot.candidates_near(1000.0, 1000.0, 1.0).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_snapshot_follows_a_player_who_walks_away() {
+        let r = PlayerRegistry::new();
+        pad_past_threshold(&r).await;
+        let uuid = Uuid::new_v4();
+        r.add(at(1, uuid, 8.0, 8.0)).await;
+
+        r.update_position(&uuid, 500.0, 64.0, 500.0, 0.0, 0.0, true)
+            .await;
+
+        let snapshot = r.position_snapshot().await;
+        assert_eq!(
+            snapshot.candidates_near(8.0, 8.0, 1.0).count(),
+            0,
+            "still listed where they used to be"
+        );
+        assert_eq!(snapshot.candidates_near(500.0, 500.0, 1.0).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_player_who_leaves_is_gone_from_the_next_snapshot() {
+        let r = PlayerRegistry::new();
+        let uuid = Uuid::new_v4();
+        r.add(at(1, uuid, 8.0, 8.0)).await;
+        r.remove(&uuid).await;
+
+        assert!(r.position_snapshot().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_player_appears_exactly_once() {
+        let r = PlayerRegistry::new();
+        let uuid = Uuid::new_v4();
+        r.add(at(1, uuid, 1.0, 1.0)).await;
+        for step in 2..40 {
+            r.update_position(&uuid, step as f64, 64.0, 1.0, 0.0, 0.0, true)
+                .await;
+        }
+        let snapshot = r.position_snapshot().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            snapshot.candidates_near(-1000.0, -1000.0, 4000.0).count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_radius_spanning_chunks_reaches_all_of_them() {
+        let r = PlayerRegistry::new();
+        pad_past_threshold(&r).await;
+        for (i, (cx, cz)) in (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |z| (x, z)))
+            .enumerate()
+        {
+            let (x, z) = ((cx * 16 + 8) as f64, (cz * 16 + 8) as f64);
+            r.add(at(i as i32, Uuid::new_v4(), x, z)).await;
+        }
+
+        let snapshot = r.position_snapshot().await;
+        assert_eq!(
+            snapshot.candidates_near(8.0, 8.0, 1.0).count(),
+            1,
+            "own chunk"
+        );
+        assert_eq!(
+            snapshot.candidates_near(8.0, 8.0, 24.0).count(),
+            9,
+            "all nine"
+        );
+    }
+
+    #[tokio::test]
+    async fn it_never_misses_anyone_a_full_scan_would_find() {
+        for population in [8usize, 80] {
+            let r = PlayerRegistry::new();
+            let mut rng = Rng(0x5EED + population as u64);
+
+            let mut uuids = Vec::new();
+            for i in 0..population {
+                let uuid = Uuid::new_v4();
+                uuids.push(uuid);
+                r.add(at(i as i32, uuid, rng.coord(), rng.coord())).await;
+            }
+            for uuid in uuids.iter().take(population / 2) {
+                r.update_position(uuid, rng.coord(), 64.0, rng.coord(), 0.0, 0.0, true)
+                    .await;
+            }
+
+            let all = r.get_all().await;
+            let snapshot = r.position_snapshot().await;
+            for _ in 0..200 {
+                let (qx, qz) = (rng.coord(), rng.coord());
+                for radius in [0.5, 1.0, 4.0, 16.0, 40.0] {
+                    let found: Vec<Uuid> = snapshot
+                        .candidates_near(qx, qz, radius)
+                        .map(|p| p.uuid)
+                        .collect();
+
+                    for p in &all {
+                        let (dx, dz) = (p.x - qx, p.z - qz);
+                        if (dx * dx + dz * dz).sqrt() <= radius {
+                            assert!(
+                                found.contains(&p.uuid),
+                                "{} players: missed {} at ({}, {}) from ({qx}, {qz}) r={radius}",
+                                population,
+                                p.username,
+                                p.x,
+                                p.z
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_reported_miss() {
+        let r = PlayerRegistry::new();
+        pad_past_threshold(&r).await;
+        let p42 = Uuid::new_v4();
+        r.add(at(42, p42, -437.0, -720.0)).await;
+
+        let snapshot = r.position_snapshot().await;
+        assert!(snapshot.by_chunk.is_some(), "not bucketed");
+        let found: Vec<Uuid> = snapshot
+            .candidates_near(-431.0, -718.0, 16.0)
+            .map(|p| p.uuid)
+            .collect();
+        assert!(
+            found.contains(&p42),
+            "missed p42; found {} others",
+            found.len()
+        );
+    }
+
+    async fn one_player_per_chunk(r: &PlayerRegistry, span: i32) {
+        let mut eid = 0;
+        for cx in -span..=span {
+            for cz in -span..=span {
+                r.add(at(
+                    eid,
+                    Uuid::new_v4(),
+                    (cx * 16 + 8) as f64,
+                    (cz * 16 + 8) as f64,
+                ))
+                .await;
+                eid += 1;
+            }
+        }
+    }
+
+    fn chunks_visited(snapshot: &PlayerPositions, x: f64, z: f64, r: f64) -> Vec<(i32, i32)> {
+        let mut seen: Vec<(i32, i32)> = snapshot
+            .candidates_near(x, z, r)
+            .map(|p| ((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4))
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_cursor_walks_exactly_the_chunks_in_range() {
+        let r = PlayerRegistry::new();
+        one_player_per_chunk(&r, 4).await;
+        let snapshot = r.position_snapshot().await;
+        assert!(snapshot.by_chunk.is_some(), "not bucketed");
+
+        assert_eq!(chunks_visited(&snapshot, 8.0, 8.0, 1.0), vec![(0, 0)]);
+
+        let expected: Vec<(i32, i32)> = (-1..=1)
+            .flat_map(|cx| (-1..=1).map(move |cz| (cx, cz)))
+            .collect();
+        assert_eq!(chunks_visited(&snapshot, 8.0, 8.0, 16.0), expected);
+
+        let expected: Vec<(i32, i32)> = (1..=3)
+            .flat_map(|cx| (-4..=-2).map(move |cz| (cx, cz)))
+            .collect();
+        assert_eq!(chunks_visited(&snapshot, 40.0, -40.0, 16.0), expected);
+    }
+
+    #[tokio::test]
+    async fn a_lopsided_range_is_not_transposed() {
+        let r = PlayerRegistry::new();
+        one_player_per_chunk(&r, 4).await;
+        let snapshot = r.position_snapshot().await;
+
+        let expected: Vec<(i32, i32)> = (0..=1)
+            .flat_map(|cx| (2..=3).map(move |cz| (cx, cz)))
+            .collect();
+        assert_eq!(
+            chunks_visited(&snapshot, 8.0, 40.0, 8.0),
+            expected,
+            "the x and z ranges were swapped"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_chunk_in_range_is_visited_exactly_once() {
+        let r = PlayerRegistry::new();
+        one_player_per_chunk(&r, 4).await;
+        let snapshot = r.position_snapshot().await;
+
+        let all: Vec<(i32, i32)> = snapshot
+            .candidates_near(8.0, 8.0, 40.0)
+            .map(|p| ((p.x.floor() as i32) >> 4, (p.z.floor() as i32) >> 4))
+            .collect();
+        let mut unique = all.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(all.len(), unique.len(), "a chunk was walked twice");
+        // x and z each span -32..48, which is chunks -2..=3
+        assert_eq!(all.len(), 36);
     }
 }

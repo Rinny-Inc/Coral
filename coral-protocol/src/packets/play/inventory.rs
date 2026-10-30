@@ -178,7 +178,6 @@ impl Inventory {
         }
     }
 
-    // FIXME: I think it doesnt behave as it should
     pub fn insert_itemstack(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
         // first merge into existing matching stacks
         for existing in self.slots.iter_mut().take(36).flatten() {
@@ -595,5 +594,124 @@ mod add_item_tests {
         assert_eq!(out.leftover, 0);
         assert_eq!(out.touched.len(), 1);
         assert_eq!(inv.slots[0].as_ref().unwrap().count, 64);
+    }
+}
+
+#[cfg(test)]
+mod insert_itemstack_tests {
+    use super::{Inventory, ItemStack};
+
+    fn stack(item_id: i16, count: u8) -> ItemStack {
+        ItemStack {
+            item_id,
+            count,
+            metadata: 0,
+            durability: 0,
+        }
+    }
+
+    fn filled(inv: &Inventory) -> usize {
+        inv.slots.iter().take(36).filter(|s| s.is_some()).count()
+    }
+
+    #[test]
+    fn an_empty_inventory_takes_the_whole_stack() {
+        let mut inv = Inventory::new();
+        assert!(inv.insert_itemstack(stack(1, 32)).is_none());
+        assert_eq!(filled(&inv), 1);
+    }
+
+    #[test]
+    fn it_tops_up_a_partial_stack_before_opening_a_new_slot() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(stack(1, 60));
+
+        assert!(inv.insert_itemstack(stack(1, 4)).is_none());
+
+        assert_eq!(inv.slots[0].as_ref().unwrap().count, 64);
+        assert_eq!(filled(&inv), 1, "it opened a slot it did not need");
+    }
+
+    #[test]
+    fn a_stack_that_does_not_fit_in_one_slot_spills_into_the_next() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(stack(1, 60));
+
+        assert!(inv.insert_itemstack(stack(1, 10)).is_none());
+
+        assert_eq!(inv.slots[0].as_ref().unwrap().count, 64);
+        assert_eq!(inv.slots[1].as_ref().unwrap().count, 6);
+    }
+
+    #[test]
+    fn a_different_item_does_not_merge() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(stack(1, 1));
+
+        assert!(inv.insert_itemstack(stack(2, 1)).is_none());
+
+        assert_eq!(inv.slots[0].as_ref().unwrap().item_id, 1);
+        assert_eq!(inv.slots[1].as_ref().unwrap().item_id, 2);
+    }
+
+    #[test]
+    fn metadata_has_to_match_to_merge() {
+        let mut inv = Inventory::new();
+        inv.slots[0] = Some(ItemStack {
+            item_id: 351,
+            count: 1,
+            metadata: 4,
+            durability: 0,
+        });
+
+        let other = ItemStack {
+            item_id: 351,
+            count: 1,
+            metadata: 1,
+            durability: 0,
+        };
+        assert!(inv.insert_itemstack(other).is_none());
+        assert_eq!(filled(&inv), 2);
+    }
+
+    #[test]
+    fn a_full_inventory_gives_the_stack_back() {
+        let mut inv = Inventory::new();
+        for slot in inv.slots.iter_mut().take(36) {
+            *slot = Some(stack(1, 64));
+        }
+
+        let leftover = inv.insert_itemstack(stack(2, 5));
+
+        let leftover = leftover.expect("a full inventory swallowed the stack");
+        assert_eq!((leftover.item_id, leftover.count), (2, 5));
+    }
+
+    #[test]
+    fn a_full_inventory_still_tops_up_a_matching_partial_stack() {
+        let mut inv = Inventory::new();
+        for slot in inv.slots.iter_mut().take(36) {
+            *slot = Some(stack(1, 64));
+        }
+        inv.slots[35] = Some(stack(1, 60));
+
+        let leftover = inv.insert_itemstack(stack(1, 10));
+
+        let leftover = leftover.expect("6 of the 10 should not have fitted");
+        assert_eq!(leftover.count, 6);
+        assert_eq!(inv.slots[35].as_ref().unwrap().count, 64);
+    }
+
+    #[test]
+    fn it_never_reaches_past_the_storage_slots() {
+        let mut inv = Inventory::new();
+        for slot in inv.slots.iter_mut().take(36) {
+            *slot = Some(stack(1, 64));
+        }
+
+        assert!(inv.insert_itemstack(stack(2, 1)).is_some());
+        for (i, slot) in inv.slots.iter().enumerate().skip(36) {
+            assert!(slot.is_none(), "slot {i} was written to");
+        }
     }
 }

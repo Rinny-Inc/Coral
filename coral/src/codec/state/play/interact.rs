@@ -55,12 +55,11 @@ pub async fn try_with_item(
     }
 
     match state.held_item.id() {
-        // FIXME: DONT USE MAGIC NUMBER
-        261 => {
+        coral_server::items::ids::BOW => {
             state.bow_charging = Some(Instant::now());
             true
         }
-        346 => {
+        coral_server::items::ids::FISHING_ROD => {
             if !state
                 .try_retract_fishing_hook(projectiles, &channels.despawn_tx)
                 .await
@@ -108,7 +107,7 @@ pub async fn try_with_item(
                 .ok();
             true
         }
-        373 => {
+        coral_server::items::ids::SPLASH_POTION => {
             let meta = state.inventory.slots[state.held_slot as usize]
                 .as_ref()
                 .map(|s| s.metadata)
@@ -145,7 +144,7 @@ pub async fn try_with_item_on_block(
     clicked: Option<(i32, i32, i32)>,
 ) -> bool {
     match place.held_item_id {
-        325 => {
+        coral_server::items::ids::EMPTY_BUCKET => {
             tracing::info!(
                 "[BUCKET] entered branch, checking ({}, {}, {})",
                 place.x,
@@ -341,7 +340,7 @@ pub async fn try_with_item_on_block(
                 .replace_held_item(
                     framed,
                     ItemStack {
-                        item_id: 325,
+                        item_id: coral_server::items::ids::EMPTY_BUCKET,
                         count: 1,
                         metadata: 0,
                         durability: 0,
@@ -408,6 +407,7 @@ pub async fn try_with_block(
                 framed,
                 state,
                 (place.x, place.y as i32, place.z),
+                clicked.id,
                 tile_entities,
                 &channels.chest_anim_tx,
                 &channels.sound_tx,
@@ -420,6 +420,7 @@ pub async fn try_with_block(
                     framed,
                     state,
                     (place.x, place.y as i32, place.z),
+                    clicked.id,
                     tile_entities,
                     &channels.chest_anim_tx,
                     &channels.sound_tx,

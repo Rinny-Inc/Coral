@@ -17,6 +17,7 @@ use coral_protocol::packets::play::scoreboard::{
 };
 use coral_protocol::reader::ReadError;
 use coral_protocol::{CONTINUE_BIT, SEGMENT_BITS};
+use coral_server::bounding_box::EntityBounds;
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::experience::xp_to_level;
@@ -516,6 +517,21 @@ impl PlayerState {
         .await;
     }
 
+    async fn is_head_in_water(&self, world: &Arc<World>) -> bool {
+        let (x, y, z) = self.last_position;
+        let eye = y + EntityBounds::player(self.is_sneaking).height;
+        let by = eye.floor() as i32;
+        if !(0..=255).contains(&by) {
+            return false;
+        }
+        Fluid::is_water(
+            world
+                .get(x.floor() as i32, by as u8, z.floor() as i32)
+                .await
+                .id,
+        )
+    }
+
     async fn sync_armor(
         &self,
         player_registry: &Arc<PlayerRegistry>,
@@ -1005,7 +1021,7 @@ async fn make_player_join(
             entity_id,
             gamemode: gamemodeu8,
             dimension: 0,
-            difficulty: config.world.difficulty,
+            difficulty: world.difficulty(),
             max_player: config.server.max_players as u8,
             level_type: world.level_type().to_string(),
             reduced_debug_info: false,

@@ -81,7 +81,7 @@ impl VoidWorldGenerator {
         let below = spawn_y.floor() as i32 - 1;
         let platform = (0..=255)
             .contains(&below)
-            .then(|| (spawn_x, below as u8, spawn_z));
+            .then_some((spawn_x, below as u8, spawn_z));
         Self { platform }
     }
 

@@ -1,10 +1,10 @@
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU8};
 use tokio::sync::broadcast::Sender;
 
 use crate::{Command, CommandResult, make_handler};
 
-pub fn command(difficulty_tx: Arc<Sender<u8>>) -> Command {
+pub fn command(difficulty_tx: Arc<Sender<u8>>, difficulty: Arc<AtomicU8>) -> Command {
     Command {
         name: "difficulty",
         aliases: vec![],
@@ -12,6 +12,7 @@ pub fn command(difficulty_tx: Arc<Sender<u8>>) -> Command {
         usage: "/difficulty <peaceful|easy|normal|hard>",
         handler: make_handler(move |ctx| {
             let tx = difficulty_tx.clone();
+            let current = difficulty.clone();
             async move {
                 if !ctx.is_op {
                     return CommandResult::Error("No permission.".to_string());
@@ -30,6 +31,7 @@ pub fn command(difficulty_tx: Arc<Sender<u8>>) -> Command {
                     _ => return CommandResult::Error(format!("Unknown dificulty: {}", arg)),
                 };
 
+                current.store(value, std::sync::atomic::Ordering::Relaxed);
                 tx.send(value).ok();
 
                 CommandResult::Success(ChatBuilder::plain_json(&format!(

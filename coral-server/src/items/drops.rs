@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use coral_types::ItemInfo;
+
 pub fn block_drop(block_id: u8, metadata: u8) -> Option<(i16, u8, i16)> {
     let meta = metadata as i16;
     match block_id {
@@ -89,5 +93,239 @@ pub fn block_drop(block_id: u8, metadata: u8) -> Option<(i16, u8, i16)> {
         179 => Some((179, 1, meta)), // red sandstone
         180 => Some((179, 1, 0)), // red sandstone stairs -> red sandstone
         _ => Some((block_id as i16, 1, meta)), // default: drop self with metadata
+    }
+}
+
+pub fn chunk_of(x: f64, z: f64) -> (i32, i32) {
+    ((x.floor() as i32) >> 4, (z.floor() as i32) >> 4)
+}
+
+#[derive(Debug, Default)]
+pub struct DroppedItems {
+    by_eid: HashMap<i32, ItemInfo>,
+    by_chunk: HashMap<(i32, i32), Vec<i32>>,
+}
+impl DroppedItems {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, info: ItemInfo) {
+        let (eid, x, _, z, ..) = info;
+        if self.by_eid.insert(eid, info).is_none() {
+            self.by_chunk.entry(chunk_of(x, z)).or_default().push(eid);
+        }
+    }
+
+    pub fn remove(&mut self, eid: i32) -> Option<ItemInfo> {
+        let info = self.by_eid.remove(&eid)?;
+        let chunk = chunk_of(info.1, info.3);
+        if let Some(here) = self.by_chunk.get_mut(&chunk) {
+            here.retain(|other| *other != eid);
+            if here.is_empty() {
+                self.by_chunk.remove(&chunk);
+            }
+        }
+        Some(info)
+    }
+
+    pub fn set_count(&mut self, eid: i32, count: u8) {
+        if let Some(info) = self.by_eid.get_mut(&eid) {
+            info.5 = count;
+        }
+    }
+
+    pub fn candidates_near(&self, x: f64, z: f64, radius: f64) -> impl Iterator<Item = &ItemInfo> {
+        let radius = radius.max(0.0);
+        let (min_cx, min_cz) = chunk_of(x - radius, z - radius);
+        let (max_cx, max_cz) = chunk_of(x + radius, z + radius);
+
+        (min_cx..=max_cx)
+            .flat_map(move |cx| (min_cz..=max_cz).map(move |cz| (cx, cz)))
+            .filter_map(move |key| self.by_chunk.get(&key))
+            .flatten()
+            .filter_map(move |eid| self.by_eid.get(eid))
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_eid.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_eid.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(eid: i32, x: f64, z: f64) -> ItemInfo {
+        (eid, x, 64.0, z, 1, 1, 0)
+    }
+
+    fn eids_near(items: &DroppedItems, x: f64, z: f64, radius: f64) -> Vec<i32> {
+        let mut found: Vec<i32> = items.candidates_near(x, z, radius).map(|i| i.0).collect();
+        found.sort_unstable();
+        found
+    }
+
+    #[test]
+    fn an_empty_index_has_nothing_near_anything() {
+        let items = DroppedItems::new();
+        assert!(items.is_empty());
+        assert_eq!(eids_near(&items, 0.0, 0.0, 16.0), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn an_item_is_found_in_its_own_chunk() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, 8.0, 8.0));
+        assert_eq!(eids_near(&items, 8.0, 8.0, 1.0), vec![1]);
+    }
+
+    #[test]
+    fn an_item_in_a_distant_chunk_is_not() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, 1000.0, 1000.0));
+        assert_eq!(eids_near(&items, 0.0, 0.0, 1.0), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn negative_coordinates_land_in_the_chunk_below_zero() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, -1.0, -1.0));
+        assert_eq!(eids_near(&items, -1.0, -1.0, 1.0), vec![1]);
+        assert_eq!(eids_near(&items, 20.0, 20.0, 1.0), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn removing_an_item_takes_it_out_of_its_chunk_too() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, 8.0, 8.0));
+        items.insert(item(2, 8.0, 8.0));
+
+        assert_eq!(items.remove(1).map(|i| i.0), Some(1));
+
+        assert_eq!(eids_near(&items, 8.0, 8.0, 1.0), vec![2]);
+        assert_eq!(items.len(), 1);
+        assert!(items.remove(1).is_none(), "removed twice");
+    }
+
+    #[test]
+    fn emptying_a_chunk_drops_its_bucket() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, 8.0, 8.0));
+        items.remove(1);
+        assert!(items.by_chunk.is_empty(), "the bucket outlived its item");
+    }
+
+    #[test]
+    fn inserting_the_same_id_twice_does_not_duplicate_it() {
+        let mut items = DroppedItems::new();
+        items.insert(item(1, 8.0, 8.0));
+        items.insert(item(1, 8.0, 8.0));
+        assert_eq!(eids_near(&items, 8.0, 8.0, 1.0), vec![1]);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn a_partial_pickup_leaves_the_item_where_it_was() {
+        let mut items = DroppedItems::new();
+        items.insert((1, 8.0, 64.0, 8.0, 264, 10, 0));
+
+        items.set_count(1, 3);
+
+        let found: Vec<&ItemInfo> = items.candidates_near(8.0, 8.0, 1.0).collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].5, 3, "count did not change");
+        assert_eq!((found[0].1, found[0].3), (8.0, 8.0), "it moved");
+    }
+
+    #[test]
+    fn a_radius_spanning_chunks_reaches_all_of_them() {
+        let mut items = DroppedItems::new();
+        for (i, (cx, cz)) in (-1..=1)
+            .flat_map(|x| (-1..=1).map(move |z| (x, z)))
+            .enumerate()
+        {
+            items.insert(item(i as i32, (cx * 16 + 8) as f64, (cz * 16 + 8) as f64));
+        }
+
+        assert_eq!(eids_near(&items, 8.0, 8.0, 1.0).len(), 1, "own chunk only");
+        assert_eq!(eids_near(&items, 8.0, 8.0, 24.0).len(), 9, "all nine");
+    }
+
+    #[test]
+    fn it_never_misses_an_item_a_full_scan_would_find() {
+        // xorshift64*, so a failure is reproducible
+        let mut state = 0x5EEDu64;
+        let mut next = || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            (state.wrapping_mul(0x2545_F491_4F6C_DD1D) % 4000) as f64 - 2000.0
+        };
+
+        let mut items = DroppedItems::new();
+        let mut all = Vec::new();
+        for eid in 0..400 {
+            let info = item(eid, next(), next());
+            all.push(info);
+            items.insert(info);
+        }
+        // and take a few back out again
+        for eid in (0..400).step_by(7) {
+            items.remove(eid);
+            all.retain(|i| i.0 != eid);
+        }
+
+        for _ in 0..300 {
+            let (qx, qz) = (next(), next());
+            for radius in [0.5, 1.0, 4.0, 16.0] {
+                let found = eids_near(&items, qx, qz, radius);
+                for info in &all {
+                    let (dx, dz) = (info.1 - qx, info.3 - qz);
+                    if (dx * dx + dz * dz).sqrt() <= radius {
+                        assert!(
+                            found.contains(&info.0),
+                            "missed {} at ({}, {}) from ({qx}, {qz}) r={radius}",
+                            info.0,
+                            info.1,
+                            info.3
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pickup_reach_tests {
+    use super::*;
+    use crate::bounding_box::EntityBounds;
+
+    #[test]
+    fn two_blocks_covers_any_possible_overlap() {
+        let player = EntityBounds::player(false);
+        let item = EntityBounds::item();
+        // the widest horizontal gap at which the boxes still touch
+        let max_overlap = player.width / 2.0 + item.width / 2.0;
+        assert!(
+            max_overlap <= 2.0,
+            "a reach of 2.0 is too short for boxes {} and {} wide",
+            player.width,
+            item.width
+        );
+    }
+
+    #[test]
+    fn the_query_reaches_the_neighbouring_chunk_from_a_border() {
+        let mut items = DroppedItems::new();
+        items.insert((1, -0.1, 64.0, 8.0, 1, 1, 0));
+
+        let found: Vec<i32> = items.candidates_near(0.1, 8.0, 2.0).map(|i| i.0).collect();
+        assert_eq!(found, vec![1], "missed an item just over the chunk line");
     }
 }

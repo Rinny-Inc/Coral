@@ -29,7 +29,9 @@ impl ResourceMonitor {
         let system = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
-        );
+        )
+        .expect("failed to initialize system");
+
         Self {
             samples: RwLock::new(VecDeque::with_capacity(MAX_SAMPLES)),
             system: RwLock::new(system),
@@ -63,8 +65,6 @@ impl ResourceMonitor {
         });
     }
 
-    /// Returns the average, plus whether the window has full coverage.
-    /// None = no data at all. Some((.., false)) = partial (server younger than window).
     pub async fn average(&self, window: Duration) -> Option<(f32, u64, u64, bool)> {
         let samples = self.samples.read().await;
         if samples.is_empty() {

@@ -406,7 +406,7 @@ impl FlowScan {
             Some(i) => self.blocks[i].clone(),
             None => {
                 debug_assert!(false, "flow scan read ({x}, {y}, {z}), outside its radius");
-                return Block::air();
+                Block::air()
             }
         }
     }

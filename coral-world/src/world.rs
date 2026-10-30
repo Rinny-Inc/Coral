@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Arc, atomic::AtomicI64},
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU8},
+    },
 };
 
 use crate::{
@@ -10,10 +13,13 @@ use crate::{
     nbt::NbtTag,
 };
 
+pub const DEFAULT_DIFFICULTY: u8 = 2;
+
 pub struct World {
     pub blocks: WorldBlocks,
     pub generator: Arc<dyn WorldGenerator>,
     pub time: Arc<AtomicI64>,
+    pub difficulty: Arc<AtomicU8>,
 }
 impl World {
     pub fn new(generator: Arc<dyn WorldGenerator>) -> Self {
@@ -21,7 +27,17 @@ impl World {
             blocks: WorldBlocks::new(),
             generator,
             time: Arc::new(AtomicI64::new(0)),
+            difficulty: Arc::new(AtomicU8::new(DEFAULT_DIFFICULTY)),
         }
+    }
+
+    pub fn difficulty(&self) -> u8 {
+        self.difficulty.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_difficulty(&self, difficulty: u8) {
+        self.difficulty
+            .store(difficulty.min(3), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn flat() -> Self {
@@ -97,6 +113,35 @@ impl World {
             Some(surface) => (feet as i32) - (surface as i32) > 1,
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod difficulty_tests {
+    use super::{DEFAULT_DIFFICULTY, World};
+
+    #[test]
+    fn a_new_world_is_on_normal() {
+        assert_eq!(World::flat().difficulty(), DEFAULT_DIFFICULTY);
+        assert_eq!(DEFAULT_DIFFICULTY, 2);
+    }
+
+    #[test]
+    fn it_round_trips_every_valid_value() {
+        let w = World::flat();
+        for d in 0..=3u8 {
+            w.set_difficulty(d);
+            assert_eq!(w.difficulty(), d);
+        }
+    }
+
+    #[test]
+    fn it_clamps_anything_higher() {
+        let w = World::flat();
+        w.set_difficulty(4);
+        assert_eq!(w.difficulty(), 3);
+        w.set_difficulty(u8::MAX);
+        assert_eq!(w.difficulty(), 3);
     }
 }
 

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     mob::{Mob, MobRegistry, MobType},
-    player::{Player, registry::PlayerRegistry},
+    player::registry::{NearbyPlayer, PlayerRegistry},
 };
 
 const WANDER_MIN_COOLDOWN: u32 = 100;
@@ -26,7 +26,7 @@ pub async fn tick_mob(
     player_registry: Arc<PlayerRegistry>,
     world: Arc<World>,
 ) -> (Vec<MobMoveBroadcast>, Vec<MobAttackBroadcast>) {
-    let players = player_registry.get_all().await;
+    let positions = player_registry.position_snapshot().await;
 
     let mut moves = Vec::new();
     let mut attacks = Vec::new();
@@ -39,6 +39,10 @@ pub async fn tick_mob(
             mob.attack_cooldown -= 1;
         }
 
+        let players: Vec<NearbyPlayer> = positions
+            .candidates_near(mob.x, mob.z, mob.mob_type.aggro_range() * 1.5)
+            .copied()
+            .collect();
         hostile_targeting(mob, &players);
 
         let chase_target = mob
@@ -126,7 +130,7 @@ async fn can_stand_at(world: &Arc<World>, x: f64, y: f64, z: f64, height: f64) -
     true
 }
 
-fn hostile_targeting(mob: &mut Mob, players: &[Player]) {
+fn hostile_targeting(mob: &mut Mob, players: &[NearbyPlayer]) {
     if !mob.mob_type.is_hostile() {
         return;
     }

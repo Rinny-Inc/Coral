@@ -17,10 +17,30 @@ use crate::codec::{
     Codec, PlayerState, WindowType, send_packet, state::play::tile_entity_window::TileEntityWindow,
 };
 
+fn blank_tile_entity(block_id: u8) -> Option<TileEntity> {
+    match block_id {
+        54 | 146 => Some(TileEntity::Chest {
+            items: vec![None; 27],
+            viewers: 0,
+        }),
+        61 | 62 => Some(TileEntity::Furnace {
+            input: None,
+            fuel: None,
+            output: None,
+            burn_ticks: 0,
+            burn_ticks_total: 0,
+            cook_ticks: 0,
+            viewers: 0,
+        }),
+        _ => None,
+    }
+}
+
 pub async fn open_tile_entity_window(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     pos: (i32, i32, i32),
+    block_id: u8,
     tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
     chest_anim_tx: &Arc<Sender<ChestAnimation>>,
     sound_tx: &Arc<Sender<crate::SoundEffect>>,
@@ -31,12 +51,13 @@ pub async fn open_tile_entity_window(
     }
     let window_id = state.window_id_counter;
 
+    let Some(blank) = blank_tile_entity(block_id) else {
+        return false;
+    };
+
     let open_data = {
         let mut storage = tile_entities.write().await;
-        let tile = storage.entry(pos).or_insert_with(|| TileEntity::Chest {
-            items: vec![None; 27],
-            viewers: 0,
-        });
+        let tile = storage.entry(pos).or_insert(blank);
 
         if !tile.has_window() {
             return false;
@@ -198,5 +219,72 @@ pub async fn close_tile_entity_window(
                 63,
             ))
             .ok();
+    }
+}
+
+#[cfg(test)]
+mod blank_tile_entity_tests {
+    use super::{TileEntity, blank_tile_entity};
+
+    #[test]
+    fn a_furnace_gets_a_furnace() {
+        for id in [61, 62] {
+            assert!(
+                matches!(blank_tile_entity(id), Some(TileEntity::Furnace { .. })),
+                "block {id} did not get a furnace"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chest_gets_a_chest_with_twenty_seven_slots() {
+        for id in [54, 146] {
+            match blank_tile_entity(id) {
+                Some(TileEntity::Chest { items, viewers }) => {
+                    assert_eq!(items.len(), 27, "block {id}");
+                    assert_eq!(viewers, 0);
+                }
+                other => panic!("block {id} got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_furnace_is_cold_and_empty() {
+        let Some(TileEntity::Furnace {
+            input,
+            fuel,
+            output,
+            burn_ticks,
+            burn_ticks_total,
+            cook_ticks,
+            viewers,
+        }) = blank_tile_entity(61)
+        else {
+            panic!("not a furnace");
+        };
+        assert!(input.is_none() && fuel.is_none() && output.is_none());
+        assert_eq!((burn_ticks, burn_ticks_total, cook_ticks), (0, 0, 0));
+        assert_eq!(viewers, 0);
+    }
+
+    #[test]
+    fn a_block_with_no_window_gets_nothing() {
+        for id in [0, 1, 2, 3, 63, 68, 26, 255] {
+            assert!(
+                blank_tile_entity(id).is_none(),
+                "block {id} was given a tile entity"
+            );
+        }
+    }
+
+    #[test]
+    fn everything_it_makes_actually_has_a_window() {
+        use crate::codec::state::play::tile_entity_window::TileEntityWindow;
+        for id in 0..=255u8 {
+            if let Some(tile) = blank_tile_entity(id) {
+                assert!(tile.has_window(), "block {id} made a windowless tile");
+            }
+        }
     }
 }
