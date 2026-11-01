@@ -7,6 +7,7 @@ use coral_protocol::packets::play::{
 use coral_server::{
     bounding_box::EntityBounds,
     effects::EffectKind,
+    entity_tracker::EntityTracker,
     items::{ItemRegistry, drops::DroppedItems},
     player::{Player, registry::PlayerRegistry},
 };
@@ -36,6 +37,7 @@ pub async fn handle_tick(
     config: &Config,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: &Arc<RwLock<DroppedItems>>,
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
     world: &Arc<World>,
     channels: &Channels,
 ) {
@@ -66,6 +68,7 @@ pub async fn handle_tick(
         item_registry,
         item_positions,
         item_spawn_times,
+        entity_tracker,
         &channels.pickup_tx,
         &channels.equip_tx,
         &channels.sound_tx,
@@ -139,6 +142,7 @@ async fn tick_item_pickup(
     item_registry: &Arc<ItemRegistry>,
     item_positions: &Arc<RwLock<DroppedItems>>,
     item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
     pickup_tx: &Arc<Sender<ItemPickup>>,
     equip_tx: &Arc<Sender<EquipmentUpdate>>,
     sound_tx: &Arc<Sender<SoundEffect>>,
@@ -197,6 +201,15 @@ async fn tick_item_pickup(
             }
         }
     }
+    if !picked_up.is_empty() {
+        {
+            let mut spawn_times = item_spawn_times.write().await;
+            for eid in &picked_up {
+                spawn_times.remove(eid);
+            }
+        }
+        entity_tracker.write().await.untrack_many(&picked_up);
+    }
     if to_send.is_empty() {
         return;
     }
@@ -218,12 +231,6 @@ async fn tick_item_pickup(
         state.held_item = item_registry.resolve(item_id);
         player_registry.update_held_item(&state.uuid, item_id).await;
         state.send_held_equip(equip_tx);
-    }
-    if !picked_up.is_empty() {
-        let mut spawn_times = item_spawn_times.write().await;
-        for eid in &picked_up {
-            spawn_times.remove(eid);
-        }
     }
     for eid in picked_up {
         pickup_tx.send((state.entity_id, state.uuid, eid)).ok();

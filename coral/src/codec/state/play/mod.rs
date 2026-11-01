@@ -92,6 +92,26 @@ mod ticking;
 pub mod tile_entity_window;
 mod window_ops;
 
+/// How often does the server probes a connection
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// What to do when the probe timer fires
+#[derive(Debug, PartialEq, Eq)]
+enum KeepAliveAction {
+    /// The last probe was answered; send another
+    Probe,
+    /// It was not so the connection is gone
+    Timeout,
+}
+
+/// Decide from the outstanding probe if any
+fn keep_alive_action(outstanding: Option<(i32, std::time::Instant)>) -> KeepAliveAction {
+    match outstanding {
+        Some(_) => KeepAliveAction::Timeout,
+        None => KeepAliveAction::Probe,
+    }
+}
+
 pub async fn play(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
@@ -157,11 +177,18 @@ pub async fn play(
     let mut furnace_update_rx = channels.furnace_update_tx.subscribe();
     let mut difficulty_rx = channels.difficulty_tx.subscribe();
 
-    let mut keep_alive_interval = interval(Duration::from_secs(15)); // 30 seconds is timed out
+    let mut keep_alive_interval = interval(KEEP_ALIVE_INTERVAL); // 30 seconds is timed out
 
     loop {
         tokio::select! {
             _ = keep_alive_interval.tick() => {
+                if keep_alive_action(state.last_sent_keep_alive) == KeepAliveAction::Timeout {
+                    if let Some((unanswered, sent_at)) = state.last_sent_keep_alive {
+                        tracing::info!("{} timed out after {:.0}s without answering keepalive {unanswered}", state.name, sent_at.elapsed().as_secs_f32());
+                    }
+                    kick(framed, "Timed out").await;
+                    break;
+                }
                 state.keep_alive_count += 1;
                 state.last_sent_keep_alive = Some((state.keep_alive_count, std::time::Instant::now()));
                 send_packet(framed, KeepAlive { id: state.keep_alive_count }).await;
@@ -187,6 +214,7 @@ pub async fn play(
                     &config,
                     &item_spawn_times,
                     &item_positions,
+                    &entity_tracker,
                     &world,
                     &channels,
                 ).await;
@@ -246,7 +274,7 @@ pub async fn play(
                         x, y, z,
                         action_id: 1,
                         action_param: viewers,
-                        block_type: 54,
+                        block_type: 54, // TODO: do I need trapped chest id??
                     }).await;
                 }
             }
@@ -542,6 +570,10 @@ pub async fn play(
                 channels.sound_tx.send(("random.orb", sx, sy, sz, 0.5, 63)).ok();
             }
             Ok((eid, x, y, z, amount)) = xp_orb_spawn_rx.recv() => {
+                let (my_x, _, my_z) = state.last_position;
+                if !entity_tracker.read().await.is_visible_to(eid, my_x, my_z) {
+                    continue;
+                }
                 send_packet(framed, SpawnExperienceOrb {
                     entity_id: eid,
                     x, y, z,
@@ -549,7 +581,8 @@ pub async fn play(
                 }).await;
             }
             Ok((eid, x, y, z)) = xp_orb_move_rx.recv() => {
-                if !state.has_chunk_at_pos(x, z) {
+                let (my_x, _, my_z) = state.last_position;
+                if !entity_tracker.read().await.is_visible_to(eid, my_x, my_z) {
                     continue;
                 }
                 send_packet(framed, EntityTeleport {
@@ -751,9 +784,10 @@ pub async fn play(
                 match result {
                     Ok(packet) => {
                         if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
-                            if let Some((sent_id, sent_time)) = state.last_sent_keep_alive.take()
+                            if let Some((sent_id, sent_time)) = state.last_sent_keep_alive
                                 && ka.id == sent_id
                             {
+                                state.last_sent_keep_alive = None;
                                 let previous = state.latency_ms.0;
                                 let measured = sent_time.elapsed().as_millis() as i32;
                                 state.latency_ms = (measured, previous);
@@ -892,6 +926,17 @@ pub async fn play(
                                                 let z = bz as f64 + 0.5;
                                                 let (vx, vy, vz) = break_drop_velocity();
 
+                                                entity_tracker.write().await.track(
+                                                    TrackedEntity::item(
+                                                        drop_eid,
+                                                        x, y, z,
+                                                        config.tracking.item,
+                                                    )
+                                                );
+                                                item_spawn_times.write().await.insert(drop_eid, Instant::now());
+                                                item_positions.write().await.insert(
+                                                    (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
+                                                );
                                                 channels.item_tx.send((
                                                     drop_eid,
                                                     x, y, z,
@@ -900,17 +945,6 @@ pub async fn play(
                                                     drop_metadata,
                                                     vx, vy, vz
                                                 )).ok();
-                                                item_spawn_times.write().await.insert(drop_eid, Instant::now());
-                                                entity_tracker.write().await.track(
-                                                    TrackedEntity::item(
-                                                        drop_eid,
-                                                        x, y, z,
-                                                        config.tracking.item,
-                                                    )
-                                                );
-                                                item_positions.write().await.insert(
-                                                    (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
-                                                );
                                             }
 
                                             let xp = experience::xp_for_block(block.id);
@@ -919,6 +953,12 @@ pub async fn play(
                                                 let ox = bx as f64 + 0.5;
                                                 let oy = by as f64 + 0.5;
                                                 let oz = bz as f64 + 0.5;
+
+                                                entity_tracker.write().await.track(TrackedEntity::experience_orb(
+                                                   orb_eid,
+                                                   ox, oy, oz,
+                                                   config.tracking.experience_orb
+                                                ));
 
                                                 xp_orbs.write().await.push(XpOrb {
                                                     entity_id: orb_eid,
@@ -1665,6 +1705,13 @@ pub async fn play(
                                                 let xp_amount = level_to_xp_drop(target.xp_level);
                                                 if xp_amount > 0 {
                                                     let orb_eid = next_entity_id();
+                                                    entity_tracker.write().await.track(
+                                                        TrackedEntity::experience_orb(
+                                                            orb_eid,
+                                                            target.x, target.y + 0.5, target.z,
+                                                            config.tracking.experience_orb
+                                                        )
+                                                    );
                                                     xp_orbs.write().await.push(XpOrb {
                                                         entity_id: orb_eid,
                                                         x: target.x, y: target.y + 0.5, z: target.z,
@@ -1769,6 +1816,21 @@ pub async fn play(
             }
         }
     }
+    if let Some(cursor) = state.cursor_item.take()
+        && let Some(overflow) = state.inventory.insert_itemstack(cursor)
+    {
+        drop_item_in_world(
+            overflow,
+            state.entity_id,
+            &player_registry,
+            &channels,
+            &item_spawn_times,
+            &entity_tracker,
+            &item_positions,
+            config.tracking.item,
+        )
+        .await;
+    }
     let mut inventory_data = vec![];
     for i in 0..46i16 {
         if let Some(idx) = Inventory::packet_to_internal(i)
@@ -1860,6 +1922,26 @@ async fn spawn_dropped_item(
     let vz = vz + p.velocity.2 * 0.3;
     let drop_eid = next_entity_id();
 
+    entity_tracker.write().await.track(TrackedEntity::item(
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        tracking_range,
+    ));
+    item_spawn_times
+        .write()
+        .await
+        .insert(drop_eid, Instant::now());
+    item_positions.write().await.insert((
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        stack.item_id,
+        stack.count,
+        stack.metadata,
+    ));
     channels
         .item_tx
         .send((
@@ -1875,26 +1957,6 @@ async fn spawn_dropped_item(
             vz,
         ))
         .ok();
-    item_spawn_times
-        .write()
-        .await
-        .insert(drop_eid, Instant::now());
-    entity_tracker.write().await.track(TrackedEntity::item(
-        drop_eid,
-        drop_x,
-        drop_y,
-        drop_z,
-        tracking_range,
-    ));
-    item_positions.write().await.insert((
-        drop_eid,
-        drop_x,
-        drop_y,
-        drop_z,
-        stack.item_id,
-        stack.count,
-        stack.metadata,
-    ));
 }
 
 async fn apply_potion_effect(
@@ -2153,6 +2215,26 @@ async fn drop_item_in_world(
     let vz = vz + p.velocity.2 * 0.3;
     let drop_eid = next_entity_id();
 
+    entity_tracker.write().await.track(TrackedEntity::item(
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        tracking_range,
+    ));
+    item_spawn_times
+        .write()
+        .await
+        .insert(drop_eid, Instant::now());
+    item_positions.write().await.insert((
+        drop_eid,
+        drop_x,
+        drop_y,
+        drop_z,
+        stack.item_id,
+        stack.count,
+        stack.metadata,
+    ));
     channels
         .item_tx
         .send((
@@ -2168,26 +2250,6 @@ async fn drop_item_in_world(
             vz,
         ))
         .ok();
-    item_spawn_times
-        .write()
-        .await
-        .insert(drop_eid, Instant::now());
-    entity_tracker.write().await.track(TrackedEntity::item(
-        drop_eid,
-        drop_x,
-        drop_y,
-        drop_z,
-        tracking_range,
-    ));
-    item_positions.write().await.insert((
-        drop_eid,
-        drop_x,
-        drop_y,
-        drop_z,
-        stack.item_id,
-        stack.count,
-        stack.metadata,
-    ));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2436,5 +2498,50 @@ mod xp_drop_tests {
             assert!((0..=100).contains(&drop), "level {level} gave {drop}");
             last = drop;
         }
+    }
+}
+
+#[cfg(test)]
+mod keep_alive_tests {
+    use std::time::{Duration, Instant};
+
+    use super::{KEEP_ALIVE_INTERVAL, KeepAliveAction, keep_alive_action};
+
+    #[test]
+    fn a_fresh_connection_is_probed() {
+        assert_eq!(keep_alive_action(None), KeepAliveAction::Probe);
+    }
+
+    #[test]
+    fn an_unanswered_probe_is_a_timeout() {
+        let sent = Some((7, Instant::now()));
+        assert_eq!(keep_alive_action(sent), KeepAliveAction::Timeout);
+    }
+
+    #[test]
+    fn it_does_not_matter_how_long_ago_the_probe_went_out() {
+        let just_now = Some((1, Instant::now()));
+        let a_while = Some((1, Instant::now() - Duration::from_secs(600)));
+        assert_eq!(keep_alive_action(just_now), KeepAliveAction::Timeout);
+        assert_eq!(keep_alive_action(a_while), KeepAliveAction::Timeout);
+    }
+
+    #[test]
+    fn answering_returns_to_probing() {
+        let mut outstanding = Some((3, Instant::now()));
+        assert_eq!(keep_alive_action(outstanding), KeepAliveAction::Timeout);
+
+        outstanding = None;
+        assert_eq!(keep_alive_action(outstanding), KeepAliveAction::Probe);
+    }
+
+    #[test]
+    fn the_window_is_between_one_and_two_intervals() {
+        assert_eq!(KEEP_ALIVE_INTERVAL, Duration::from_secs(15));
+        let worst_case = KEEP_ALIVE_INTERVAL * 2;
+        assert!(
+            worst_case <= Duration::from_secs(30),
+            "a client would get longer than vanilla's 30s"
+        );
     }
 }

@@ -15,6 +15,7 @@ use coral_protocol::packets::play::{
     inventory::ItemStack,
 };
 use coral_server::{
+    entity_tracker::EntityTracker,
     experience::XpOrb,
     items::drops::DroppedItems,
     player::registry::PlayerRegistry,
@@ -243,6 +244,7 @@ pub fn spawn_item_despawn_task(
     item_despawn_secs: u64,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<DroppedItems>>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
 ) {
     tokio::spawn(async move {
         let mut interval = interval(Duration::from_secs(1));
@@ -260,16 +262,18 @@ pub fn spawn_item_despawn_task(
             if expired.is_empty() {
                 continue;
             }
-            let mut times = item_spawn_times.write().await;
-            let mut positions = item_positions.write().await;
+            {
+                let mut times = item_spawn_times.write().await;
+                let mut positions = item_positions.write().await;
 
-            for eid in &expired {
-                times.remove(eid);
-                positions.remove(*eid);
+                for eid in &expired {
+                    times.remove(eid);
+                    positions.remove(*eid);
+                }
             }
-            if !expired.is_empty() {
-                despawn_tx.send(expired).ok();
-            }
+
+            entity_tracker.write().await.untrack_many(&expired);
+            despawn_tx.send(expired).ok();
         }
     });
 }
@@ -515,6 +519,7 @@ pub fn spawn_xp_orb_task(
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     world: Arc<World>,
     player_registry: Arc<PlayerRegistry>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
     channels: Channels,
 ) {
     tokio::spawn(async move {
@@ -576,6 +581,10 @@ pub fn spawn_xp_orb_task(
                 channels.xp_orb_move_tx.send(mv).ok();
             }
             if !picked_up_per_player.0.is_empty() {
+                entity_tracker
+                    .write()
+                    .await
+                    .untrack_many(&picked_up_per_player.0);
                 channels.despawn_tx.send(picked_up_per_player.0).ok();
             }
             for (uuid, amount) in picked_up_per_player.1 {

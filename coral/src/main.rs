@@ -185,6 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.world.item_despawn_seconds,
         ctx.item_spawn_times.clone(),
         ctx.item_positions.clone(),
+        ctx.entity_tracker.clone(),
     );
 
     tasks::spawn_projectile_task(
@@ -200,6 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.xp_orbs.clone(),
         ctx.world.clone(),
         ctx.player_registry.clone(),
+        ctx.entity_tracker.clone(),
         ctx.channels.clone(),
     );
 
