@@ -8,7 +8,7 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use coral::{Channels, register_commands, world_path};
-use coral_protocol::packets::{PacketRegistry, play::entity::TileEntity};
+use coral_protocol::packets::PacketRegistry;
 use coral_types::{BreakAnimation, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect};
 use rsa::RsaPrivateKey;
 use tokio::{
@@ -29,6 +29,7 @@ use coral_server::{
     projectile::Projectile,
     scoreboard::{ScoreboardManager, team::TeamManager},
     statistics::StatTracker,
+    tile_entities::TileEntityStore,
     whitelist::WhitelistFile,
 };
 use coral_world::{
@@ -272,7 +273,7 @@ pub struct ServerContext {
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     fluid_queue: Arc<RwLock<FluidQueue>>,
-    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: Arc<RwLock<TileEntityStore>>,
     server_loaded_chunks: Arc<RwLock<HashSet<(i32, i32)>>>,
     scoreboard: Arc<ScoreboardManager>,
     teams: Arc<TeamManager>,
@@ -311,7 +312,7 @@ impl ServerContext {
             world_dir: Arc::new(world_dir),
             xp_orbs: Arc::new(RwLock::new(Vec::new())),
             fluid_queue: Arc::new(RwLock::new(FluidQueue::new())),
-            tile_entities: Arc::new(RwLock::new(HashMap::new())),
+            tile_entities: Arc::new(RwLock::new(TileEntityStore::new())),
             server_loaded_chunks: Arc::new(RwLock::new(HashSet::new())),
             scoreboard: Arc::new(ScoreboardManager::new()),
             teams: Arc::new(TeamManager::new()),

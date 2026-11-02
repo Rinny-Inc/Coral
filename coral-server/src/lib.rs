@@ -14,4 +14,5 @@ pub mod projectile;
 pub mod scoreboard;
 pub mod smelting;
 pub mod statistics;
+pub mod tile_entities;
 pub mod whitelist;

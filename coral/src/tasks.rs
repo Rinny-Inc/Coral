@@ -21,6 +21,7 @@ use coral_server::{
     player::registry::PlayerRegistry,
     projectile::{Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, smelt_result},
+    tile_entities::TileEntityStore,
 };
 use coral_types::{DespawnEntity, dist_sq3, dist3, ext::TicksExt};
 use coral_world::{
@@ -61,7 +62,7 @@ pub fn spawn_shutdown_task(
     player_registry: Arc<PlayerRegistry>,
     world: Arc<World>,
     world_dir: PathBuf,
-    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: Arc<RwLock<TileEntityStore>>,
 ) {
     let mut restart_rx = restart_tx.subscribe();
     tokio::spawn(async move {
@@ -86,13 +87,7 @@ pub fn spawn_shutdown_task(
 
         let tile_entities_by_chunk: HashMap<(i32, i32), Vec<NbtTag>> = {
             let all_tiles = tile_entities.read().await;
-            let mut map: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
-            for ((x, y, z), tile) in all_tiles.iter() {
-                if let Some(nbt) = tile_entity_to_nbt(*x, *y, *z, tile) {
-                    map.entry((x >> 4, z >> 4)).or_default().push(nbt);
-                }
-            }
-            map
+            tile_entity_nbt_by_chunk(&all_tiles)
         };
         world.save(&world_dir, &tile_entities_by_chunk).await;
         match stop {
@@ -106,6 +101,19 @@ pub fn spawn_shutdown_task(
             }
         }
     });
+}
+
+fn tile_entity_nbt_by_chunk(store: &TileEntityStore) -> HashMap<(i32, i32), Vec<NbtTag>> {
+    store
+        .chunks()
+        .map(|(chunk, tiles)| {
+            let nbt = tiles
+                .iter()
+                .filter_map(|((x, y, z), tile)| tile_entity_to_nbt(*x, *y, *z, tile))
+                .collect();
+            (*chunk, nbt)
+        })
+        .collect()
 }
 
 /// Tell whoever is online that the server is about to go, and give them the
@@ -321,7 +329,7 @@ pub fn spawn_console_task(dispatcher: Arc<CommandDispatcher>, chat_tx: Arc<Sende
 pub fn spawn_world_save_task(
     world: Arc<World>,
     world_dir: PathBuf,
-    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: Arc<RwLock<TileEntityStore>>,
     auto_save_interval: u64,
 ) {
     tokio::spawn(async move {
@@ -330,13 +338,7 @@ pub fn spawn_world_save_task(
             interval.tick().await;
             let tile_entities_by_chunk: HashMap<(i32, i32), Vec<NbtTag>> = {
                 let all_tiles = tile_entities.read().await;
-                let mut map: HashMap<(i32, i32), Vec<NbtTag>> = HashMap::new();
-                for ((x, y, z), tile) in all_tiles.iter() {
-                    if let Some(nbt) = tile_entity_to_nbt(*x, *y, *z, tile) {
-                        map.entry((x >> 4, z >> 4)).or_default().push(nbt);
-                    }
-                }
-                map
+                tile_entity_nbt_by_chunk(&all_tiles)
             };
             world.save(&world_dir, &tile_entities_by_chunk).await;
             tracing::info!("[World] Auto-Saved.");
@@ -603,7 +605,7 @@ pub fn spawn_resource_monitor_task(monitor: Arc<ResourceMonitor>) {
     });
 }
 pub fn spawn_furnace_task(
-    tile_entities: Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: Arc<RwLock<TileEntityStore>>,
     world: Arc<World>,
     channels: Channels,
 ) {
@@ -614,11 +616,7 @@ pub fn spawn_furnace_task(
 
             let position: Vec<(i32, i32, i32)> = {
                 let storage = tile_entities.read().await;
-                storage
-                    .iter()
-                    .filter(|(_, tile)| matches!(tile, TileEntity::Furnace { .. }))
-                    .map(|(pos, _)| *pos)
-                    .collect()
+                storage.furnace_positions().collect()
             };
 
             if position.is_empty() {

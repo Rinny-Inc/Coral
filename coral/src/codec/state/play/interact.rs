@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{Arc, atomic::Ordering::Relaxed},
     time::Instant,
 };
@@ -17,6 +16,7 @@ use coral_server::{
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind, launch_velocity},
+    tile_entities::TileEntityStore,
 };
 use coral_types::GameMode;
 use coral_world::{
@@ -138,7 +138,7 @@ pub async fn try_with_item_on_block(
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
     world: &Arc<World>,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     fluid_queue: &Arc<RwLock<FluidQueue>>,
     channels: &Channels,
     clicked: Option<(i32, i32, i32)>,
@@ -375,7 +375,7 @@ pub async fn try_with_block(
     player_registry: &Arc<PlayerRegistry>,
     item_registry: &Arc<ItemRegistry>,
     world: &Arc<World>,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     fluid_queue: &Arc<RwLock<FluidQueue>>,
     channels: &Channels,
 ) -> bool {

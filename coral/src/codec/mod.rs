@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -26,6 +26,7 @@ use coral_server::items::{Item, ItemRegistry};
 use coral_server::projectile::Projectile;
 use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
+use coral_server::tile_entities::TileEntityStore;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
 use coral_world::playerdata::{MAX_AIR_TICKS, load_player_data};
@@ -48,7 +49,7 @@ use coral_protocol::packets::login::SetCompression;
 use coral_protocol::packets::login::disconnect::{LoginDisconnect, PlayDisconnect};
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_protocol::packets::play::chat::builder::ChatColor;
-use coral_protocol::packets::play::entity::{MetadataValue, TileEntity};
+use coral_protocol::packets::play::entity::MetadataValue;
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
 use coral_protocol::packets::play::inventory::{
     Inventory, ItemStack, SetSlot, WindowItems, WindowType,
@@ -916,7 +917,7 @@ async fn make_player_join(
     join_tx: &Arc<Sender<JoinLeave>>,
     chat_tx: &Arc<Sender<String>>,
     world: &Arc<World>,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,

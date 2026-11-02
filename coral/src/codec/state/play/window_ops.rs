@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use coral_protocol::packets::play::{
@@ -6,6 +5,7 @@ use coral_protocol::packets::play::{
     entity::TileEntity,
     inventory::{ClickWindow, OpenWindow, SetSlot, WindowItems},
 };
+use coral_server::tile_entities::TileEntityStore;
 use coral_types::ChestAnimation;
 use tokio::{
     net::TcpStream,
@@ -41,7 +41,7 @@ pub async fn open_tile_entity_window(
     state: &mut PlayerState,
     pos: (i32, i32, i32),
     block_id: u8,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     chest_anim_tx: &Arc<Sender<ChestAnimation>>,
     sound_tx: &Arc<Sender<crate::SoundEffect>>,
 ) -> bool {
@@ -57,7 +57,7 @@ pub async fn open_tile_entity_window(
 
     let open_data = {
         let mut storage = tile_entities.write().await;
-        let tile = storage.entry(pos).or_insert(blank);
+        let tile = storage.get_or_insert(pos, blank);
 
         if !tile.has_window() {
             return false;
@@ -118,7 +118,7 @@ pub async fn handle_tile_entity_click(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
     click: &ClickWindow,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
 ) -> bool {
     let Some(open) = state.open_window.clone() else {
         return false;
@@ -185,7 +185,7 @@ pub async fn handle_tile_entity_click(
 
 pub async fn close_tile_entity_window(
     state: &mut PlayerState,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     chest_anim_tx: &Arc<Sender<ChestAnimation>>,
     sound_tx: &Arc<Sender<crate::SoundEffect>>,
 ) {

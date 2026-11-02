@@ -56,6 +56,7 @@ use coral_server::{
         registry::{PlayerRegistry, next_entity_id},
     },
     projectile::{Projectile, ProjectileKind},
+    tile_entities::TileEntityStore,
 };
 use coral_types::{GameMode, dist_xz, dist3};
 use coral_world::{
@@ -2266,7 +2267,7 @@ pub async fn send_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world: &Arc<World>,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     center_x: i32,
     center_z: i32,
@@ -2298,15 +2299,11 @@ pub async fn send_chunks(
             send_packet(framed, chunk).await;
             loaded_chunks.insert((cx, cz));
 
-            let te = tile_entities.read().await;
-            for ((x, y, z), tile) in te.iter() {
-                if (x >> 4) == cx
-                    && (z >> 4) == cz
-                    && let TileEntity::Sign { lines } = tile
-                {
-                    send_packet(
-                        framed,
-                        UpdateSign {
+            let signs: Vec<UpdateSign> = {
+                let te = tile_entities.read().await;
+                te.in_chunk(cx, cz)
+                    .filter_map(|((x, y, z), tile)| match tile {
+                        TileEntity::Sign { lines } => Some(UpdateSign {
                             x: *x,
                             y: *y,
                             z: *z,
@@ -2316,10 +2313,14 @@ pub async fn send_chunks(
                                 ChatBuilder::plain_json(&lines[2]),
                                 ChatBuilder::plain_json(&lines[3]),
                             ],
-                        },
-                    )
-                    .await;
-                }
+                        }),
+                        _ => None,
+                    })
+                    .collect()
+            };
+
+            for sign in signs {
+                send_packet(framed, sign).await;
             }
         }
     }
@@ -2378,7 +2379,7 @@ async fn update_chunks(
     framed: &mut Framed<TcpStream, Codec>,
     client_protocol: i32,
     world: &Arc<World>,
-    tile_entities: &Arc<RwLock<HashMap<(i32, i32, i32), TileEntity>>>,
+    tile_entities: &Arc<RwLock<TileEntityStore>>,
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     new_chunk_x: i32,
     new_chunk_z: i32,
