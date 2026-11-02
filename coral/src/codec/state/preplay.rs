@@ -26,7 +26,7 @@ use crate::{
     codec::{Codec, is_normal_disconnect, kick, send_packet, state::throttle},
 };
 
-const ALLOWED_PROTOCOLS: &[i32] = &[/*5,*/ 47];
+const ALLOWED_PROTOCOLS: &[i32] = &[5, 47];
 
 pub struct PrePlayContext {
     pub player_registry: Arc<PlayerRegistry>,

@@ -29,6 +29,7 @@ pub type ChestAnimation = (i32, i32, i32, u8);
 pub type MobSpawnBroadcast = (i32, u8, f64, f64, f64, f32, f32, f32, f32);
 pub type MobMoveBroadcast = (i32, f64, f64, f64, f32, f32, f32, bool);
 pub type MobAttackBroadcast = (Uuid, f32, i32);
+pub type SavedEffect = (u8, u8, i32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolKind {

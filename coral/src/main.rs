@@ -76,45 +76,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         restart_tx.clone(),
     ));
 
-    let cwd = std::env::current_dir()?;
-
-    let server_icon = load_server_icon_file(&cwd)
-        .inspect(|_| tracing::info!("Server icon loaded successfully"))
-        .or_else(|| {
-            tracing::info!("No server icon found or invalid size");
-            None
-        });
-
     let resource_monitor = Arc::new(ResourceMonitor::new());
 
-    let world_path = world_path(&config.world.world_name)?;
-    let world_dir = cwd.join(&config.world.world_name);
+    let (server_icon, world_dir, spawn_point, world) = {
+        let cwd = std::env::current_dir()?;
 
-    let spawn_y = coral_world::generator::from_name(&config.world.generator).spawn_y();
+        let server_icon = load_server_icon_file(&cwd)
+            .inspect(|_| tracing::info!("Server icon loaded successfully"))
+            .or_else(|| {
+                tracing::info!("No server icon found or invalid size");
+                None
+            });
+        let world_path = world_path(&config.world.world_name)?;
+        let world_dir = cwd.join(&config.world.world_name);
 
-    if !world_dir.join("level.dat").exists() {
-        write_level_dat(world_path, &config.world.world_name, spawn_y as i32);
-    }
+        let spawn_y = coral_world::generator::from_name(&config.world.generator).spawn_y();
 
-    let spawn_point = read_spawn_point(world_path)
-        .await
-        .unwrap_or((0.5, spawn_y, 0.5, 0.0, 0.0));
-    let generator = coral_world::generator::from_name_at_spawn(
-        &config.world.generator,
-        spawn_point.0.floor() as i32,
-        spawn_point.1,
-        spawn_point.2.floor() as i32,
-    );
+        if !world_dir.join("level.dat").exists() {
+            write_level_dat(world_path, &config.world.world_name, spawn_y as i32);
+        }
 
-    tracing::info!("[World] generator: {}", generator.name());
-    if generator.is_empty() {
-        tracing::info!(
-            "[World] this world generates nothing beyond a single block at the spawn point"
+        let spawn_point = read_spawn_point(world_path)
+            .await
+            .unwrap_or((0.5, spawn_y, 0.5, 0.0, 0.0));
+
+        let generator = coral_world::generator::from_name_at_spawn(
+            &config.world.generator,
+            spawn_point.0.floor() as i32,
+            spawn_point.1,
+            spawn_point.2.floor() as i32,
         );
-    }
-    let world = Arc::new(World::new(generator));
-    world.set_difficulty(config.world.difficulty);
-    world.load(world_path).await;
+
+        tracing::info!("[World] generator: {}", generator.name());
+        if generator.is_empty() {
+            tracing::info!(
+                "[World] this world generates nothing beyond a single block at the spawn point"
+            );
+        }
+        let world = Arc::new(World::new(generator));
+        world.set_difficulty(config.world.difficulty);
+        world.load(world_path).await;
+        (server_icon, world_dir, spawn_point, world)
+    };
 
     let (private_key, public_key_der) = generate_rsa_key();
 

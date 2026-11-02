@@ -12,7 +12,7 @@ use coral_server::{
     player::{Player, registry::PlayerRegistry},
 };
 use coral_types::{GameMode, ext::TicksExt};
-use coral_world::world::World;
+use coral_world::{playerdata::MAX_AIR_TICKS, world::World};
 use rand::RngExt;
 use tokio::{
     net::TcpStream,
@@ -304,8 +304,8 @@ async fn tick_drowning(
     let submerged = player.is_head_submerged(world).await;
     let can_drown = state.gamemode == GameMode::Survival && !state.is_flying;
     if submerged && can_drown {
-        if state.air_tick > 0 {
-            state.air_tick -= 1;
+        if state.air_ticks > 0 {
+            state.air_ticks -= 1;
         } else {
             // out of air -> take damage every 20 ticks
             if state.tick_count % 20 == 0 {
@@ -320,16 +320,14 @@ async fn tick_drowning(
                 }
             }
         }
-    } else if state.air_tick < 300 {
-        // replace 300 by max_air_tick
-        // refill quickly once head clears water
-        state.air_tick = (state.air_tick + 4).min(300);
+    } else if state.air_ticks < MAX_AIR_TICKS {
+        state.air_ticks = (state.air_ticks + 4).min(MAX_AIR_TICKS);
     }
-    if state.air_tick != state.last_sent_air_tick {
-        state.last_sent_air_tick = state.air_tick;
-        state.watcher.set(1, MetadataValue::Short(state.air_tick));
+    if state.air_ticks != state.last_sent_air_tick {
+        state.last_sent_air_tick = state.air_ticks;
+        state.watcher.set(1, MetadataValue::Short(state.air_ticks));
         player_registry
-            .update_air_tick(&state.uuid, state.air_tick)
+            .update_air_tick(&state.uuid, state.air_ticks)
             .await;
     }
 }

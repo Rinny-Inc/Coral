@@ -1851,8 +1851,17 @@ pub async fn play(
             food_saturation: state.food_saturation,
             gamemode: u8::from(state.gamemode),
             inventory: inventory_data,
+            held_slot: state.held_slot,
             xp_total: state.xp_total,
             bed_spawn: state.bed_spawn,
+            is_flying: state.is_flying,
+            fire_ticks: state.fire_ticks,
+            air_ticks: state.air_ticks,
+            active_effects: state
+                .active_effects
+                .iter()
+                .map(|e| (e.kind.id(), e.amplifier, e.remaining_ticks))
+                .collect(),
         };
         save_player_data(&world_dir, &state.uuid, &data).await;
         channels.join_tx.send((p, false)).ok();

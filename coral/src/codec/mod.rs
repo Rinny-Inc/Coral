@@ -28,7 +28,7 @@ use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
-use coral_world::playerdata::load_player_data;
+use coral_world::playerdata::{MAX_AIR_TICKS, load_player_data};
 use coral_world::spawn;
 use coral_world::world::World;
 use flate2::{Compress, Compression, FlushCompress, Status};
@@ -229,11 +229,7 @@ impl Decoder for Codec {
             Some(Err(e)) => Err(e),
             None => {
                 if self.state == EnumProtocol::Play {
-                    tracing::info!(
-                        "WARN: Ignoring unknown Play packet ID: 0x{:02X} ({})",
-                        id,
-                        id
-                    );
+                    tracing::warn!("Ignoring unknown Play packet ID: 0x{:02X} ({})", id, id);
                     Ok(None)
                 } else if self.state == EnumProtocol::Status {
                     Ok(None)
@@ -352,7 +348,7 @@ struct PlayerState {
     last_position: (f64, f64, f64),
     last_position_tick: Instant,
     velocity: (f64, f64, f64), // blocks per tick, smoothed
-    air_tick: i16,
+    air_ticks: i16,
     last_sent_air_tick: i16,
     fire_ticks: i16,
     watcher: DataWatcher,
@@ -423,8 +419,8 @@ impl PlayerState {
             last_position: (0.0, 0.0, 0.0),
             last_position_tick: Instant::now(),
             velocity: (0.0, 0.0, 0.0),
-            air_tick: 300,
-            last_sent_air_tick: 300,
+            air_ticks: MAX_AIR_TICKS,
+            last_sent_air_tick: MAX_AIR_TICKS,
             fire_ticks: 0,
             watcher: DataWatcher::new(),
             in_lava: false,
@@ -1085,6 +1081,18 @@ async fn make_player_join(
                 });
             }
         }
+
+        state.held_slot = d.held_slot;
+        state.is_flying = d.is_flying;
+        state.fire_ticks = d.fire_ticks;
+        state.air_ticks = d.air_ticks;
+        state.active_effects = d
+            .active_effects
+            .iter()
+            .filter_map(|(id, amplifier, remaining)| {
+                EffectKind::from_id(*id).map(|kind| ActiveEffect::new(kind, *amplifier, *remaining))
+            })
+            .collect();
     }
 
     if client_protocol == 47 {
@@ -1109,11 +1117,9 @@ async fn make_player_join(
         .await;
     }
 
-    let (ability_flags, fly_speed, walk_speed) = match gamemode {
-        GameMode::Creative => (0x01 | 0x02 | 0x04 | 0x08, 0.05, 0.1),
-        GameMode::Spectator => (0x01 | 0x02 | 0x04, 0.05, 0.1),
-        _ => (0x00, 0.05, 0.1),
-    };
+    let (ability_flags, flying) = ability_flags_on_join(gamemode, state.is_flying);
+    state.is_flying = flying;
+    let (fly_speed, walk_speed) = (0.05, 0.1);
 
     send_packet(
         framed,
@@ -1358,6 +1364,91 @@ fn is_normal_disconnect(e: &std::io::Error) -> bool {
             | std::io::ErrorKind::UnexpectedEof
             | std::io::ErrorKind::InvalidData
     )
+}
+
+fn ability_flags_on_join(gamemode: GameMode, saved_flying: bool) -> (u8, bool) {
+    let may_fly = matches!(gamemode, GameMode::Creative | GameMode::Spectator);
+    let flying = (saved_flying && may_fly) || gamemode == GameMode::Spectator;
+
+    let flags = u8::from(may_fly)
+        | (u8::from(flying) << 1)
+        | (u8::from(may_fly) << 2)
+        | (u8::from(gamemode == GameMode::Creative) << 3);
+
+    (flags, flying)
+}
+
+#[cfg(test)]
+mod ability_tests {
+    use super::*;
+
+    const INVULNERABLE: u8 = 0x01;
+    const FLYING: u8 = 0x02;
+    const MAY_FLY: u8 = 0x04;
+    const CREATIVE: u8 = 0x08;
+
+    #[test]
+    fn survival_can_never_fly_however_it_was_saved() {
+        for saved in [false, true] {
+            let (flags, flying) = ability_flags_on_join(GameMode::Survival, saved);
+            assert_eq!(flags, 0, "survival gets no ability bits (saved={saved})");
+            assert!(!flying);
+        }
+        for saved in [false, true] {
+            let (flags, flying) = ability_flags_on_join(GameMode::Adventure, saved);
+            assert_eq!(flags, 0, "adventure gets no ability bits (saved={saved})");
+            assert!(!flying);
+        }
+    }
+
+    #[test]
+    fn creative_carries_the_saved_flying_state() {
+        let (grounded, flying) = ability_flags_on_join(GameMode::Creative, false);
+        assert_eq!(grounded & FLYING, 0, "left on the ground, joined flying");
+        assert!(!flying);
+        assert_eq!(grounded, INVULNERABLE | MAY_FLY | CREATIVE);
+
+        let (airborne, flying) = ability_flags_on_join(GameMode::Creative, true);
+        assert_eq!(airborne & FLYING, FLYING);
+        assert!(flying);
+        assert_eq!(airborne, INVULNERABLE | FLYING | MAY_FLY | CREATIVE);
+    }
+
+    #[test]
+    fn spectator_always_flies_and_is_never_creative() {
+        for saved in [false, true] {
+            let (flags, flying) = ability_flags_on_join(GameMode::Spectator, saved);
+            assert_eq!(
+                flags & FLYING,
+                FLYING,
+                "spectator cannot walk (saved={saved})"
+            );
+            assert!(flying);
+            assert_eq!(flags & CREATIVE, 0);
+            assert_eq!(flags, INVULNERABLE | FLYING | MAY_FLY);
+        }
+    }
+
+    #[test]
+    fn may_fly_is_set_whenever_flying_is() {
+        for gamemode in [
+            GameMode::Survival,
+            GameMode::Creative,
+            GameMode::Adventure,
+            GameMode::Spectator,
+        ] {
+            for saved in [false, true] {
+                let (flags, _) = ability_flags_on_join(gamemode, saved);
+                if flags & FLYING != 0 {
+                    assert_eq!(
+                        flags & MAY_FLY,
+                        MAY_FLY,
+                        "{gamemode:?} saved={saved} is flying without permission"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

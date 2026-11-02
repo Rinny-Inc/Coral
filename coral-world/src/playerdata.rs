@@ -3,10 +3,13 @@ use std::{
     path::Path,
 };
 
+use coral_types::SavedEffect;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use uuid::Uuid;
 
 use crate::nbt::{NbtReader, NbtTag};
+
+pub const MAX_AIR_TICKS: i16 = 300;
 
 #[derive(Debug, Clone)]
 pub struct PlayerData {
@@ -20,8 +23,13 @@ pub struct PlayerData {
     pub food_saturation: f32,
     pub gamemode: u8,
     pub inventory: Vec<(i16, i16, u8, i16)>,
+    pub held_slot: u8,
     pub xp_total: i32,
     pub bed_spawn: Option<(i32, i32, i32)>,
+    pub is_flying: bool,
+    pub fire_ticks: i16,
+    pub air_ticks: i16,
+    pub active_effects: Vec<SavedEffect>,
 }
 impl Default for PlayerData {
     fn default() -> Self {
@@ -36,8 +44,13 @@ impl Default for PlayerData {
             food_saturation: 5.0,
             gamemode: 0,
             inventory: vec![],
+            held_slot: 0,
             xp_total: 0,
             bed_spawn: None,
+            is_flying: false,
+            fire_ticks: 0,
+            air_ticks: MAX_AIR_TICKS,
+            active_effects: vec![],
         }
     }
 }
@@ -108,6 +121,52 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         }
     }
 
+    let held_slot = root
+        .get("SelectedItemSlot")
+        .and_then(|t| t.as_i32())
+        .filter(|s| (0..=8).contains(s))
+        .unwrap_or(0) as u8;
+
+    let is_flying = root
+        .get("abilities")
+        .and_then(|a| a.get("flying"))
+        .and_then(|t| t.as_i8())
+        .unwrap_or(0)
+        != 0;
+
+    let fire_ticks = root
+        .get("Fire")
+        .and_then(|t| t.as_i16_val())
+        .unwrap_or(0)
+        .max(0);
+
+    let air_ticks = root
+        .get("Air")
+        .and_then(|t| t.as_i16_val())
+        .unwrap_or(MAX_AIR_TICKS)
+        .clamp(0, MAX_AIR_TICKS);
+
+    let mut active_effects = vec![];
+    if let Some(effect_list) = root.get("ActiveEffects").and_then(|t| t.as_list()) {
+        for effect in effect_list {
+            let Some(id) = effect.get("Id").and_then(|t| t.as_i32()) else {
+                continue;
+            };
+            let Some(remaining) = effect.get("Duration").and_then(|t| t.as_i32()) else {
+                continue;
+            };
+            if !(0..=255).contains(&id) || remaining <= 0 {
+                continue;
+            }
+            let amplifier = effect
+                .get("Amplifier")
+                .and_then(|t| t.as_i32())
+                .unwrap_or(0)
+                .clamp(0, 255) as u8;
+            active_effects.push((id as u8, amplifier, remaining));
+        }
+    }
+
     let xp_total = root.get("XpTotal").and_then(|t| t.as_i32()).unwrap_or(0);
 
     let bed_spawn = match (
@@ -130,149 +189,15 @@ pub async fn load_player_data(world_dir: &Path, uuid: &Uuid) -> Option<PlayerDat
         food_saturation,
         gamemode,
         inventory,
+        held_slot,
         xp_total,
         bed_spawn,
+        is_flying,
+        fire_ticks,
+        air_ticks,
+        active_effects,
     })
 }
-
-// TODO: complete player save and load
-/*
-// EntityHuman
-public void b(NBTTagCompound nbttagcompound) {
-        super.b(nbttagcompound);
-        nbttagcompound.set("Inventory", this.inventory.a(new NBTTagList()));
-        nbttagcompound.setInt("SelectedItemSlot", this.inventory.itemInHandIndex);
-        nbttagcompound.setBoolean("Sleeping", this.sleeping);
-        nbttagcompound.setShort("SleepTimer", (short) this.sleepTicks);
-        nbttagcompound.setFloat("XpP", this.exp);
-        nbttagcompound.setInt("XpLevel", this.expLevel);
-        nbttagcompound.setInt("XpTotal", this.expTotal);
-        nbttagcompound.setInt("Score", this.getScore());
-        if (this.c != null) {
-            nbttagcompound.setInt("SpawnX", this.c.x);
-            nbttagcompound.setInt("SpawnY", this.c.y);
-            nbttagcompound.setInt("SpawnZ", this.c.z);
-            nbttagcompound.setBoolean("SpawnForced", this.d);
-            nbttagcompound.setString("SpawnWorld", spawnWorld); // CraftBukkit - fixes bed spawns for multiworld worlds
-        }
-
-        this.foodData.b(nbttagcompound);
-        this.abilities.a(nbttagcompound);
-        nbttagcompound.set("EnderItems", this.enderChest.h());
-    }
-
-    // EntityPlayer
-    public void b(NBTTagCompound nbttagcompound) {
-            super.b(nbttagcompound);
-            nbttagcompound.setInt("playerGameType", this.playerInteractManager.getGameMode().getId());
-            this.getBukkitEntity().setExtraData(nbttagcompound); // CraftBukkit
-        }
-
-    // EntityLiving
-    public void b(NBTTagCompound nbttagcompound) {
-            nbttagcompound.setFloat("HealF", this.getHealth());
-            nbttagcompound.setShort("Health", (short) ((int) Math.ceil((double) this.getHealth())));
-            nbttagcompound.setShort("HurtTime", (short) this.hurtTicks);
-            nbttagcompound.setShort("DeathTime", (short) this.deathTicks);
-            nbttagcompound.setShort("AttackTime", (short) this.attackTicks);
-            nbttagcompound.setFloat("AbsorptionAmount", this.getAbsorptionHearts());
-            ItemStack[] aitemstack = this.getEquipment();
-            int i = aitemstack.length;
-
-            int j;
-            ItemStack itemstack;
-
-            for (j = 0; j < i; ++j) {
-                itemstack = aitemstack[j];
-                if (itemstack != null) {
-                    this.d.a(itemstack.D());
-                }
-            }
-
-            nbttagcompound.set("Attributes", GenericAttributes.a(this.getAttributeMap()));
-            aitemstack = this.getEquipment();
-            i = aitemstack.length;
-
-            for (j = 0; j < i; ++j) {
-                itemstack = aitemstack[j];
-                if (itemstack != null) {
-                    this.d.b(itemstack.D());
-                }
-            }
-
-            if (!this.effects.isEmpty()) {
-                final NBTTagList nbttaglist = new NBTTagList();
-                final Iterator<MobEffect> iterator = this.effects.values().iterator();
-
-                while (iterator.hasNext()) {
-                    MobEffect mobeffect = iterator.next();
-
-                    nbttaglist.add(mobeffect.a(new NBTTagCompound()));
-                }
-
-                nbttagcompound.set("ActiveEffects", nbttaglist);
-            }
-        }
-
-    // Entity
-    public void e(NBTTagCompound nbttagcompound) {
-            try {
-                //nbttagcompound.set("Pos", this.a(new double[] { this.locX, this.locY + (double) this.V, this.locZ}));
-                // Reaper start // TODO: check if it does shit
-                double locX = this.locX;
-                double locY = this.locY + (double) this.V;
-                double locZ = this.locZ;
-                if (Double.isNaN(locX)) locX = 0;
-                if (Double.isNaN(locY)) locY = 0;
-                if (Double.isNaN(locZ)) locZ = 0;
-                nbttagcompound.set("Pos", this.a(new double[] {locX, locY, locZ}));
-                // Reaper end
-                nbttagcompound.set("Motion", this.a(new double[] { this.motX, this.motY, this.motZ}));
-
-                // CraftBukkit start - Checking for NaN pitch/yaw and resetting to zero
-                // TODO: make sure this is the best way to address this.
-                if (Float.isNaN(this.yaw)) {
-                    this.yaw = 0;
-                }
-
-                if (Float.isNaN(this.pitch)) {
-                    this.pitch = 0;
-                }
-                // CraftBukkit end
-
-                nbttagcompound.set("Rotation", this.a(new float[] { this.yaw, this.pitch}));
-                nbttagcompound.setFloat("FallDistance", this.fallDistance);
-                nbttagcompound.setShort("Fire", (short) this.fireTicks);
-                nbttagcompound.setShort("Air", (short) this.getAirTicks());
-                nbttagcompound.setBoolean("OnGround", this.onGround);
-                nbttagcompound.setInt("Dimension", this.dimension);
-                nbttagcompound.setBoolean("Invulnerable", this.invulnerable);
-                nbttagcompound.setInt("PortalCooldown", this.portalCooldown);
-                nbttagcompound.setLong("UUIDMost", this.getUniqueID().getMostSignificantBits());
-                nbttagcompound.setLong("UUIDLeast", this.getUniqueID().getLeastSignificantBits());
-                // CraftBukkit start
-                nbttagcompound.setLong("WorldUUIDLeast", this.world.getDataManager().getUUID().getLeastSignificantBits());
-                nbttagcompound.setLong("WorldUUIDMost", this.world.getDataManager().getUUID().getMostSignificantBits());
-                //nbttagcompound.setByte("Bukkit.updateLevel", CURRENT_LEVEL); // Rinny - moved to EntityInsentient
-                nbttagcompound.setInt("Spigot.ticksLived", this.ticksLived);
-                // CraftBukkit end
-                this.b(nbttagcompound);
-                if (this.vehicle != null) {
-                    NBTTagCompound nbttagcompound1 = new NBTTagCompound();
-
-                    if (this.vehicle.c(nbttagcompound1)) {
-                        nbttagcompound.set("Riding", nbttagcompound1);
-                    }
-                }
-            } catch (Throwable throwable) {
-                CrashReport crashreport = CrashReport.a(throwable, "Saving entity NBT");
-                CrashReportSystemDetails crashreportsystemdetails = crashreport.a("Entity being saved");
-
-                this.a(crashreportsystemdetails);
-                throw new ReportedException(crashreport);
-            }
-        }
-*/
 
 pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) {
     let mut inventory_list = vec![];
@@ -315,8 +240,36 @@ pub async fn save_player_data(world_dir: &Path, uuid: &Uuid, data: &PlayerData) 
             NbtTag::Int(data.gamemode as i32),
         ),
         ("Inventory".to_string(), NbtTag::List(10, inventory_list)),
+        (
+            "SelectedItemSlot".to_string(),
+            NbtTag::Int(data.held_slot as i32),
+        ),
         ("XpTotal".to_string(), NbtTag::Int(data.xp_total)),
+        ("Fire".to_string(), NbtTag::Short(data.fire_ticks)),
+        ("Air".to_string(), NbtTag::Short(data.air_ticks)),
+        (
+            "abilities".to_string(),
+            NbtTag::Compound(vec![(
+                "flying".to_string(),
+                NbtTag::Byte(i8::from(data.is_flying)),
+            )]),
+        ),
     ];
+
+    if !data.active_effects.is_empty() {
+        let effects = data
+            .active_effects
+            .iter()
+            .map(|(id, amplifier, remaining)| {
+                NbtTag::Compound(vec![
+                    ("Id".to_string(), NbtTag::Byte(*id as i8)),
+                    ("Amplifier".to_string(), NbtTag::Byte(*amplifier as i8)),
+                    ("Duration".to_string(), NbtTag::Int(*remaining)),
+                ])
+            })
+            .collect();
+        root_field.push(("ActiveEffects".to_string(), NbtTag::List(10, effects)));
+    }
 
     if let Some((x, y, z)) = data.bed_spawn {
         root_field.push(("SpawnX".to_string(), NbtTag::Int(x)));
@@ -362,6 +315,23 @@ mod tests {
         Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)
     }
 
+    fn read_root(dir: &Path) -> NbtTag {
+        let compressed = std::fs::read(player_path(dir, &uuid())).unwrap();
+        let mut nbt_bytes = Vec::new();
+        GzDecoder::new(&compressed[..])
+            .read_to_end(&mut nbt_bytes)
+            .unwrap();
+        NbtReader::new(&nbt_bytes).read_named_root().1
+    }
+
+    fn write_root(dir: &Path, root: &NbtTag) {
+        let mut out = Vec::new();
+        NbtTag::write_named_root("", root, &mut out);
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&out).unwrap();
+        std::fs::write(player_path(dir, &uuid()), enc.finish().unwrap()).unwrap();
+    }
+
     #[tokio::test]
     async fn gamemode_survives_a_round_trip() {
         let dir = tmp("gm");
@@ -391,8 +361,13 @@ mod tests {
             food_saturation: 2.5,
             gamemode: 1,
             inventory: vec![(36, 278, 1, 12), (8, 1, 64, 0)],
+            held_slot: 5,
             xp_total: 4271,
             bed_spawn: Some((-100, 64, 250)),
+            is_flying: true,
+            fire_ticks: 97,
+            air_ticks: 142,
+            active_effects: vec![(1, 0, 600), (16, 2, 3600)],
         };
         save_player_data(&dir, &uuid(), &data).await;
         let back = load_player_data(&dir, &uuid()).await.expect("saved data");
@@ -406,6 +381,163 @@ mod tests {
         assert_eq!(back.xp_total, data.xp_total);
         assert_eq!(back.bed_spawn, data.bed_spawn);
         assert_eq!(back.inventory, data.inventory);
+        assert_eq!(back.held_slot, data.held_slot);
+        assert_eq!(back.is_flying, data.is_flying);
+        assert_eq!(back.fire_ticks, data.fire_ticks);
+        assert_eq!(back.air_ticks, data.air_ticks);
+        assert_eq!(back.active_effects, data.active_effects);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn the_previously_unsaved_fields_are_not_defaults_after_a_relog() {
+        let dir = tmp("relog");
+        let default = PlayerData::default();
+        let data = PlayerData {
+            held_slot: 7,
+            is_flying: true,
+            fire_ticks: 44,
+            air_ticks: 11,
+            active_effects: vec![(5, 1, 240)],
+            ..Default::default()
+        };
+        assert_ne!(data.held_slot, default.held_slot);
+        assert_ne!(data.is_flying, default.is_flying);
+        assert_ne!(data.fire_ticks, default.fire_ticks);
+        assert_ne!(data.air_ticks, default.air_ticks);
+        assert_ne!(data.active_effects, default.active_effects);
+
+        save_player_data(&dir, &uuid(), &data).await;
+        let back = load_player_data(&dir, &uuid()).await.expect("saved data");
+
+        assert_eq!(back.held_slot, 7, "held hotbar slot reset");
+        assert!(back.is_flying, "flying state reset");
+        assert_eq!(back.fire_ticks, 44, "fire ticks reset");
+        assert_eq!(back.air_ticks, 11, "air ticks reset");
+        assert_eq!(back.active_effects, vec![(5, 1, 240)], "effects reset");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_player_with_no_effects_writes_no_effects_key() {
+        let dir = tmp("noeffects");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+
+        let root = read_root(&dir);
+        assert!(root.get("ActiveEffects").is_none());
+        assert!(
+            load_player_data(&dir, &uuid())
+                .await
+                .unwrap()
+                .active_effects
+                .is_empty()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_file_without_the_new_keys_loads_with_defaults() {
+        let dir = tmp("oldfile");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+
+        let mut root = read_root(&dir);
+        for key in ["SelectedItemSlot", "Fire", "Air", "abilities"] {
+            if let NbtTag::Compound(entries) = &mut root {
+                entries.retain(|(k, _)| k != key);
+            }
+        }
+        write_root(&dir, &root);
+
+        let back = load_player_data(&dir, &uuid()).await.expect("loads anyway");
+        assert_eq!(back.held_slot, 0);
+        assert!(!back.is_flying);
+        assert_eq!(back.fire_ticks, 0);
+        assert_eq!(
+            back.air_ticks, MAX_AIR_TICKS,
+            "a file with no Air key means a full lungful, not zero"
+        );
+        assert!(back.active_effects.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn out_of_range_scalars_are_brought_back_into_range() {
+        let dir = tmp("clamp");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+
+        let mut root = read_root(&dir);
+        root.set("SelectedItemSlot", NbtTag::Int(37));
+        root.set("Air", NbtTag::Short(4000));
+        root.set("Fire", NbtTag::Short(-20));
+        write_root(&dir, &root);
+
+        let back = load_player_data(&dir, &uuid()).await.unwrap();
+        assert_eq!(back.held_slot, 0, "slot 37 would index past the hotbar");
+        assert_eq!(
+            back.air_ticks, MAX_AIR_TICKS,
+            "air above the ceiling never ticks back down to it"
+        );
+        assert_eq!(back.fire_ticks, 0, "negative fire would burn forever");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unusable_effect_entries_are_dropped_not_restored() {
+        let dir = tmp("badeffects");
+        save_player_data(&dir, &uuid(), &PlayerData::default()).await;
+
+        let mut root = read_root(&dir);
+        root.set(
+            "ActiveEffects",
+            NbtTag::List(
+                10,
+                vec![
+                    NbtTag::Compound(vec![
+                        ("Id".to_string(), NbtTag::Byte(1)),
+                        ("Amplifier".to_string(), NbtTag::Byte(0)),
+                        ("Duration".to_string(), NbtTag::Int(0)),
+                    ]),
+                    NbtTag::Compound(vec![
+                        ("Id".to_string(), NbtTag::Byte(2)),
+                        ("Amplifier".to_string(), NbtTag::Byte(0)),
+                        ("Duration".to_string(), NbtTag::Int(-500)),
+                    ]),
+                    NbtTag::Compound(vec![("Id".to_string(), NbtTag::Byte(3))]),
+                    NbtTag::Compound(vec![("Duration".to_string(), NbtTag::Int(200))]),
+                    NbtTag::Compound(vec![
+                        ("Id".to_string(), NbtTag::Byte(9)),
+                        ("Duration".to_string(), NbtTag::Int(300)),
+                    ]),
+                ],
+            ),
+        );
+        write_root(&dir, &root);
+
+        let back = load_player_data(&dir, &uuid()).await.unwrap();
+        assert_eq!(
+            back.active_effects,
+            vec![(9, 0, 300)],
+            "only the usable entry should survive, amplifier defaulted to 0"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn effect_amplifiers_round_trip_across_the_byte_range() {
+        let dir = tmp("amp");
+        for amplifier in [0u8, 1, 4, 127] {
+            let data = PlayerData {
+                active_effects: vec![(1, amplifier, 400)],
+                ..Default::default()
+            };
+            save_player_data(&dir, &uuid(), &data).await;
+            let back = load_player_data(&dir, &uuid()).await.unwrap();
+            assert_eq!(
+                back.active_effects,
+                vec![(1, amplifier, 400)],
+                "amplifier {amplifier} did not survive"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
