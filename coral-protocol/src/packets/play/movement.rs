@@ -49,10 +49,9 @@ impl PacketOut for PlayerPositionAndLook {
 }
 
 impl PacketIn for PlayerPositionAndLook {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x06;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let x = reader.read_double();
         let y = reader.read_double();
@@ -69,17 +68,12 @@ impl PacketIn for PlayerPositionAndLook {
             on_ground,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl PacketIn for PlayerPosition {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x04;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let x = reader.read_double();
         let y = reader.read_double();
@@ -87,17 +81,12 @@ impl PacketIn for PlayerPosition {
         let on_ground = reader.read_bool();
         Ok(PlayerPosition { x, y, z, on_ground })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl PacketIn for PlayerLook {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x05;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let yaw = reader.read_float();
         let pitch = reader.read_float();
@@ -108,24 +97,15 @@ impl PacketIn for PlayerLook {
             on_ground,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl PacketIn for PlayerOnGround {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x03;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let on_ground = reader.read_bool();
         Ok(PlayerOnGround { on_ground })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

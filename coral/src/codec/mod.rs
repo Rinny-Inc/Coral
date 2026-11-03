@@ -56,7 +56,7 @@ use coral_protocol::packets::play::inventory::{
 };
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
-use coral_protocol::packets::{PacketIn, PacketOut};
+use coral_protocol::packets::{Frame, PacketOut};
 use coral_protocol::{
     packets::{
         PacketKey, PacketRegistry,
@@ -139,7 +139,7 @@ fn varint_len(value: i32) -> usize {
 }
 
 impl Decoder for Codec {
-    type Item = Box<dyn PacketIn>;
+    type Item = Frame;
     type Error = std::io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
@@ -187,27 +187,29 @@ impl Decoder for Codec {
         }
 
         self.decrypted_buf.advance(length_prefix_size);
-        let payload = self.decrypted_buf.split_to(length);
+        // `split_to` hands over an owned `BytesMut` so `freeze()` turns it into `Bytes` by transferring ownership:
+        // no allocation, no copy
+        let mut payload = self.decrypted_buf.split_to(length);
 
         let inner: Bytes = if self.compression_threshold >= 0 {
             let mut r = Reader::new(&payload);
             let data_length = r.read_varint();
             r.finish()?;
             let header_size = r.position;
-            let rest = &payload[header_size..];
             let threshold = self.compression_threshold as usize;
 
             match validate_compression_envelope(data_length, threshold)? {
                 CompressionEnvelope::Uncompressed => {
-                    validate_uncompressed_size(rest.len(), threshold)?;
-                    Bytes::from(rest.to_vec())
+                    validate_uncompressed_size(payload.len() - header_size, threshold)?;
+                    payload.advance(header_size);
+                    payload.freeze()
                 }
-                CompressionEnvelope::Compressed { uncompressed_size } => {
-                    Bytes::from(decompress_checked(rest, uncompressed_size)?)
-                }
+                CompressionEnvelope::Compressed { uncompressed_size } => Bytes::from(
+                    decompress_checked(&payload[header_size..], uncompressed_size)?,
+                ),
             }
         } else {
-            Bytes::from(payload.to_vec())
+            payload.freeze()
         };
 
         let mut bytes = inner;
@@ -225,22 +227,20 @@ impl Decoder for Codec {
             id,
         };
 
-        match self.registry.parse(key, &mut bytes) {
-            Some(Ok(packet)) => Ok(Some(packet)),
-            Some(Err(e)) => Err(e),
-            None => {
-                if self.state == EnumProtocol::Play {
-                    tracing::warn!("Ignoring unknown Play packet ID: 0x{:02X} ({})", id, id);
-                    Ok(None)
-                } else if self.state == EnumProtocol::Status {
-                    Ok(None)
-                } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("Unknown packet ID: {}", id),
-                    ))
-                }
-            }
+        if self.registry.knows(&key) {
+            return Ok(Some(Frame::new(id, bytes)));
+        }
+
+        if self.state == EnumProtocol::Play {
+            tracing::warn!("Ignoring unknown Play packet ID; 0x{:02X} ({})", id, id);
+            Ok(None)
+        } else if self.state == EnumProtocol::Status {
+            Ok(None)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unknown packet ID: {}", id),
+            ))
         }
     }
 }
@@ -1683,5 +1683,191 @@ mod chunk_visibility_tests {
         let state = state_with(&[(1, 1)]);
         assert!(state.has_chunk_at_pos(16.0, 16.0));
         assert!(!state.has_chunk_at_pos(15.999, 15.999));
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use coral_protocol::packets::play::chat::ChatMessage;
+    use coral_protocol::packets::play::keepalive::KeepAlive;
+    use flate2::{Compression as FlateCompression, write::ZlibEncoder};
+    use std::io::Write as _;
+
+    use super::*;
+
+    fn codec(compression_threshold: i32) -> Codec {
+        Codec {
+            registry: Arc::new(PacketRegistry::new()),
+            state: EnumProtocol::Play,
+            encryption: None,
+            compression_threshold,
+            decrypted_buf: BytesMut::new(),
+            encode_buf: Vec::new(),
+            compress_buf: Vec::new(),
+            compressor: Compress::new(Compression::default(), true),
+        }
+    }
+
+    fn varint(value: i32, out: &mut Vec<u8>) {
+        let mut v = value as u32;
+        loop {
+            if v & !0x7F == 0 {
+                out.push(v as u8);
+                return;
+            }
+            out.push((v & 0x7F) as u8 | 0x80);
+            v >>= 7;
+        }
+    }
+
+    fn body(id: i32, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint(id, &mut out);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn varint_payload(value: i32) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint(value, &mut out);
+        out
+    }
+
+    fn string_payload(text: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint(text.len() as i32, &mut out);
+        out.extend_from_slice(text.as_bytes());
+        out
+    }
+
+    fn frame(body: &[u8], compression_threshold: i32) -> Vec<u8> {
+        let mut framed = Vec::new();
+        if compression_threshold < 0 {
+            varint(body.len() as i32, &mut framed);
+            framed.extend_from_slice(body);
+            return framed;
+        }
+
+        let mut envelope = Vec::new();
+        if body.len() >= compression_threshold as usize {
+            varint(body.len() as i32, &mut envelope);
+            let mut encoder = ZlibEncoder::new(Vec::new(), FlateCompression::default());
+            encoder.write_all(body).unwrap();
+            envelope.extend_from_slice(&encoder.finish().unwrap());
+        } else {
+            varint(0, &mut envelope);
+            envelope.extend_from_slice(body);
+        }
+        varint(envelope.len() as i32, &mut framed);
+        framed.extend_from_slice(&envelope);
+        framed
+    }
+
+    fn decode_one(codec: &mut Codec, bytes: &[u8]) -> Frame {
+        let mut buf = BytesMut::from(bytes);
+        codec
+            .decode(&mut buf)
+            .expect("decode should not error")
+            .expect("a whole frame should yield a packet")
+    }
+
+    #[test]
+    fn a_packet_survives_with_compression_off() {
+        let mut codec = codec(-1);
+        let bytes = frame(&body(0x00, &varint_payload(7)), -1);
+
+        let frame = decode_one(&mut codec, &bytes);
+        assert!(frame.is::<KeepAlive>());
+        let ka: KeepAlive = frame.decode().expect("should decode as KeepAlive");
+        assert_eq!(ka.id, 7);
+    }
+
+    #[test]
+    fn a_packet_below_the_threshold_survives_the_uncompressed_envelope() {
+        let threshold = 256;
+        let mut codec = codec(threshold);
+        let bytes = frame(&body(0x00, &varint_payload(9)), threshold);
+
+        let frame = decode_one(&mut codec, &bytes);
+        assert!(
+            frame.is::<KeepAlive>(),
+            "the envelope header was not advanced past, so the id was misread"
+        );
+        let ka: KeepAlive = frame.decode().expect("should decode as KeepAlive");
+        assert_eq!(ka.id, 9);
+    }
+
+    #[test]
+    fn a_packet_above_the_threshold_survives_decompression() {
+        let threshold = 16;
+        let mut codec = codec(threshold);
+        let message = "x".repeat(400);
+        let bytes = frame(&body(0x01, &string_payload(&message)), threshold);
+
+        let frame = decode_one(&mut codec, &bytes);
+        assert!(frame.is::<ChatMessage>());
+        let chat: ChatMessage = frame.decode().expect("should decode as ChatMessage");
+        assert_eq!(chat.message, message);
+    }
+
+    #[test]
+    fn both_envelope_branches_agree_on_the_same_body() {
+        let threshold = 64;
+        let short = "hello";
+        let long = "y".repeat(300);
+
+        for message in [short.to_string(), long] {
+            let body = body(0x01, &string_payload(&message));
+            let compressed_path = body.len() >= threshold as usize;
+
+            let mut codec = codec(threshold);
+            let via_envelope = decode_one(&mut codec, &frame(&body, threshold));
+
+            let mut plain = self::codec(-1);
+            let via_plain = decode_one(&mut plain, &frame(&body, -1));
+
+            let a: ChatMessage = via_envelope.decode().expect("envelope path");
+            let b: ChatMessage = via_plain.decode().expect("plain path");
+            assert_eq!(
+                a.message,
+                b.message,
+                "paths disagreed (compressed={compressed_path}) for a {} byte body",
+                body.len()
+            );
+            assert_eq!(a.message, message);
+        }
+    }
+
+    #[test]
+    fn two_frames_in_one_read_both_decode() {
+        let mut codec = codec(-1);
+        let mut bytes = frame(&body(0x00, &varint_payload(1)), -1);
+        bytes.extend_from_slice(&frame(&body(0x00, &varint_payload(2)), -1));
+
+        let mut buf = BytesMut::from(bytes.as_slice());
+        let first = codec.decode(&mut buf).unwrap().expect("first packet");
+        let second = codec.decode(&mut buf).unwrap().expect("second packet");
+
+        assert_eq!(first.decode::<KeepAlive>().unwrap().id, 1);
+        assert_eq!(second.decode::<KeepAlive>().unwrap().id, 2);
+    }
+
+    #[test]
+    fn a_partial_frame_yields_nothing_and_waits() {
+        let mut codec = codec(-1);
+        let bytes = frame(&body(0x00, &varint_payload(5)), -1);
+
+        let mut buf = BytesMut::from(&bytes[..bytes.len() - 2]);
+        assert!(
+            codec.decode(&mut buf).unwrap().is_none(),
+            "an incomplete frame must not decode"
+        );
+
+        let mut rest = BytesMut::from(&bytes[bytes.len() - 2..]);
+        let packet = codec
+            .decode(&mut rest)
+            .unwrap()
+            .expect("the frame completes once the rest arrives");
+        assert_eq!(packet.decode::<KeepAlive>().unwrap().id, 5);
     }
 }

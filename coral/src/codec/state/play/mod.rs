@@ -113,6 +113,22 @@ fn keep_alive_action(outstanding: Option<(i32, std::time::Instant)>) -> KeepAliv
     }
 }
 
+macro_rules! decode_or_disconnect {
+    ($frame:expr, $ty:ty) => {
+        match $frame.decode::<$ty>() {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::error!(
+                    "Malformed {} (id 0x{:02X}): {e:?}",
+                    stringify!($ty),
+                    $frame.id
+                );
+                break;
+            }
+        }
+    };
+}
+
 pub async fn play(
     framed: &mut Framed<TcpStream, Codec>,
     state: &mut PlayerState,
@@ -784,7 +800,8 @@ pub async fn play(
                 };
                 match result {
                     Ok(packet) => {
-                        if let Some(ka) = packet.as_any().downcast_ref::<KeepAlive>() {
+                        if packet.is::<KeepAlive>() {
+                            let ka = decode_or_disconnect!(packet, KeepAlive);
                             if let Some((sent_id, sent_time)) = state.last_sent_keep_alive
                                 && ka.id == sent_id
                             {
@@ -801,7 +818,8 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(held) = packet.as_any().downcast_ref::<HeldItemChange>() {
+                        if packet.is::<HeldItemChange>() {
+                            let held = decode_or_disconnect!(packet, HeldItemChange);
                             let slot = held.slot.clamp(0, 8) as u8;
                             state.held_slot = slot;
 
@@ -825,7 +843,8 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(dig) = packet.as_any().downcast_ref::<PlayerDig>() {
+                        if packet.is::<PlayerDig>() {
+                            let dig = decode_or_disconnect!(packet, PlayerDig);
                             match dig.status {
                                 DigStatus::StartDig => {
                                     let block = world.get(dig.x, dig.y, dig.z).await;
@@ -1103,17 +1122,18 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(place) = packet.as_any().downcast_ref::<PlayerBlockPlacement>() {
+                        if packet.is::<PlayerBlockPlacement>() {
+                            let place = decode_or_disconnect!(packet, PlayerBlockPlacement);
                             let Some(face) = place.face.clone() else {
                                 if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
                                     continue;
                                 }
-                                if interact::try_with_item_on_block(framed, place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels, None).await {
+                                if interact::try_with_item_on_block(framed, &place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels, None).await {
                                     continue;
                                 }
                                 continue;
                             };
-                            if interact::try_with_block(framed, place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels).await
+                            if interact::try_with_block(framed, &place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels).await
                                 || place.held_item_id == EMPTY_HAND
                                 || state.gamemode >= GameMode::Adventure
                             {
@@ -1160,12 +1180,13 @@ pub async fn play(
                             continue;
                         }
 
-                        if packet.as_any().downcast_ref::<ArmAnimation>().is_some() {
+                        if packet.is::<ArmAnimation>() {
                             channels.anim_tx.send((state.entity_id, EntityAnimationType::SwingArm)).ok();
                             continue;
                         }
 
-                        if let Some(chat) = packet.as_any().downcast_ref::<ChatMessage>() {
+                        if packet.is::<ChatMessage>() {
+                            let chat = decode_or_disconnect!(packet, ChatMessage);
                             let max_len = match state.client_brand.as_deref() {
                                 Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
                                 _ => 100,
@@ -1209,7 +1230,8 @@ pub async fn play(
                             channels.chat_tx.send(json).ok();
                             continue;
                         }
-                        if let Some(tab) = packet.as_any().downcast_ref::<TabComplete>() {
+                        if packet.is::<TabComplete>() {
+                            let tab = decode_or_disconnect!(packet, TabComplete);
                             let text = &tab.text;
                             let matches: Vec<String> = if let Some(partial) = text.strip_prefix('/') {
                                 dispatcher.completions(partial).await
@@ -1227,11 +1249,17 @@ pub async fn play(
                             continue;
                         }
 
-                        let movement: Option<PlayerMovements> = None
-                            .or_else(|| packet.as_any().downcast_ref::<PlayerPosition>().map(Into::into))
-                            .or_else(|| packet.as_any().downcast_ref::<PlayerLook>().map(Into::into))
-                            .or_else(|| packet.as_any().downcast_ref::<PlayerPositionAndLook>().map(Into::into))
-                            .or_else(|| packet.as_any().downcast_ref::<PlayerOnGround>().map(Into::into));
+                        let movement: Option<PlayerMovements> = if packet.is::<PlayerPosition>() {
+                            Some((&decode_or_disconnect!(packet, PlayerPosition)).into())
+                        } else if packet.is::<PlayerLook>() {
+                            Some((&decode_or_disconnect!(packet, PlayerLook)).into())
+                        } else if packet.is::<PlayerPositionAndLook>() {
+                            Some((&decode_or_disconnect!(packet, PlayerPositionAndLook)).into())
+                        } else if packet.is::<PlayerOnGround>() {
+                            Some((&decode_or_disconnect!(packet, PlayerOnGround)).into())
+                        } else {
+                            None
+                        };
 
                         if let Some(mv) = movement
                             && let Some(p) = player_registry.get(&state.uuid).await
@@ -1413,7 +1441,7 @@ pub async fn play(
                             continue;
                         }
 
-                        if packet.as_any().downcast_ref::<CloseWindow>().is_some() {
+                        if packet.is::<CloseWindow>() {
                             if let Some(cursor) = state.cursor_item.take()
                                 && let Some(dropped) = state.inventory.insert_itemstack(cursor)
                             {
@@ -1432,12 +1460,13 @@ pub async fn play(
                             continue;
                         }
 
-                        if packet.as_any().downcast_ref::<ConfirmTransaction>().is_some() {
+                        if packet.is::<ConfirmTransaction>() {
                             // client acknowledged our confirmation
                             continue;
                         }
 
-                        if let Some(status) = packet.as_any().downcast_ref::<ResourcePackStatus>() {
+                        if packet.is::<ResourcePackStatus>() {
+                            let status = decode_or_disconnect!(packet, ResourcePackStatus);
                             match status.result {
                                 ResourcePackResult::Loaded | ResourcePackResult::Accepted => {}
                                 ResourcePackResult::Decline => {
@@ -1458,11 +1487,12 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(creative) = packet.as_any().downcast_ref::<CreativeInventoryAction>() {
+                        if packet.is::<CreativeInventoryAction>() {
                             if state.gamemode != GameMode::Creative {
                                 continue;
                             }
 
+                            let creative = decode_or_disconnect!(packet, CreativeInventoryAction);
                             let internal = Inventory::packet_to_internal(creative.slot);
                             if let Some(idx) = internal {
                                 if creative.item_id == EMPTY_HAND {
@@ -1488,14 +1518,15 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(click) = packet.as_any().downcast_ref::<ClickWindow>() {
+                        if packet.is::<ClickWindow>() {
+                            let click = decode_or_disconnect!(packet, ClickWindow);
                             send_packet(framed, ConfirmTransaction {
                                 window_id: click.window_id,
                                 action_number: click.action_number,
                                 accepted: true
                             }).await;
 
-                            if handle_tile_entity_click(framed, state, click, &tile_entities).await {
+                            if handle_tile_entity_click(framed, state, &click, &tile_entities).await {
                                 continue;
                             }
 
@@ -1503,7 +1534,7 @@ pub async fn play(
                             let outcome = inventory_click::apply_click(
                                 &mut state.inventory.slots,
                                 &mut state.cursor_item,
-                                click,
+                                &click,
                                 &mut dropped
                             );
 
@@ -1533,7 +1564,8 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(status) = packet.as_any().downcast_ref::<ClientStatus>() {
+                        if packet.is::<ClientStatus>() {
+                            let status = decode_or_disconnect!(packet, ClientStatus);
                             if let ClientStatusAction::PerformRespawn = status.action
                                 && state.is_dead
                             {
@@ -1601,7 +1633,8 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(action) = packet.as_any().downcast_ref::<EntityAction>() {
+                        if packet.is::<EntityAction>() {
+                            let action = decode_or_disconnect!(packet, EntityAction);
                             let update = match action.action {
                                 EntityActionType::LeaveBed => {
                                     state.is_sleeping = false;
@@ -1642,7 +1675,8 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(use_entity) = packet.as_any().downcast_ref::<UseEntity>() {
+                        if packet.is::<UseEntity>() {
+                            let use_entity = decode_or_disconnect!(packet, UseEntity);
                             match use_entity.action {
                                 UseEntityAction::Attack => {
                                     if state.gamemode == GameMode::Spectator {
@@ -1749,13 +1783,15 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(abilities) = packet.as_any().downcast_ref::<PlayerAbilities>() {
+                        if packet.is::<PlayerAbilities>() {
+                            let abilities = decode_or_disconnect!(packet, PlayerAbilities);
                             let is_flying = (abilities.flags & 0x02) != 0;
                             state.is_flying = is_flying;
                             continue;
                         }
 
-                        if let Some(sign) = packet.as_any().downcast_ref::<UpdateSign>() {
+                        if packet.is::<UpdateSign>() {
+                            let sign = decode_or_disconnect!(packet, UpdateSign);
                             let pos = (sign.x, sign.y, sign.z);
 
                             if state.editing_sign != Some(pos) {
@@ -1786,14 +1822,16 @@ pub async fn play(
                             continue;
                         }
 
-                        if let Some(settings) = packet.as_any().downcast_ref::<ClientSettings>() {
+                        if packet.is::<ClientSettings>() {
+                            let settings = decode_or_disconnect!(packet, ClientSettings);
                             state.skin_parts = settings.skin_parts;
                             player_registry.update_skin_parts(&state.uuid, settings.skin_parts).await;
                             state.watcher.set(10, MetadataValue::Byte(settings.skin_parts));
                             continue;
                         }
 
-                        if let Some(plugin) = packet.as_any().downcast_ref::<PluginMessage>() {
+                        if packet.is::<PluginMessage>() {
+                            let plugin = decode_or_disconnect!(packet, PluginMessage);
                             if plugin.channel == "MC|Brand" {
                                 if let Ok(brand) = String::from_utf8(plugin.data.clone()) {
                                     let brand = brand.trim_matches('\0').to_string();

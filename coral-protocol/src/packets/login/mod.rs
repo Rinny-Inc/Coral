@@ -32,17 +32,12 @@ pub struct EncryptionResponse {
 }
 
 impl PacketIn for LoginStart {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x00;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let username = reader.read_string();
         Ok(Self { username })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for LoginStart {
@@ -73,10 +68,9 @@ impl PacketOut for EncryptionRequest {
     }
 }
 impl PacketIn for EncryptionResponse {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x01;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let secret_len = reader.read_varint() as usize;
         let shared_secret = reader.read_bytes(secret_len);
@@ -86,10 +80,6 @@ impl PacketIn for EncryptionResponse {
             shared_secret,
             verify_token,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

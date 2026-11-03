@@ -15,10 +15,9 @@ pub struct PacketHandshake {
 }
 
 impl PacketIn for PacketHandshake {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x00;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut buffer = Reader::new(buf);
 
         let protocol_version = buffer.read_varint();
@@ -38,10 +37,6 @@ impl PacketIn for PacketHandshake {
             port,
             requested_protocol,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for PacketHandshake {

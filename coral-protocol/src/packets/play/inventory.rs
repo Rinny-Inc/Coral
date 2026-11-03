@@ -38,17 +38,12 @@ pub struct ConfirmTransaction {
 }
 
 impl PacketIn for CloseWindow {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x0D;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let window_id = reader.read_byte();
         Ok(CloseWindow { window_id })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for CloseWindow {
@@ -60,10 +55,9 @@ impl PacketOut for CloseWindow {
 }
 
 impl PacketIn for ClickWindow {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x0E;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let window_id = reader.read_byte();
         let slot = reader.read_i16();
@@ -80,10 +74,6 @@ impl PacketIn for ClickWindow {
             clicked_item_id,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 
 impl PacketOut for OpenWindow {
@@ -99,10 +89,9 @@ impl PacketOut for OpenWindow {
 }
 
 impl PacketIn for ConfirmTransaction {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x0F;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let window_id = reader.read_byte();
         let action_number = reader.read_i16();
@@ -112,10 +101,6 @@ impl PacketIn for ConfirmTransaction {
             action_number,
             accepted,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for ConfirmTransaction {
@@ -308,10 +293,9 @@ pub struct CreativeInventoryAction {
     pub item_damage: i16,
 }
 impl PacketIn for CreativeInventoryAction {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x10;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let slot = reader.read_i16();
         let item_id = reader.read_i16();
@@ -326,10 +310,6 @@ impl PacketIn for CreativeInventoryAction {
             item_count,
             item_damage,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

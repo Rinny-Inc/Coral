@@ -33,17 +33,12 @@ impl ChatMessageOut {
 }
 
 impl PacketIn for ChatMessage {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x01;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let message = reader.read_string();
         Ok(ChatMessage { message })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for ChatMessage {
@@ -76,10 +71,9 @@ pub struct TabCompleteResponse {
 }
 
 impl PacketIn for TabComplete {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x14;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let text = reader.read_string();
         let has_position = reader.read_bool();
@@ -94,10 +88,6 @@ impl PacketIn for TabComplete {
             has_position,
             position,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

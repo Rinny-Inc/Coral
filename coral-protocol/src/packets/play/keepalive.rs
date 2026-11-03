@@ -8,17 +8,12 @@ pub struct KeepAlive {
     pub id: i32,
 }
 impl PacketIn for KeepAlive {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x00;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let id = reader.read_varint();
         Ok(Self { id })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for KeepAlive {

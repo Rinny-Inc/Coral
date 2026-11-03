@@ -205,15 +205,10 @@ pub struct EntityAnimation {
 }
 
 impl PacketIn for ArmAnimation {
-    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Ok(ArmAnimation)
-    }
+    const ID: i32 = 0x0A;
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn decode(_buf: &mut bytes::Bytes) -> std::io::Result<Self> {
+        Ok(ArmAnimation)
     }
 }
 impl PacketOut for EntityAnimation {
@@ -347,10 +342,9 @@ pub struct EntityMetadata {
 }
 
 impl PacketIn for EntityAction {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x0B;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let entity_id = reader.read_varint();
         let action = EntityActionType::try_from(reader.read_varint() as u8).map_err(|e| {
@@ -366,16 +360,11 @@ impl PacketIn for EntityAction {
             jump_boost,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 impl PacketIn for UseEntity {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x02;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let target_entity_id = reader.read_varint();
         let action = UseEntityAction::try_from(reader.read_varint() as u8).map_err(|e| {
@@ -388,10 +377,6 @@ impl PacketIn for UseEntity {
             target_entity_id,
             action,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -572,10 +557,9 @@ impl PacketOut for UpdateSign {
     }
 }
 impl PacketIn for UpdateSign {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x12;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let BlockPosition { x, y, z } = reader.read_block_position();
 
@@ -591,10 +575,6 @@ impl PacketIn for UpdateSign {
             z,
             lines,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

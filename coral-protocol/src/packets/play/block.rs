@@ -142,10 +142,9 @@ pub struct BlockChange {
 }
 
 impl PacketIn for PlayerDig {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x07;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let status = reader.read_byte();
         let position = reader.read_long();
@@ -169,16 +168,11 @@ impl PacketIn for PlayerDig {
             face,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 impl PacketIn for PlayerBlockPlacement {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x08;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let position = reader.read_long();
         let placement = BlockPosition::from_long_checked(position);
@@ -224,23 +218,14 @@ impl PacketIn for PlayerBlockPlacement {
             cursor_z,
         })
     }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
 }
 impl PacketIn for HeldItemChange {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x09;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let slot = reader.read_i16();
         Ok(HeldItemChange { slot })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for HeldItemChange {

@@ -114,10 +114,9 @@ impl PacketOut for Respawn {
     }
 }
 impl PacketIn for ClientStatus {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x16;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let action = ClientStatusAction::try_from(reader.read_byte()).map_err(|e| {
             Error::new(
@@ -126,10 +125,6 @@ impl PacketIn for ClientStatus {
             )
         })?;
         Ok(ClientStatus { action })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

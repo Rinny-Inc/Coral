@@ -28,6 +28,22 @@ use crate::{
 
 const ALLOWED_PROTOCOLS: &[i32] = &[5, 47];
 
+macro_rules! decode_or_kick {
+    ($frame:expr, $ty:ty) => {
+        match $frame.decode::<$ty>() {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::warn!(
+                    "Malformed {} (id 0x{:02X}) before play: {e:?}",
+                    stringify!($ty),
+                    $frame.id
+                );
+                return None;
+            }
+        }
+    };
+}
+
 pub struct PrePlayContext {
     pub player_registry: Arc<PlayerRegistry>,
     pub config: Arc<Config>,
@@ -95,7 +111,8 @@ pub async fn pre_play(
                         Ok(packet) => {
                             match framed.codec().state {
                                 EnumProtocol::Handshaking => {
-                                    if let Some(handshake) = packet.as_any().downcast_ref::<PacketHandshake>() {
+                                    if packet.is::<PacketHandshake>() {
+                                        let handshake = decode_or_kick!(packet, PacketHandshake);
                                         client_protocol = handshake.protocol_version;
 
                                         // bungee ip forwarding
@@ -129,7 +146,7 @@ pub async fn pre_play(
                                     }
                                 }
                                 EnumProtocol::Status => {
-                                    if packet.as_any().downcast_ref::<Request>().is_some() {
+                                    if packet.is::<Request>() {
                                         let players = player_registry.get_all().await;
                                         let sample: Vec<(&str, String)> = players.iter()
                                             .take(config.server.player_sample_size as usize)
@@ -159,7 +176,8 @@ pub async fn pre_play(
                                         .await;
                                         continue;
                                     }
-                                    if let Some(ping) = packet.as_any().downcast_ref::<Ping>() {
+                                    if packet.is::<Ping>() {
+                                        let ping = decode_or_kick!(packet, Ping);
                                         send_packet(framed, Pong {
                                             time: ping.time
                                         }).await;
@@ -181,7 +199,8 @@ pub async fn pre_play(
                                         kick(framed, &format!("§cYou are IP banned from this server!\n§7Reason: §f{}", ban.reason)).await;
                                         return None;
                                     }
-                                    if let Some(login_start) = packet.as_any().downcast_ref::<LoginStart>() {
+                                    if packet.is::<LoginStart>() {
+                                        let login_start = decode_or_kick!(packet, LoginStart);
                                         if let Some(addr) = peer_ip
                                             && !connection_throttle.check(addr.ip()).await
                                         {
@@ -228,7 +247,8 @@ pub async fn pre_play(
                                             is_op: ops.read().await.is_op(uuid),
                                         }));
                                     }
-                                    if let Some(enc_resp) = packet.as_any().downcast_ref::<EncryptionResponse>() {
+                                    if packet.is::<EncryptionResponse>() {
+                                        let enc_resp = decode_or_kick!(packet, EncryptionResponse);
                                         let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
                                         let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
 

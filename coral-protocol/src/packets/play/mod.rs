@@ -73,10 +73,9 @@ impl PacketOut for PlayerAbilities {
     }
 }
 impl PacketIn for PlayerAbilities {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x13;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let flags = reader.read_byte();
         let fly_speed = reader.read_float();
@@ -86,10 +85,6 @@ impl PacketIn for PlayerAbilities {
             fly_speed,
             walk_speed,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -126,15 +121,10 @@ impl PluginMessage {
     }
 }
 impl PacketIn for PluginMessage {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        Self::decode_raw(buf)
-    }
+    const ID: i32 = 0x17;
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
+        Self::decode_raw(buf)
     }
 }
 impl PacketOut for PluginMessage {
@@ -156,10 +146,9 @@ pub struct ClientSettings {
     pub skin_parts: u8,
 }
 impl PacketIn for ClientSettings {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x15;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let locale = reader.read_string();
         let view_distance = reader.read_byte();
@@ -173,10 +162,6 @@ impl PacketIn for ClientSettings {
             chat_colors,
             skin_parts,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -355,10 +340,9 @@ pub struct ResourcePackStatus {
     pub result: ResourcePackResult,
 }
 impl PacketIn for ResourcePackStatus {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x19;
+
+    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self> {
         let mut reader = Reader::new(buf);
         let hash = reader.read_string();
         let result = ResourcePackResult::try_from(reader.read_varint() as u8).map_err(|e| {
@@ -368,10 +352,6 @@ impl PacketIn for ResourcePackStatus {
             )
         })?;
         Ok(ResourcePackStatus { hash, result })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 

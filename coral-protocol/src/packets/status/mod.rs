@@ -66,20 +66,6 @@ impl Response {
         }
     }
 }
-impl PacketIn for Response {
-    fn decode(buf: &mut bytes::Bytes) -> std::io::Result<Self>
-    where
-        Self: Sized,
-    {
-        let mut reader = Reader::new(buf);
-        let json = reader.read_string();
-        Ok(Response { json })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
 impl PacketOut for Response {
     fn encode(&self, writer: &mut Writer) -> std::io::Result<()> {
         writer.write_varint(0x00);
@@ -89,17 +75,12 @@ impl PacketOut for Response {
 }
 
 impl PacketIn for Ping {
-    fn decode(buf: &mut bytes::Bytes) -> Result<Self>
-    where
-        Self: Sized,
-    {
+    const ID: i32 = 0x01;
+
+    fn decode(buf: &mut bytes::Bytes) -> Result<Self> {
         let mut reader = Reader::new(buf);
         let time = reader.read_long(); // i64
         Ok(Ping { time })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for Ping {
@@ -118,12 +99,10 @@ impl PacketOut for Pong {
 }
 
 impl PacketIn for Request {
+    const ID: i32 = 0x00;
+
     fn decode(_buf: &mut bytes::Bytes) -> Result<Self> {
         Ok(Request)
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 impl PacketOut for Request {
