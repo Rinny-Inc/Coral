@@ -50,7 +50,8 @@ pub struct PacketRegistry {
     known: HashSet<PacketKey>,
 }
 
-macro_rules! register_packets { // GOD DAMN THIS SHIT IS STILL ALIEN AHAHAH
+// GOD DAMN THIS SHIT IS STILL ALIEN AHAHAH
+macro_rules! register_packets {
     ($($state:expr => $($ty:path),+ ;)+) => {{
         let mut known: HashSet<PacketKey> = HashSet::with_capacity(28); // TODO: add 1 for every new packets
         $($(

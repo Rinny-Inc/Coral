@@ -236,11 +236,9 @@ impl PacketOut for EntityAnimation {
 #[derive(Debug, PartialEq)]
 #[repr(u8)]
 pub enum EntityActionType {
-    StartSneaking,
-    StopSneaking,
+    Sneaking(bool),
     LeaveBed,
-    StartSprinting,
-    StopSprinting,
+    Sprinting(bool),
     HorseJump,
     OpenRiddenHorseInventory,
 }
@@ -249,11 +247,11 @@ impl TryFrom<u8> for EntityActionType {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(Self::StartSneaking),
-            1 => Ok(Self::StopSneaking),
+            0 => Ok(Self::Sneaking(true)),
+            1 => Ok(Self::Sneaking(false)),
             2 => Ok(Self::LeaveBed),
-            3 => Ok(Self::StartSprinting),
-            4 => Ok(Self::StopSprinting),
+            3 => Ok(Self::Sprinting(true)),
+            4 => Ok(Self::Sprinting(false)),
             5 => Ok(Self::HorseJump),
             6 => Ok(Self::OpenRiddenHorseInventory),
             _ => Err(value),

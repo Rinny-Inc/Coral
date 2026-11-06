@@ -11,6 +11,7 @@ pub mod mob;
 pub mod ops;
 pub mod player;
 pub mod projectile;
+pub mod reach;
 pub mod scoreboard;
 pub mod smelting;
 pub mod statistics;

@@ -51,6 +51,14 @@ pub enum DigStatus {
     DropItem(bool),
     ShootOrFinishEating,
 }
+impl DigStatus {
+    pub fn needs_reach_check(&self) -> bool {
+        match self {
+            Self::StartDig | Self::FinishDig => true,
+            _ => false,
+        }
+    }
+}
 impl TryFrom<u8> for DigStatus {
     type Error = u8;
 
@@ -347,5 +355,28 @@ mod position_tests {
         assert!(BlockPosition::from_long_checked(packed).is_none());
         let p = BlockPosition::from_long(packed);
         assert_eq!((p.x, p.z), (-1, -1));
+    }
+}
+
+#[cfg(test)]
+mod dig_status_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_statuses_that_change_the_world_are_reach_checked() {
+        assert!(DigStatus::StartDig.needs_reach_check());
+        assert!(DigStatus::FinishDig.needs_reach_check());
+    }
+
+    #[test]
+    fn the_statuses_with_no_target_are_not() {
+        assert!(!DigStatus::DropItem(true).needs_reach_check());
+        assert!(!DigStatus::DropItem(false).needs_reach_check());
+        assert!(!DigStatus::ShootOrFinishEating.needs_reach_check());
+    }
+
+    #[test]
+    fn a_cancel_is_let_through_at_any_distance() {
+        assert!(!DigStatus::CancelDig.needs_reach_check());
     }
 }

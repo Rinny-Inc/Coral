@@ -4,28 +4,25 @@ use std::{
     time::{Duration, Instant},
 };
 
-use coral_command::{CommandContext, CommandResult};
 use coral_protocol::packets::play::{
-    ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackResult,
-    ResourcePackStatus,
+    ClientSettings, NamedSoundEffect, PlayerAbilities, PluginMessage, ResourcePackStatus,
     block::{
-        BlockAction, BlockBreakAnimation, BlockChange, DigStatus, HeldItemChange,
-        ItemEntityMetadata, PlayerBlockPlacement, PlayerDig,
+        BlockAction, BlockBreakAnimation, BlockChange, HeldItemChange, ItemEntityMetadata,
+        PlayerBlockPlacement, PlayerDig,
     },
     chat::{
-        ChatMessage, ChatMessageOut, TabComplete, TabCompleteResponse,
+        ChatMessage, ChatMessageOut, TabComplete,
         builder::{ChatAppender, ChatBuilder, ChatColor},
     },
     entity::{
-        ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityActionType,
-        EntityAnimation, EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook,
-        EntityLookAndMove, EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity,
-        MetadataValue, SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign,
-        UseBed, UseEntity, UseEntityAction,
+        ArmAnimation, CollectItem, DestroyEntities, EntityAction, EntityAnimation,
+        EntityAnimationType, EntityEquipment, EntityHeadLook, EntityLook, EntityLookAndMove,
+        EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity, MetadataValue,
+        SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign, UseBed, UseEntity,
     },
     game::{
-        ChangeGameState, ClientStatus, ClientStatusAction, EntityStatus, EntityStatusType,
-        GameStateChangeReason, Respawn, ServerDifficulty, SetExperience, UpdateHealth,
+        ChangeGameState, ClientStatus, EntityStatus, EntityStatusType, GameStateChangeReason,
+        ServerDifficulty, SetExperience, UpdateHealth,
     },
     inventory::{
         ClickWindow, CloseWindow, ConfirmTransaction, CreativeInventoryAction, Inventory,
@@ -39,28 +36,21 @@ use coral_protocol::packets::play::{
     player_list::{PlayerListItem17, PlayerListItemAdd, PlayerListItemRemove, UpdateLatency},
 };
 use coral_server::{
-    bounding_box::EntityBounds,
     effects::{ActiveEffect, EffectKind},
     entity_tracker::TrackedEntity,
-    experience::{self, XpOrb},
+    experience::{self},
     items::{
-        armor::{apply_armor_reduction, total_defense},
-        drop_physics::{break_drop_velocity, manual_drop_velocity},
-        drops::{DroppedItems, block_drop},
-        ids::EMPTY_HAND,
+        drop_physics::manual_drop_velocity, drops::DroppedItems, ids::EMPTY_HAND,
         potions::PotionEffect,
     },
-    mining::{break_time_ticks, can_harvest},
     player::{
         Player,
         registry::{PlayerRegistry, next_entity_id},
     },
-    projectile::{Projectile, ProjectileKind},
     tile_entities::TileEntityStore,
 };
-use coral_types::{GameMode, dist_xz, dist3};
+use coral_types::{GameMode, dist_xz};
 use coral_world::{
-    blocks::{Block, placement_metadata},
     chunk::{ChunkData, UnloadChunk},
     playerdata::{PlayerData, save_player_data},
     spawn,
@@ -81,12 +71,15 @@ use crate::{
     codec::{
         Codec, PlayerState, is_normal_disconnect, kick, send_packet,
         state::play::{
+            handlers::{chat, entity, inventory},
             tile_entity_window::slot_tuple,
-            window_ops::{close_tile_entity_window, handle_tile_entity_click},
+            window_ops::close_tile_entity_window,
         },
     },
 };
+use handlers::{PlayCtx, flow, movement as movement_handler, session, world as world_handler};
 
+mod handlers;
 mod interact;
 pub mod inventory_click;
 mod ticking;
@@ -111,6 +104,33 @@ fn keep_alive_action(outstanding: Option<(i32, std::time::Instant)>) -> KeepAliv
         Some(_) => KeepAliveAction::Timeout,
         None => KeepAliveAction::Probe,
     }
+}
+
+async fn refuse_out_of_reach(
+    framed: &mut Framed<TcpStream, Codec>,
+    world: &Arc<World>,
+    name: &str,
+    x: i32,
+    y: i32,
+    z: i32,
+) {
+    tracing::debug!("{name} tried to interact with ({x}, {y}, {z}) from out of reach");
+
+    if !(0..=255).contains(&y) {
+        return;
+    }
+    let block = world.get(x, y as u8, z).await;
+    send_packet(
+        framed,
+        BlockChange {
+            x,
+            y,
+            z,
+            block_id: block.id as i32,
+            block_metadata: block.metadata,
+        },
+    )
+    .await;
 }
 
 macro_rules! decode_or_disconnect {
@@ -195,6 +215,26 @@ pub async fn play(
     let mut difficulty_rx = channels.difficulty_tx.subscribe();
 
     let mut keep_alive_interval = interval(KEEP_ALIVE_INTERVAL); // 30 seconds is timed out
+
+    let ctx = PlayCtx {
+        player_registry: &player_registry,
+        item_registry: &item_registry,
+        config: &config,
+        channels: &channels,
+        projectiles: &projectiles,
+        tile_entities: &tile_entities,
+        entity_tracker: &entity_tracker,
+        item_positions: &item_positions,
+        item_spawn_times: &item_spawn_times,
+        dispatcher: &dispatcher,
+        world: &world,
+        spawn_point: &spawn_point,
+        server_loaded_chunks: &server_loaded_chunks,
+        xp_orbs: &xp_orbs,
+        block_registry: &block_registry,
+        fluid_queue: &fluid_queue,
+        client_protocol,
+    };
 
     loop {
         tokio::select! {
@@ -802,451 +842,35 @@ pub async fn play(
                     Ok(packet) => {
                         if packet.is::<KeepAlive>() {
                             let ka = decode_or_disconnect!(packet, KeepAlive);
-                            if let Some((sent_id, sent_time)) = state.last_sent_keep_alive
-                                && ka.id == sent_id
-                            {
-                                state.last_sent_keep_alive = None;
-                                let previous = state.latency_ms.0;
-                                let measured = sent_time.elapsed().as_millis() as i32;
-                                state.latency_ms = (measured, previous);
-                                player_registry.update_latency(&state.uuid, measured).await;
-                                if ping_to_bar(measured) == ping_to_bar(previous) {
-                                    continue;
-                                }
-                                channels.ping_tx.send((state.uuid, measured)).ok();
-                            }
-                            continue;
+                            flow!(session::keep_alive(ka, state, &ctx).await);
                         }
 
                         if packet.is::<HeldItemChange>() {
                             let held = decode_or_disconnect!(packet, HeldItemChange);
-                            let slot = held.slot.clamp(0, 8) as u8;
-                            state.held_slot = slot;
-
-                            let internal_idx = Inventory::packet_to_internal(36 + slot as i16)
-                                .unwrap_or(slot as usize);
-
-                            state.held_item = item_registry.resolve(state.inventory.slots[internal_idx]
-                                .as_ref()
-                                .map(|s| s.item_id)
-                                .unwrap_or(EMPTY_HAND)
-                            );
-
-                            player_registry.update_held_slot(&state.uuid, slot).await;
-                            player_registry.update_held_item(&state.uuid, state.held_item.id()).await;
-
-                            state.send_held_equip(&channels.equip_tx);
-
-                            state.eating = None;
-                            state.bow_charging = None;
-                            state.try_retract_fishing_hook(&projectiles, &channels.despawn_tx).await;
-                            continue;
+                            flow!(session::held_item_change(held, state, &ctx).await);
                         }
 
                         if packet.is::<PlayerDig>() {
                             let dig = decode_or_disconnect!(packet, PlayerDig);
-                            match dig.status {
-                                DigStatus::StartDig => {
-                                    let block = world.get(dig.x, dig.y, dig.z).await;
-
-                                    if state.gamemode == GameMode::Creative {
-                                        world.set(dig.x, dig.y, dig.z, Block::air()).await;
-                                        channels.block_tx.send((dig.x, dig.y as i32, dig.z, 0, 0)).ok();
-                                        channels.sound_tx.send((
-                                            block_break_sound(block.id),
-                                            dig.x as f64 + 0.5, dig.y as f64 + 0.5, dig.z as f64 + 0.5,
-                                            1.0, 63
-                                        )).ok();
-
-                                        tile_entities.write().await.remove(&(dig.x, dig.y as i32, dig.z));
-                                        continue;
-                                    }
-                                    let in_water = state.is_head_in_water(&world).await;
-                                    let required = break_time_ticks(
-                                        &item_registry,
-                                        &block_registry,
-                                        state.held_item.id(),
-                                        block.id,
-                                        in_water,
-                                        state.was_on_ground,
-                                    );
-
-                                    state.breaking_block = Some((dig.x, dig.y as i32, dig.z));
-                                    state.breaking_started_tick = state.tick_count;
-                                    state.breaking_required_ticks = required;
-                                    channels.break_tx.send((state.entity_id, dig.x, dig.y as i32, dig.z, 0)).ok();
-                                }
-                                DigStatus::CancelDig => {
-                                    if let Some((bx, by, bz)) = state.breaking_block.take() {
-                                        channels.break_tx.send((state.entity_id, bx, by, bz, 255)).ok();
-                                    }
-                                }
-                                DigStatus::FinishDig => {
-                                    if state.gamemode != GameMode::Survival {
-                                        continue;
-                                    }
-                                    if let Some((bx, by, bz)) = state.breaking_block.take() {
-                                        let block = world.get(bx, by as u8, bz).await;
-
-                                        let in_water = state.is_head_in_water(&world).await;
-                                        let required_ticks = break_time_ticks(
-                                            &item_registry,
-                                            &block_registry,
-                                            state.held_item.id(),
-                                            block.id,
-                                            in_water,
-                                            state.was_on_ground,
-                                        );
-                                        let elapsed = (state.tick_count - state.breaking_started_tick).max(0) as u32;
-
-                                        if elapsed < required_ticks {
-                                            channels.block_tx.send((bx, by, bz, block.id as i32, block.metadata)).ok();
-                                            state.breaking_block = Some((bx, by, bz));
-                                            continue;
-                                        }
-                                        world.set(bx, by as u8, bz, Block::air()).await;
-                                        channels.block_tx.send((
-                                            bx, by, bz,
-                                            0, 0
-                                        )).ok();
-                                        channels.break_tx.send((state.entity_id, bx, by, bz, 10)).ok();
-                                        channels.particle_tx.send((
-                                            state.entity_id,
-                                            37,
-                                            bx as f32 + 0.5,
-                                            by as f32 + 0.5,
-                                            bz as f32 + 0.5,
-                                            0.3, 0.3, 0.3,
-                                            block.id as f32,
-                                            8,
-                                            [block.id as i32 | ((block.metadata as i32) << 12), 0]
-                                        )).ok();
-                                        channels.sound_tx.send((
-                                            block_break_sound(block.id),
-                                            bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5,
-                                            1.0, 63
-                                        )).ok();
-
-                                        tile_entities.write().await.remove(&(bx, by, bz));
-
-                                        if !block.is_air() && block.id > 0 {
-                                            let can_drop = can_harvest(
-                                                &item_registry,
-                                                &block_registry,
-                                                state.held_item.id(),
-                                                block.id
-                                            );
-
-                                            if can_drop
-                                                && let Some((drop_id, drop_count, drop_metadata)) = block_drop(block.id, block.metadata)
-                                            {
-                                                let drop_eid = next_entity_id();
-                                                let x = bx as f64 + 0.5;
-                                                let y = by as f64 + 0.5;
-                                                let z = bz as f64 + 0.5;
-                                                let (vx, vy, vz) = break_drop_velocity();
-
-                                                entity_tracker.write().await.track(
-                                                    TrackedEntity::item(
-                                                        drop_eid,
-                                                        x, y, z,
-                                                        config.tracking.item,
-                                                    )
-                                                );
-                                                item_spawn_times.write().await.insert(drop_eid, Instant::now());
-                                                item_positions.write().await.insert(
-                                                    (drop_eid, x, y, z, drop_id, drop_count, drop_metadata)
-                                                );
-                                                channels.item_tx.send((
-                                                    drop_eid,
-                                                    x, y, z,
-                                                    drop_id,
-                                                    drop_count,
-                                                    drop_metadata,
-                                                    vx, vy, vz
-                                                )).ok();
-                                            }
-
-                                            let xp = experience::xp_for_block(block.id);
-                                            if xp > 0 {
-                                                let orb_eid = next_entity_id();
-                                                let ox = bx as f64 + 0.5;
-                                                let oy = by as f64 + 0.5;
-                                                let oz = bz as f64 + 0.5;
-
-                                                entity_tracker.write().await.track(TrackedEntity::experience_orb(
-                                                   orb_eid,
-                                                   ox, oy, oz,
-                                                   config.tracking.experience_orb
-                                                ));
-
-                                                xp_orbs.write().await.push(XpOrb {
-                                                    entity_id: orb_eid,
-                                                    x: ox, y: oy, z: oz,
-                                                    vy: 0.2,
-                                                    amount: xp,
-                                                    ticks_alive: 0
-                                                });
-                                                channels.xp_orb_spawn_tx.send((orb_eid, ox, oy, oz, xp)).ok();
-                                            }
-                                        }
-                                    }
-                                    let broke = state.damage_item(1, &item_registry);
-                                    state.sync_held_slot_after_damage(framed, &player_registry, &item_registry, &channels, broke).await;
-                                }
-                                DigStatus::DropItem(is_itemstack) => {
-                                    let hotbar_slot = state.held_slot as usize;
-
-                                    if state.inventory.slots[hotbar_slot].is_none() {
-                                        continue;
-                                    }
-
-                                    let item = if is_itemstack {
-                                        state.inventory.slots[hotbar_slot].take()
-                                    } else {
-                                        if let Some(slot) = state.inventory.slots[hotbar_slot].as_mut() {
-                                            slot.count -= 1;
-                                            let dropped = ItemStack {
-                                                item_id: slot.item_id,
-                                                count: 1,
-                                                metadata: slot.metadata,
-                                                durability: 0
-                                            };
-                                            if slot.count == 0 {
-                                                state.inventory.slots[hotbar_slot] = None;
-                                            }
-                                            Some(dropped)
-                                        } else {
-                                            None
-                                        }
-                                    };
-
-                                    if let Some(dropped) = item {
-                                        state.sync_hotbar_slot(framed, &player_registry, &item_registry, &channels).await;
-
-                                        drop_item_in_world(
-                                            dropped,
-                                            state.entity_id,
-                                            &player_registry,
-                                            &channels,
-                                            &item_spawn_times,
-                                            &entity_tracker,
-                                            &item_positions,
-                                            config.tracking.item
-                                        ).await;
-
-                                        send_packet(framed, HeldItemChange {
-                                            slot: state.held_slot as i16
-                                        }).await;
-                                    }
-                                }
-                                DigStatus::ShootOrFinishEating => {
-                                    if let Some(charge_start) = state.bow_charging.take()
-                                        && state.held_item.id() == coral_server::items::ids::BOW // TODO: In the future identify magic numbers!
-                                    {
-                                        let charge_secs = charge_start.elapsed().as_secs_f32().min(1.0);
-
-                                        if charge_secs < 0.1 {
-                                            continue;
-                                        }
-
-                                        let power = ((charge_secs * charge_secs + charge_secs * 2.0) / 3.0).clamp(0.0, 1.0);
-
-                                        if let Some(p) = player_registry.get(&state.uuid).await {
-                                            let (dx, dy, dz) = p.get_head_direction();
-                                            let speed = power as f64 * 3.0;
-                                            let arrow_eid = next_entity_id();
-
-                                            let proj = Projectile {
-                                                entity_id: arrow_eid,
-                                                owner_entity_id: state.entity_id,
-                                                kind: ProjectileKind::Arrow,
-                                                x: p.x, y: p.y + EntityBounds::player(p.is_sneaking).height, z: p.z,
-                                                vx: dx * speed + state.velocity.0,
-                                                vy: dy * speed + state.velocity.1.max(0.0),
-                                                vz: dz * speed + state.velocity.2,
-                                                ticks_alive: 0,
-                                                left_owner: false,
-                                            };
-
-                                            projectiles.write().await.push(proj.clone());
-                                            channels.projectile_spawn_tx.send((
-                                                arrow_eid, state.entity_id, ProjectileKind::Arrow,
-                                                proj.x, proj.y, proj.z,
-                                                proj.vx, proj.vy, proj.vz
-                                            )).ok();
-
-                                            channels.sound_tx.send(("random.bow", p.x, p.y, p.z, 1.0, 63)).ok();
-
-                                            if state.gamemode == GameMode::Survival {
-                                                state.consume_arrow_from_inventory();
-                                            }
-                                        }
-                                        continue;
-                                    }
-                                    if state.held_item.id() == coral_server::items::ids::SPLASH_POTION {
-                                        let meta = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.metadata).unwrap_or(0);
-                                        let is_splash = (meta & 0x4000i16) != 0;
-                                        if is_splash
-                                            && let Some(p) = player_registry.get(&state.uuid).await
-                                        {
-                                            let (dx, dy, dz) = p.get_head_direction();
-                                            let speed = 0.5;
-                                            let proj_eid = next_entity_id();
-
-                                            let proj = Projectile {
-                                                entity_id: proj_eid,
-                                                owner_entity_id: state.entity_id,
-                                                kind: ProjectileKind::SplashPotion(meta),
-                                                x: p.x, y: p.y + 1.5, z: p.z,
-                                                vx: dx * speed,
-                                                vy: dy * speed + 0.1,
-                                                vz: dz * speed,
-                                                ticks_alive: 0,
-                                                left_owner: false,
-                                            };
-
-                                            projectiles.write().await.push(proj.clone());
-                                            channels.projectile_spawn_tx.send((
-                                                proj_eid, state.entity_id,
-                                                ProjectileKind::SplashPotion(meta),
-                                                proj.x, proj.y, proj.z,
-                                                proj.vx, proj.vy, proj.vz
-                                            )).ok();
-
-                                            state.consume_held_one(framed, &player_registry, &item_registry, &channels).await;
-                                        }
-                                    }
-                                }
-                            }
-                            continue;
+                            flow!(world_handler::player_dig(dig, framed, state, &ctx).await);
                         }
 
                         if packet.is::<PlayerBlockPlacement>() {
                             let place = decode_or_disconnect!(packet, PlayerBlockPlacement);
-                            let Some(face) = place.face.clone() else {
-                                if interact::try_with_item(state, &item_registry, &player_registry, &projectiles, &channels).await {
-                                    continue;
-                                }
-                                if interact::try_with_item_on_block(framed, &place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels, None).await {
-                                    continue;
-                                }
-                                continue;
-                            };
-                            if interact::try_with_block(framed, &place, state, &player_registry, &item_registry, &world, &tile_entities, &fluid_queue, &channels).await
-                                || place.held_item_id == EMPTY_HAND
-                                || state.gamemode >= GameMode::Adventure
-                            {
-                                continue;
-                            }
-                            let (tx, ty, tz) = face.to_placement(place.x, place.y as i32, place.z);
-
-                            if !(0..=255).contains(&ty) {
-                                continue;
-                            }
-
-                            let block_id = place.held_item_id as i32;
-                            if block_id <= 0 || block_id > 255 {
-                                continue;
-                            }
-
-                            let block_meta = {
-                                let item_meta = state.inventory.slots[state.held_slot as usize]
-                                    .as_ref()
-                                    .map(|s| s.metadata as u8)
-                                    .unwrap_or(0);
-
-                                let yaw = player_registry.get(&state.uuid)
-                                    .await
-                                    .map(|p| p.yaw)
-                                    .unwrap_or(0.0);
-
-                                let cursor_y = place.cursor_y as f32 / 16.0; // 0-15 -> 0.0-1.0
-
-                                placement_metadata(block_id as u8, item_meta, face, yaw, cursor_y)
-                            };
-
-                            if state.gamemode == GameMode::Survival {
-                                state.consume_held_one(framed, &player_registry, &item_registry, &channels).await;
-                            }
-
-                            world.blocks.set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta)).await;
-                            channels.block_tx.send((tx, ty, tz, block_id, block_meta)).ok();
-                            channels.sound_tx.send((
-                                block_break_sound(block_id as u8),
-                                tx as f64 + 0.5, ty as f64 + 0.5, tz as f64 + 0.5,
-                                1.0, 63
-                            )).ok();
-                            continue;
+                            flow!(world_handler::player_block_placement(place, framed, state, &ctx).await);
                         }
 
                         if packet.is::<ArmAnimation>() {
-                            channels.anim_tx.send((state.entity_id, EntityAnimationType::SwingArm)).ok();
-                            continue;
+                            flow!(entity::arm_animation(state, &ctx));
                         }
 
                         if packet.is::<ChatMessage>() {
                             let chat = decode_or_disconnect!(packet, ChatMessage);
-                            let max_len = match state.client_brand.as_deref() {
-                                Some(brand) if brand.contains("forge") || brand.contains("fabric") => 256,
-                                _ => 100,
-                            };
-                            if chat.message.chars().count() > max_len {
-                                continue;
-                            }
-                            if chat.message.starts_with('/') {
-                                let args: Vec<String> = chat.message[1..]
-                                    .split_whitespace()
-                                    .map(|s| s.to_string())
-                                    .collect();
-
-                                if args.is_empty() {
-                                    continue;
-                                }
-
-                                let ctx = CommandContext {
-                                    sender: state.name.to_string(),
-                                    args,
-                                    reply_target: state.last_message_from.clone(),
-                                    is_op: state.is_op
-                                };
-
-                                match dispatcher.dispatch(ctx).await {
-                                    CommandResult::Success(msg) => {
-                                        send_packet(framed, ChatMessageOut::from_json(&msg)).await;
-                                    }
-                                    CommandResult::Error(msg) => {
-                                        send_packet(framed, ChatBuilder::new(&msg).color(ChatColor::Red).into_packet()).await;
-                                    }
-                                    CommandResult::Broadcast(msg) => {
-                                        channels.chat_tx.send(ChatBuilder::plain_json(&msg)).ok();
-                                    }
-                                    CommandResult::None => {}
-                                }
-                                continue;
-                            }
-                            let json = ChatBuilder::chat_message(&config.chat.format, &state.name, &chat.message);
-
-                            channels.chat_tx.send(json).ok();
-                            continue;
+                            flow!(chat::chat_message(chat, framed, state, &ctx).await);
                         }
                         if packet.is::<TabComplete>() {
                             let tab = decode_or_disconnect!(packet, TabComplete);
-                            let text = &tab.text;
-                            let matches: Vec<String> = if let Some(partial) = text.strip_prefix('/') {
-                                dispatcher.completions(partial).await
-                            } else {
-                                player_registry.get_all().await
-                                    .iter()
-                                    .filter(|p| p.username.to_lowercase().starts_with(&text.to_lowercase()))
-                                    .map(|p| p.username.to_string())
-                                    .collect()
-                            };
-
-                            send_packet(framed, TabCompleteResponse {
-                                matches
-                            }).await;
-                            continue;
+                            flow!(chat::tab_complete(tab, framed, &ctx).await);
                         }
 
                         let movement: Option<PlayerMovements> = if packet.is::<PlayerPosition>() {
@@ -1264,200 +888,11 @@ pub async fn play(
                         if let Some(mv) = movement
                             && let Some(p) = player_registry.get(&state.uuid).await
                         {
-                            let (x, y, z) = mv.position.unwrap_or((p.x, p.y, p.z));
-                            let (yaw, pitch) = mv.rotation.unwrap_or((p.yaw, p.pitch));
-                            let yaw = normalize_yaw(yaw);
-                            let pitch = pitch.clamp(-90.0, 90.0);
-
-                            let dx = ((x - p.x) * 32.0).round() as i64;
-                            let dy = ((y - p.y) * 32.0).round() as i64;
-                            let dz = ((z - p.z) * 32.0).round() as i64;
-
-                            let prev_velocity = state.velocity;
-                            let position_changed = dx != 0 || dy != 0 || dz != 0;
-
-                            if let Some((tx, ty, tz)) = state.pending_teleport {
-                                let expired = state.pending_teleport_at.is_none_or(|t| t.elapsed() > Duration::from_secs(5));
-                                let arrived = mv.position.is_some_and(|(cx, cy, cz)| {
-                                   (cx - tx).abs() < 1.0
-                                        && (cy - ty).abs() < 1.0
-                                        && (cz - tz).abs() < 1.0
-                                });
-
-                                if !arrived && !expired {
-                                    continue;
-                                }
-
-                                if expired && !arrived {
-                                    tracing::warn!(
-                                        "[WARN] {} never confirmed a teleport to ({tx:.1}, {ty:.1}, {tz:.1}); accepting ({x:.1}, {y:.1}, {z:.1})",
-                                        state.name
-                                    );
-                                }
-
-                                state.pending_teleport = None;
-                                state.pending_teleport_at = None;
-                                state.first_position_received = true;
-                                state.fall_distance = 0.0;
-                                state.velocity = (0.0, 0.0, 0.0);
-                                state.was_on_ground = mv.on_ground;
-                                state.last_position = (x, y, z);
-                                state.last_position_tick = Instant::now();
-                                (state.chunk_x, state.chunk_z) = spawn::spawn_chunk(x, z);
-
-                                player_registry
-                                    .update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground)
-                                    .await;
-                                player_registry.update_velocity(&state.uuid, state.velocity).await;
-                                entity_tracker.write().await.update_position(state.entity_id, x, y, z);
-                                channels.pos_tx.send(MovementBroadcast {
-                                    uuid: state.uuid,
-                                    entity_id: state.entity_id,
-                                    kind: MoveKind::Teleport {
-                                        x, y, z, yaw, pitch,
-                                        on_ground: mv.on_ground
-                                    },
-                                    head_yaw: Some(yaw)
-                                }).ok();
-                                continue;
-                            }
-
-                            if mv.position.is_some() {
-                                if !mv.on_ground && y < p.y {
-                                    state.fall_distance += (p.y - y) as f32;
-                                } else if y > p.y {
-                                    state.fall_distance = 0.0;
-                                }
-
-                                if position_changed {
-                                    let now = Instant::now();
-                                    let dt = now.duration_since(state.last_position_tick).as_secs_f64();
-
-                                    if dt > 0.0 {
-                                        let raw_vx = (x - state.last_position.0) / dt / 20.0;
-                                        let raw_vy = (y - state.last_position.1) / dt / 20.0;
-                                        let raw_vz = (z - state.last_position.2) / dt / 20.0;
-
-                                        let smoothing = 0.6;
-                                        state.velocity.0 = state.velocity.0 * (1.0 - smoothing) + raw_vx * smoothing;
-                                        state.velocity.1 = state.velocity.1 * (1.0 - smoothing) + raw_vy * smoothing;
-                                        state.velocity.2 = state.velocity.2 * (1.0 - smoothing) + raw_vz * smoothing;
-                                    }
-
-                                    let vel_delta = (
-                                        (state.velocity.0 - prev_velocity.0).abs(),
-                                        (state.velocity.1 - prev_velocity.1).abs(),
-                                        (state.velocity.2 - prev_velocity.2).abs(),
-                                    );
-
-                                    if vel_delta.0 > 0.1 || vel_delta.1 > 0.1 || vel_delta.2 > 0.1 {
-                                        channels.velocity_broadcast_tx.send((
-                                            state.entity_id, state.velocity.0, state.velocity.1, state.velocity.2,
-                                        )).ok();
-                                    }
-
-                                    state.last_position = (x, y, z);
-                                    state.last_position_tick = now;
-
-                                    player_registry.update_velocity(&state.uuid, state.velocity).await;
-                                    entity_tracker.write().await.update_position(
-                                        state.entity_id,
-                                        x, y, z
-                                    );
-                                    let new_chunk_x = (x as i32) >> 4;
-                                    let new_chunk_z = (z as i32) >> 4;
-
-                                    if new_chunk_x != state.chunk_x || new_chunk_z != state.chunk_z {
-                                        state.chunk_x = new_chunk_x;
-                                        state.chunk_z = new_chunk_z;
-                                        update_chunks(framed, client_protocol, &world, &tile_entities, &server_loaded_chunks, new_chunk_x, new_chunk_z, config.server.view_distance, &mut state.loaded_chunks).await;
-                                    }
-
-                                    let distance = ((x - p.x).powi(2) + (z - p.z).powi(2)).sqrt();
-                                    if state.is_sprinting {
-                                        state.food_exhaustion += 0.1 * distance as f32;
-                                    } else {
-                                        state.food_exhaustion += 0.01 * distance as f32;
-                                    }
-                                } else {
-                                    let decay = 0.8;
-                                    state.velocity.0 *= decay;
-                                    state.velocity.1 *= decay;
-                                    state.velocity.2 *= decay;
-                                    if state.velocity.0.abs() < 0.001 {
-                                        state.velocity.0 = 0.0;
-                                    }
-                                    if state.velocity.1.abs() < 0.001 {
-                                        state.velocity.1 = 0.0;
-                                    }
-                                    if state.velocity.2.abs() < 0.001 {
-                                        state.velocity.2 = 0.0;
-                                    }
-                                    player_registry.update_velocity(&state.uuid, state.velocity).await;
-                                }
-                            }
-
-                            let rotation_changed = (yaw - p.yaw).abs() > 0.5 || (pitch - p.pitch).abs() > 0.5;
-                            let needs_teleport = dx.abs() > 127 || dy.abs() > 127 || dz.abs() > 127;
-
-                            if position_changed || rotation_changed {
-                                handle_landing(framed, state, &player_registry, &channels.chat_tx, &channels.sound_tx, x, y, z, mv.on_ground).await;
-                                player_registry.update_position(&state.uuid, x, y, z, yaw, pitch, mv.on_ground).await;
-                            }
-
-                            let kind = if needs_teleport {
-                                MoveKind::Teleport {
-                                    x, y, z, yaw, pitch, on_ground: mv.on_ground,
-                                }
-                            } else if position_changed && rotation_changed {
-                                MoveKind::LookAndRelative {
-                                    dx: dx as i8, dy: dy as i8, dz: dz as i8,
-                                    yaw, pitch, on_ground: mv.on_ground,
-                                }
-                            } else if position_changed {
-                                MoveKind::Relative {
-                                    dx: dx as i8, dy: dy as i8, dz: dz as i8,
-                                    on_ground: mv.on_ground,
-                                }
-                            } else if rotation_changed {
-                                MoveKind::Look {
-                                    yaw, pitch,
-                                    on_ground: mv.on_ground,
-                                }
-                            } else {
-                                continue;
-                            };
-
-                            channels.pos_tx.send(MovementBroadcast {
-                                uuid: state.uuid,
-                                entity_id: state.entity_id,
-                                kind,
-                                head_yaw: if rotation_changed {
-                                    Some(yaw)
-                                } else {
-                                    None
-                                }
-                            }).ok();
-                            continue;
+                            flow!(movement_handler::player_moved(mv, &p, framed, state, &ctx).await);
                         }
 
                         if packet.is::<CloseWindow>() {
-                            if let Some(cursor) = state.cursor_item.take()
-                                && let Some(dropped) = state.inventory.insert_itemstack(cursor)
-                            {
-                                drop_item_in_world(
-                                    dropped,
-                                    state.entity_id,
-                                    &player_registry,
-                                    &channels,
-                                    &item_spawn_times,
-                                    &entity_tracker,
-                                    &item_positions,
-                                    config.tracking.item
-                                ).await;
-                            }
-                            close_tile_entity_window(state, &tile_entities, &channels.chest_anim_tx, &channels.sound_tx).await;
-                            continue;
+                            flow!(session::close_window(state, &ctx).await);
                         }
 
                         if packet.is::<ConfirmTransaction>() {
@@ -1467,382 +902,58 @@ pub async fn play(
 
                         if packet.is::<ResourcePackStatus>() {
                             let status = decode_or_disconnect!(packet, ResourcePackStatus);
-                            match status.result {
-                                ResourcePackResult::Loaded | ResourcePackResult::Accepted => {}
-                                ResourcePackResult::Decline => {
-                                    if !config.resource_pack.forced {
-                                        continue;
-                                    }
-                                    kick(framed, "You must accept the ressource pack to play!").await;
-                                    break;
-                                }
-                                ResourcePackResult::Failed => {
-                                    if !config.resource_pack.forced {
-                                        continue;
-                                    }
-                                    kick(framed, "Resource pack download failed!").await;
-                                    break;
-                                }
-                            }
-                            continue;
+                            flow!(session::resource_pack_status(status, framed, &ctx).await);
                         }
 
                         if packet.is::<CreativeInventoryAction>() {
                             if state.gamemode != GameMode::Creative {
                                 continue;
                             }
-
                             let creative = decode_or_disconnect!(packet, CreativeInventoryAction);
-                            let internal = Inventory::packet_to_internal(creative.slot);
-                            if let Some(idx) = internal {
-                                if creative.item_id == EMPTY_HAND {
-                                    state.inventory.slots[idx] = None;
-                                } else {
-                                    state.inventory.slots[idx] = Some(ItemStack {
-                                        item_id: creative.item_id,
-                                        count: creative.item_count,
-                                        metadata: creative.item_damage,
-                                        durability: 0,
-                                    });
-                                }
-                                if idx < 9
-                                    && idx == state.held_slot as usize
-                                {
-                                    state.sync_held_item_registry(creative.item_id, &player_registry, &item_registry, &channels).await;
-                                }
-
-                                if Inventory::ARMOR_SLOTS.contains(&idx) {
-                                    state.sync_armor(&player_registry, &channels.equip_tx).await;
-                                }
-                            }
-                            continue;
+                            flow!(inventory::creative_inventory_action(creative, state, &ctx).await);
                         }
 
                         if packet.is::<ClickWindow>() {
                             let click = decode_or_disconnect!(packet, ClickWindow);
-                            send_packet(framed, ConfirmTransaction {
-                                window_id: click.window_id,
-                                action_number: click.action_number,
-                                accepted: true
-                            }).await;
-
-                            if handle_tile_entity_click(framed, state, &click, &tile_entities).await {
-                                continue;
-                            }
-
-                            let mut dropped = Vec::new();
-                            let outcome = inventory_click::apply_click(
-                                &mut state.inventory.slots,
-                                &mut state.cursor_item,
-                                &click,
-                                &mut dropped
-                            );
-
-                            for stack in dropped {
-                                if let Some(p) = player_registry.get(&state.uuid).await {
-                                    spawn_dropped_item(
-                                        &p, stack, &channels, &item_spawn_times,
-                                        &entity_tracker, &item_positions,
-                                        config.tracking.item
-                                    ).await;
-                                }
-                            }
-                            match outcome {
-                                inventory_click::ClickOutcome::AppliedArmorChanged => {
-                                    state.sync_armor(&player_registry, &channels.equip_tx).await;
-                                }
-                                inventory_click::ClickOutcome::Applied => {}
-                                inventory_click::ClickOutcome::Resync => {
-                                    state.send_full_inventory(framed).await;
-                                }
-                            }
-                            if Inventory::packet_to_internal(click.slot) == Some(state.held_slot as usize)
-                            {
-                                let held = state.inventory.slots[state.held_slot as usize].as_ref().map(|s| s.item_id).unwrap_or(EMPTY_HAND);
-                                state.sync_held_item_registry(held, &player_registry, &item_registry, &channels).await;
-                            }
-                            continue;
+                            flow!(inventory::click_window(click, framed, state, &ctx).await);
                         }
 
                         if packet.is::<ClientStatus>() {
                             let status = decode_or_disconnect!(packet, ClientStatus);
-                            if let ClientStatusAction::PerformRespawn = status.action
-                                && state.is_dead
-                            {
-                                state.health = 20.0;
-                                state.food = 20;
-                                state.food_saturation = 5.0;
-                                state.is_dead = false;
-
-                                player_registry.update_health(&state.uuid, state.health, state.food, state.food_saturation).await;
-
-                                send_packet(framed, Respawn {
-                                    dimension: -1,
-                                    difficulty: config.world.difficulty,
-                                    gamemode: u8::from(state.gamemode),
-                                    level_type: world.level_type().to_string()
-                                }).await;
-
-                                send_packet(framed, Respawn {
-                                    dimension: 0,
-                                    difficulty: config.world.difficulty,
-                                    gamemode: u8::from(state.gamemode),
-                                    level_type: world.level_type().to_string()
-                                }).await;
-
-                                let world_spawn = *spawn_point.read().await;
-                                let (sx, sy, sz, syaw, spitch) = spawn::respawn_position(state.bed_spawn, world_spawn);
-
-                                player_registry.update_position(&state.uuid, sx, sy, sz, syaw, spitch, false).await;
-
-                                let (spawn_cx, spawn_cz) = spawn::spawn_chunk(sx, sz);
-
-                                state.loaded_chunks.clear();
-                                send_chunks(
-                                    framed,
-                                    client_protocol,
-                                    &world,
-                                    &tile_entities,
-                                    &server_loaded_chunks,
-                                    spawn_cx, spawn_cz,
-                                    config.server.view_distance,
-                                    &mut state.loaded_chunks
-                                ).await;
-
-                                state.chunk_x = spawn_cx;
-                                state.chunk_z = spawn_cz;
-
-                                state.await_teleport(sx, sy, sz);
-                                send_packet(framed, PlayerPositionAndLook {
-                                    x: sx,
-                                    y: sy,
-                                    z: sz,
-                                    yaw: syaw,
-                                    pitch: spitch,
-                                    on_ground: false
-                                }).await;
-
-                                state.was_on_ground = true;
-
-                                send_packet(framed, UpdateHealth {
-                                    health: state.health,
-                                    food: state.food,
-                                    food_saturation: state.food_saturation
-                                }).await;
-                            }
-                            continue;
+                            flow!(entity::client_status(status, framed, state, &ctx).await);
                         }
 
                         if packet.is::<EntityAction>() {
                             let action = decode_or_disconnect!(packet, EntityAction);
-                            let update = match action.action {
-                                EntityActionType::LeaveBed => {
-                                    state.is_sleeping = false;
-                                    player_registry.update_sleeping(&state.uuid, false).await;
-                                    channels.anim_tx.send((state.entity_id, EntityAnimationType::LeaveBed)).ok();
-                                    continue;
-                                }
-                                EntityActionType::StartSneaking => Some((true, true)),
-                                EntityActionType::StopSneaking => Some((true, false)),
-                                EntityActionType::StartSprinting => {
-                                    // server authority dont allow sprint if food < 6
-                                    if state.food > 6 {
-                                        Some((false, true))  // sprinting on
-                                    } else {
-                                        // deny sprint
-                                        send_packet(framed, PlayerAbilities {
-                                            flags: 0x00,
-                                            fly_speed: 0.05,
-                                            walk_speed: 0.1,
-                                        }).await;
-                                        None
-                                    }
-                                }
-                                EntityActionType::StopSprinting => Some((false, false)),
-                                _ => None,
-                            };
-
-                            if let Some((sneaking, value)) = update {
-                                if sneaking {
-                                    state.is_sneaking = value;
-                                    player_registry.update_sneaking(&state.uuid, value).await;
-                                } else {
-                                    state.is_sprinting = value;
-                                    player_registry.update_sprinting(&state.uuid, value).await;
-                                }
-                                state.watcher.set(0, MetadataValue::Byte(state.entity_flags()));
-                            }
-                            continue;
+                            flow!(entity::entity_action(action, framed, state, &ctx).await);
                         }
 
                         if packet.is::<UseEntity>() {
                             let use_entity = decode_or_disconnect!(packet, UseEntity);
-                            match use_entity.action {
-                                UseEntityAction::Attack => {
-                                    if state.gamemode == GameMode::Spectator {
-                                        continue;
-                                    }
-                                    if let Some(target) =
-                                        player_registry.get_by_entity_id(use_entity.target_entity_id).await.as_ref()
-                                    {
-                                        if target.is_dead || target.no_damage_ticks > 0 {
-                                            continue;
-                                        }
-                                        player_registry.update_no_damage_ticks(&target.uuid, 10).await;
-                                        if let Some(me) = player_registry.get(&state.uuid).await {
-                                            let reach = if state.gamemode == GameMode::Creative {
-                                                5.0
-                                            } else {
-                                                4.0
-                                            };
-                                            if dist3(me.x, me.y, me.z, target.x, target.y, target.z) > reach {
-                                                continue;
-                                            }
-                                            let strength_bonus = state.active_effects.iter()
-                                                .find(|e| e.kind == EffectKind::Strength)
-                                                .map(|e| 1.3 * (e.amplifier + 1) as f32)
-                                                .unwrap_or(0.0);
-                                            let weakness_penalty = state.active_effects.iter()
-                                                .find(|e| e.kind == EffectKind::Weakness)
-                                                .map(|e| 0.5 * (e.amplifier + 1) as f32)
-                                                .unwrap_or(0.0);
-
-                                            let base_damage = item_registry.attack_damage(state.held_item.id())
-                                                + strength_bonus - weakness_penalty;
-                                            let is_critical = !me.on_ground && state.fall_distance > 0.0;
-                                            let raw_damage = (base_damage.max(0.0)) * if is_critical { 1.5 } else { 1.0 };
-
-                                            let target_inventory_armor = player_registry.get_armor(&target.uuid).await;
-                                            let total_armor = total_defense(
-                                                &item_registry,
-                                                target_inventory_armor.0,
-                                                target_inventory_armor.1,
-                                                target_inventory_armor.2,
-                                                target_inventory_armor.3,
-                                            );
-                                            let resistance = player_registry.get_effects(&target.uuid).await.iter()
-                                                .find(|e| e.kind == EffectKind::Resistance)
-                                                .map(|e| 0.2 * (e.amplifier + 1) as f32)
-                                                .unwrap_or(0.0);
-
-                                            let damage = apply_armor_reduction(raw_damage, total_armor) * (1.0 - resistance);
-                                            let new_health = (target.health - damage).max(0.0);
-
-                                            player_registry.update_health(&target.uuid, new_health, target.food, target.food_saturation).await;
-
-                                            if new_health <= 0.0 {
-                                                channels.chat_tx.send(ChatBuilder::plain_json(&format!(
-                                                    "{} was slain by {}",
-                                                    target.username,
-                                                    state.name.clone()
-                                                ))).ok();
-
-                                                let xp_amount = level_to_xp_drop(target.xp_level);
-                                                if xp_amount > 0 {
-                                                    let orb_eid = next_entity_id();
-                                                    entity_tracker.write().await.track(
-                                                        TrackedEntity::experience_orb(
-                                                            orb_eid,
-                                                            target.x, target.y + 0.5, target.z,
-                                                            config.tracking.experience_orb
-                                                        )
-                                                    );
-                                                    xp_orbs.write().await.push(XpOrb {
-                                                        entity_id: orb_eid,
-                                                        x: target.x, y: target.y + 0.5, z: target.z,
-                                                        vy: 0.3,
-                                                        amount: xp_amount,
-                                                        ticks_alive: 0,
-                                                    });
-                                                    channels.xp_orb_spawn_tx.send((orb_eid, target.x, target.y + 0.5, target.z, xp_amount)).ok();
-                                                }
-                                            }
-
-                                            channels.dmg_tx.send((target.uuid, new_health, target.food, target.food_saturation, state.entity_id)).ok();
-
-                                            let broke = state.damage_item(2, &item_registry);
-                                            state.sync_held_slot_after_damage(framed, &player_registry, &item_registry, &channels, broke).await;
-
-                                            channels.sound_tx.send((
-                                                "game.player.hurt",
-                                                target.x, target.y, target.z,
-                                                1.0, 63
-                                            )).ok();
-                                            channels.status_tx.send((use_entity.target_entity_id, EntityStatusType::HurtAnimation)).ok();
-                                            channels.anim_tx.send((use_entity.target_entity_id, EntityAnimationType::TakeDamage)).ok();
-
-                                            if is_critical {
-                                                channels.anim_tx.send((state.entity_id, EntityAnimationType::CriticalEffect(false))).ok();
-                                                channels.particle_tx.send((state.entity_id, 1, target.x as f32, target.y as f32 + 1.0, target.z as f32, 0.3, 0.3, 0.3, 0.0, 8, [0, 0])).ok();
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                            continue;
+                            flow!(entity::use_entity(use_entity, framed, state, &ctx).await);
                         }
 
                         if packet.is::<PlayerAbilities>() {
                             let abilities = decode_or_disconnect!(packet, PlayerAbilities);
-                            let is_flying = (abilities.flags & 0x02) != 0;
-                            state.is_flying = is_flying;
-                            continue;
+                            flow!(session::player_abilities(abilities, state));
                         }
 
                         if packet.is::<UpdateSign>() {
                             let sign = decode_or_disconnect!(packet, UpdateSign);
-                            let pos = (sign.x, sign.y, sign.z);
-
-                            if state.editing_sign != Some(pos) {
-                                continue;
-                            }
-                            state.editing_sign = None;
-
-                            let sanitize = |s: &str| -> String {
-                                s.chars().filter(|c| *c != '\u{00a7}').take(16).collect()
-                            };
-
-                            let lines = [
-                                sanitize(&sign.lines[0]),
-                                sanitize(&sign.lines[1]),
-                                sanitize(&sign.lines[2]),
-                                sanitize(&sign.lines[3]),
-                            ];
-
-                            tile_entities.write().await.insert(pos, TileEntity::Sign { lines: lines.clone() });
-
-                            let json_lines = [
-                                ChatBuilder::plain_json(&lines[0]),
-                                ChatBuilder::plain_json(&lines[1]),
-                                ChatBuilder::plain_json(&lines[2]),
-                                ChatBuilder::plain_json(&lines[3]),
-                            ];
-                            channels.sign_update_tx.send((sign.x, sign.y, sign.z, json_lines)).ok();
-                            continue;
+                            flow!(session::update_sign(sign, state, &ctx).await);
                         }
 
                         if packet.is::<ClientSettings>() {
                             let settings = decode_or_disconnect!(packet, ClientSettings);
-                            state.skin_parts = settings.skin_parts;
-                            player_registry.update_skin_parts(&state.uuid, settings.skin_parts).await;
-                            state.watcher.set(10, MetadataValue::Byte(settings.skin_parts));
-                            continue;
+                            flow!(session::client_settings(settings, state, &ctx).await);
                         }
 
                         if packet.is::<PluginMessage>() {
                             let plugin = decode_or_disconnect!(packet, PluginMessage);
-                            if plugin.channel == "MC|Brand" {
-                                if let Ok(brand) = String::from_utf8(plugin.data.clone()) {
-                                    let brand = brand.trim_matches('\0').to_string();
-                                    state.client_brand = Some(brand);
-                                }
-                                send_packet(framed, PluginMessage::brand("Coral")).await;
-                            }
-                            continue;
+                            flow!(session::plugin_message(plugin, framed, state).await);
                         }
 
-                        tracing::warn!("WARN: Unhandled packet: {:?}", packet);
+                        tracing::warn!("Unhandled packet: {:?}", packet);
                         continue;
                     }
                     Err(e) => {
@@ -1928,26 +1039,6 @@ pub async fn play(
         state.name,
         player_registry.get_online_count().await
     );
-}
-
-// ;) nPaper
-fn ping_to_bar(ping: i32) -> u8 {
-    if ping <= 0 {
-        return 5;
-    }
-    if ping < 150 {
-        return 0;
-    }
-    if ping < 300 {
-        return 1;
-    }
-    if ping < 600 {
-        return 2;
-    }
-    if ping < 1000 {
-        return 3;
-    }
-    4
 }
 
 async fn spawn_dropped_item(
