@@ -10,7 +10,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use coral::{Channels, register_commands, world_path};
 use coral_protocol::packets::PacketRegistry;
 use coral_types::{BreakAnimation, EquipmentUpdate, ItemInfo, ItemPickup, SoundEffect};
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey;
 use tokio::{
     net::TcpListener,
     sync::{RwLock, broadcast::channel},
@@ -35,6 +35,7 @@ use coral_server::{
 use coral_world::{
     blocks::registry::BlockRegistry,
     level::{read_spawn_point, write_level_dat},
+    spawn::SpawnPos,
     world::World,
 };
 use tracing_subscriber::fmt::time::FormatTime;
@@ -264,12 +265,12 @@ pub struct ServerContext {
     projectiles: Arc<RwLock<Vec<Projectile>>>,
     channels: Channels,
     world: Arc<World>,
-    private_key: Arc<RsaPrivateKey>,
+    private_key: Arc<PrivateKey>,
     public_key_der: Arc<Vec<u8>>,
     ops: Arc<RwLock<OpsFile>>,
     whitelist: Arc<RwLock<WhitelistFile>>,
     banlist: Arc<RwLock<BanList>>,
-    spawn_point: Arc<RwLock<(f64, f64, f64, f32, f32)>>,
+    spawn_point: Arc<RwLock<SpawnPos>>,
     world_dir: Arc<PathBuf>,
     xp_orbs: Arc<RwLock<Vec<XpOrb>>>,
     fluid_queue: Arc<RwLock<FluidQueue>>,
@@ -284,9 +285,9 @@ impl ServerContext {
         server_icon: Option<String>,
         config: Arc<Config>,
         world: Arc<World>,
-        private_key: RsaPrivateKey,
+        private_key: PrivateKey,
         public_key_der: Vec<u8>,
-        spawn_point: (f64, f64, f64, f32, f32),
+        spawn_point: SpawnPos,
         world_dir: PathBuf,
     ) -> Self {
         Self {

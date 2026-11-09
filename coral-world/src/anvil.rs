@@ -40,7 +40,7 @@ pub fn chunk_to_nbt(
         if (x >> 4) != chunk_x || (z >> 4) != chunk_z {
             continue;
         }
-        dense[index(x, y, z)] = block.clone();
+        dense[index(x, y, z)] = *block;
     }
 
     let mut heightmap = vec![0i32; 256];

@@ -53,10 +53,7 @@ pub enum DigStatus {
 }
 impl DigStatus {
     pub fn needs_reach_check(&self) -> bool {
-        match self {
-            Self::StartDig | Self::FinishDig => true,
-            _ => false,
-        }
+        matches!(self, Self::StartDig | Self::FinishDig)
     }
 }
 impl TryFrom<u8> for DigStatus {

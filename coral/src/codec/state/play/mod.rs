@@ -37,7 +37,7 @@ use coral_protocol::packets::play::{
 };
 use coral_server::{
     effects::{ActiveEffect, EffectKind},
-    entity_tracker::TrackedEntity,
+    entity_tracker::{self, TrackedEntity},
     experience::{self},
     items::{
         drop_physics::manual_drop_velocity, drops::DroppedItems, ids::EMPTY_HAND,
@@ -467,7 +467,7 @@ pub async fn play(
                     continue;
                 }
                 let (my_x, _, my_z) = state.last_position;
-                if !entity_tracker.read().await.is_visible_to(mv.entity_id, my_x, my_z) {
+                if !entity_tracker::within_tracking_range(mv.x, mv.z, my_x, my_z, config.tracking.player) {
                     continue;
                 }
 
@@ -588,6 +588,8 @@ pub async fn play(
                     entity_id: state.entity_id,
                     kind: MoveKind::Teleport { x, y, z, yaw: 0.0, pitch: 0.0, on_ground: false },
                     head_yaw: Some(0.0),
+                    x,
+                    z
                 }).ok();
 
                 let (new_cx, new_cz) = spawn::spawn_chunk(x, z);

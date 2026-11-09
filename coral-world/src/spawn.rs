@@ -2,6 +2,12 @@ use crate::playerdata::PlayerData;
 
 pub type SpawnPos = (f64, f64, f64, f32, f32);
 
+pub const BED_BLOCK_ID: u8 = 26;
+
+pub fn bed_is_intact(block_id_at_respawn_point: u8) -> bool {
+    block_id_at_respawn_point == BED_BLOCK_ID
+}
+
 pub fn join_position(saved: Option<&PlayerData>, world_spawn: SpawnPos) -> SpawnPos {
     match saved {
         Some(d) => (d.x, d.y, d.z, d.yaw, d.pitch),
@@ -100,5 +106,42 @@ mod tests {
         let (x, _, z, _, _) = respawn_position(Some((-1, 4, -20)), WORLD_SPAWN);
         assert_eq!(spawn_chunk(x, z), (-1, -2));
         assert_eq!(((x as i32) >> 4, (z as i32) >> 4), (0, -2));
+    }
+}
+
+#[cfg(test)]
+mod bed_tests {
+    use super::*;
+
+    const WORLD_SPAWN: SpawnPos = (0.5, 64.0, 0.5, 0.0, 0.0);
+
+    #[test]
+    fn a_bed_is_the_only_block_that_keeps_a_respawn_point() {
+        assert!(bed_is_intact(BED_BLOCK_ID));
+
+        for other in [0u8, 1, 2, 3, 7, 54, 95, 255] {
+            assert!(
+                !bed_is_intact(other),
+                "block {other} should not count as a bed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_respawn_point_is_the_bed_when_there_is_one() {
+        let at = respawn_position(Some((10, 64, -20)), WORLD_SPAWN);
+
+        assert_eq!(at, (10.5, 64.0, -19.5, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_cleared_respawn_point_falls_back_to_world_spawn() {
+        assert_eq!(respawn_position(None, WORLD_SPAWN), WORLD_SPAWN);
+    }
+
+    #[test]
+    fn negative_coordinates_centre_the_same_way() {
+        let at = respawn_position(Some((-1, 64, -1)), WORLD_SPAWN);
+        assert_eq!(at, (-0.5, 64.0, -0.5, 0.0, 0.0));
     }
 }

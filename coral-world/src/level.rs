@@ -5,7 +5,10 @@ use std::{
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 
-use crate::nbt::{NbtReader, NbtTag};
+use crate::{
+    nbt::{NbtReader, NbtTag},
+    spawn::SpawnPos,
+};
 
 pub fn write_level_dat(world_dir: &Path, world_name: &str, spawn_y: i32) {
     let data = NbtTag::Compound(vec![(
@@ -86,7 +89,7 @@ pub async fn write_spawn_point(
     Ok(())
 }
 
-pub async fn read_spawn_point(world_dir: &Path) -> Option<(f64, f64, f64, f32, f32)> {
+pub async fn read_spawn_point(world_dir: &Path) -> Option<SpawnPos> {
     let compressed = tokio::fs::read(world_dir.join("level.dat")).await.ok()?;
     let mut decoder = GzDecoder::new(&compressed[..]);
     let mut nbt_bytes = Vec::new();

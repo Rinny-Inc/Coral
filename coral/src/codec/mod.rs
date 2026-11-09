@@ -30,7 +30,7 @@ use coral_server::tile_entities::TileEntityStore;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
 use coral_world::playerdata::{MAX_AIR_TICKS, load_player_data};
-use coral_world::spawn;
+use coral_world::spawn::{self, SpawnPos};
 use coral_world::world::World;
 use flate2::{Compress, Compression, FlushCompress, Status};
 use futures::SinkExt;
@@ -921,7 +921,7 @@ async fn make_player_join(
     server_loaded_chunks: &Arc<RwLock<HashSet<(i32, i32)>>>,
     entity_tracker: &Arc<RwLock<EntityTracker>>,
     config: &Config,
-    spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
+    spawn_point: &Arc<RwLock<SpawnPos>>,
     world_dir: &Path,
     scoreboard: &Arc<ScoreboardManager>,
     teams: &Arc<TeamManager>,

@@ -105,19 +105,22 @@ impl PacketOut for ChunkData {
     }
 }
 
-fn get_block_state(
-    snapshot: &crate::blocks::ChunkEdits,
-    wx: i32,
-    wy: u8,
-    wz: i32,
-    generator: &dyn WorldGenerator,
-) -> u16 {
-    let block = snapshot
-        .get(&(wx, wy, wz))
-        .cloned()
-        .unwrap_or_else(|| generator.block_at(wx, wy, wz));
+///The wire form of a block: id in the high 12 bits, metadata in the low 4
+#[inline]
+fn block_state(block: Block) -> u16 {
     ((block.id as u16) << 4) | (block.metadata as u16 & 0xF)
 }
+
+/// Byte offset of a block within a section's 8 KiB of state data
+#[inline]
+fn state_offset(wx: i32, wy: u8, wz: i32) -> usize {
+    (wy as usize * 256 + ((wz & 15) as usize) * 16 + (wx & 15) as usize) * 2
+}
+
+const SECTION_LAYERS: u8 = 16;
+const BLOCK_LIGHT_BYTES: usize = 2048;
+const SKY_LIGHT_BYTES: usize = 2048;
+const BIOME_BYTES: usize = 256;
 
 async fn build_chunk_data_18(
     chunk_x: i32,
@@ -126,26 +129,27 @@ async fn build_chunk_data_18(
     generator: &dyn WorldGenerator,
 ) -> Vec<u8> {
     let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
-    let block_data = {
-        let mut data = Vec::with_capacity(8192);
-        for y in 0..16usize {
-            for z in 0..16usize {
-                for x in 0..16usize {
-                    let wx = chunk_x * 16 + x as i32;
-                    let wz = chunk_z * 16 + z as i32;
-                    let state = get_block_state(&snapshot, wx, y as u8, wz, generator);
-                    data.extend_from_slice(&state.to_le_bytes());
-                }
-            }
-        }
-        data
-    };
 
-    let mut data = Vec::with_capacity(12544);
-    data.extend_from_slice(&block_data);
-    data.extend_from_slice(&vec![0xFFu8; 2048]); // block light
-    data.extend_from_slice(&vec![0xFFu8; 2048]); // sky light
-    data.extend_from_slice(&vec![1u8; 256]); // biomes
+    let mut data = Vec::with_capacity(8192 + BLOCK_LIGHT_BYTES + SKY_LIGHT_BYTES + BIOME_BYTES);
+
+    let mut layer = [Block::air(); 256];
+    for y in 0..SECTION_LAYERS {
+        generator.fill_layer(chunk_x, chunk_z, y, &mut layer);
+        for block in &layer {
+            data.extend_from_slice(&block_state(*block).to_le_bytes());
+        }
+    }
+
+    for (&(wx, wy, wz), block) in snapshot.iter() {
+        if wy < SECTION_LAYERS {
+            let at = state_offset(wx, wy, wz);
+            data[at..at + 2].copy_from_slice(&block_state(*block).to_le_bytes());
+        }
+    }
+
+    let light_end = data.len() + BLOCK_LIGHT_BYTES + SKY_LIGHT_BYTES;
+    data.resize(light_end, 0xFF);
+    data.resize(light_end + BIOME_BYTES, 1);
     data
 }
 
@@ -171,30 +175,29 @@ async fn build_chunk_data_17(
     let mut metadata = vec![0u8; 4096];
     let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
 
-    for y in 0..16usize {
-        for z in 0..16usize {
-            for x in 0..16usize {
-                let wx = chunk_x * 16 + x as i32;
-                let wy = y as u8;
-                let wz = chunk_z * 16 + z as i32;
-
-                let block = snapshot
-                    .get(&(wx, wy, wz))
-                    .cloned()
-                    .unwrap_or_else(|| generator.block_at(wx, wy, wz));
-                let index = y * 256 + z * 16 + x;
-                blocks[index] = block.id;
-                metadata[index] = block.metadata;
-            }
+    let mut layer = [Block::air(); 256];
+    for y in 0..SECTION_LAYERS {
+        generator.fill_layer(chunk_x, chunk_z, y, &mut layer);
+        let base = y as usize * 256;
+        for (i, block) in layer.iter().enumerate() {
+            blocks[base + i] = block.id;
+            metadata[base + i] = block.metadata;
+        }
+    }
+    for (&(wx, wy, wz), block) in snapshot.iter() {
+        if wy < SECTION_LAYERS {
+            let index = wy as usize * 256 + ((wz & 15) as usize) * 16 + (wx & 15) as usize;
+            blocks[index] = block.id;
+            metadata[index] = block.metadata;
         }
     }
 
     let mut data = Vec::with_capacity(10496);
     data.extend_from_slice(&blocks);
     data.extend_from_slice(&pack_metadata_nibbles(&metadata));
-    data.extend_from_slice(&vec![0xFFu8; 2048]); // block light
-    data.extend_from_slice(&vec![0xFFu8; 2048]); // sky light
-    data.extend_from_slice(&vec![1u8; 256]); // biomes
+    let light_end = data.len() + BLOCK_LIGHT_BYTES + SKY_LIGHT_BYTES;
+    data.resize(light_end, 0xFF);
+    data.resize(light_end + BIOME_BYTES, 1);
     data
 }
 
@@ -575,5 +578,178 @@ mod metadata_nibble_tests {
     fn an_odd_length_still_fits() {
         assert_eq!(pack_metadata_nibbles(&[0x03]), vec![0x03]);
         assert_eq!(pack_metadata_nibbles(&[0x01, 0x02, 0x03]), vec![0x21, 0x03]);
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+    use crate::generator::{FlatWorldGenerator, VoidWorldGenerator};
+
+    async fn build_18_the_old_way(
+        chunk_x: i32,
+        chunk_z: i32,
+        world_blocks: &WorldBlocks,
+        generator: &dyn WorldGenerator,
+    ) -> Vec<u8> {
+        let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
+        let mut block_data = Vec::with_capacity(8192);
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let wx = chunk_x * 16 + x as i32;
+                    let wz = chunk_z * 16 + z as i32;
+                    let block = snapshot
+                        .get(&(wx, y as u8, wz))
+                        .copied()
+                        .unwrap_or_else(|| generator.block_at(wx, y as u8, wz));
+                    let state = ((block.id as u16) << 4) | (block.metadata as u16 & 0xF);
+                    block_data.extend_from_slice(&state.to_le_bytes());
+                }
+            }
+        }
+        let mut data = Vec::with_capacity(12544);
+        data.extend_from_slice(&block_data);
+        data.extend_from_slice(&vec![0xFFu8; 2048]);
+        data.extend_from_slice(&vec![0xFFu8; 2048]);
+        data.extend_from_slice(&vec![1u8; 256]);
+        data
+    }
+
+    async fn build_17_the_old_way(
+        chunk_x: i32,
+        chunk_z: i32,
+        world_blocks: &WorldBlocks,
+        generator: &dyn WorldGenerator,
+    ) -> Vec<u8> {
+        let mut blocks = vec![0u8; 4096];
+        let mut metadata = vec![0u8; 4096];
+        let snapshot = world_blocks.chunk_edits(chunk_x, chunk_z).await;
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let wx = chunk_x * 16 + x as i32;
+                    let wz = chunk_z * 16 + z as i32;
+                    let block = snapshot
+                        .get(&(wx, y as u8, wz))
+                        .copied()
+                        .unwrap_or_else(|| generator.block_at(wx, y as u8, wz));
+                    let index = y * 256 + z * 16 + x;
+                    blocks[index] = block.id;
+                    metadata[index] = block.metadata;
+                }
+            }
+        }
+        let mut data = Vec::with_capacity(10496);
+        data.extend_from_slice(&blocks);
+        data.extend_from_slice(&pack_metadata_nibbles(&metadata));
+        data.extend_from_slice(&vec![0xFFu8; 2048]);
+        data.extend_from_slice(&vec![0xFFu8; 2048]);
+        data.extend_from_slice(&vec![1u8; 256]);
+        data
+    }
+
+    const CHUNKS: [(i32, i32); 7] = [
+        (0, 0),
+        (1, 1),
+        (-1, -1),
+        (-1, 0),
+        (0, -1),
+        (7, -4),
+        (-33, 61),
+    ];
+
+    async fn with_edits(edits: &[(i32, u8, i32, u8, u8)]) -> WorldBlocks {
+        let blocks = WorldBlocks::new();
+        for &(x, y, z, id, meta) in edits {
+            blocks.set(x, y, z, Block::new(id, meta)).await;
+        }
+        blocks
+    }
+
+    #[tokio::test]
+    async fn an_untouched_chunk_builds_the_same_bytes() {
+        let generator = FlatWorldGenerator::default();
+        let blocks = WorldBlocks::new();
+
+        for &(cx, cz) in &CHUNKS {
+            let fast = build_chunk_data_18(cx, cz, &blocks, &generator).await;
+            let slow = build_18_the_old_way(cx, cz, &blocks, &generator).await;
+            assert_eq!(fast, slow, "1.8 chunk ({cx}, {cz})");
+
+            let fast = build_chunk_data_17(cx, cz, &blocks, &generator).await;
+            let slow = build_17_the_old_way(cx, cz, &blocks, &generator).await;
+            assert_eq!(fast, slow, "1.7 chunk ({cx}, {cz})");
+        }
+    }
+
+    #[tokio::test]
+    async fn edited_blocks_land_where_the_old_loop_put_them() {
+        let generator = FlatWorldGenerator::default();
+
+        for &(cx, cz) in &CHUNKS {
+            let base_x = cx * 16;
+            let base_z = cz * 16;
+            let blocks = with_edits(&[
+                (base_x, 0, base_z, 7, 0),
+                (base_x + 15, 0, base_z + 15, 49, 0),
+                (base_x, 15, base_z + 15, 1, 6),
+                (base_x + 15, 15, base_z, 5, 3),
+                (base_x + 8, 4, base_z + 9, 35, 14),
+                (base_x + 3, 11, base_z + 1, 98, 2),
+            ])
+            .await;
+
+            let fast = build_chunk_data_18(cx, cz, &blocks, &generator).await;
+            let slow = build_18_the_old_way(cx, cz, &blocks, &generator).await;
+            assert_eq!(fast, slow, "1.8 chunk ({cx}, {cz}) with edits");
+
+            let fast = build_chunk_data_17(cx, cz, &blocks, &generator).await;
+            let slow = build_17_the_old_way(cx, cz, &blocks, &generator).await;
+            assert_eq!(fast, slow, "1.7 chunk ({cx}, {cz}) with edits");
+        }
+    }
+
+    #[tokio::test]
+    async fn edits_above_the_section_are_left_out() {
+        let generator = FlatWorldGenerator::default();
+        let blocks = with_edits(&[(3, 16, 5, 41, 0), (3, 64, 5, 42, 0), (3, 255, 5, 57, 0)]).await;
+
+        let fast = build_chunk_data_18(0, 0, &blocks, &generator).await;
+        let slow = build_18_the_old_way(0, 0, &blocks, &generator).await;
+        assert_eq!(fast, slow);
+
+        for id in [41u8, 42, 57] {
+            let state = ((id as u16) << 4).to_le_bytes();
+            assert!(
+                !fast[..8192].windows(2).any(|w| w == state),
+                "block {id} from above the section leaked into it"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_void_generator_builds_the_same_bytes() {
+        let generator = VoidWorldGenerator::with_spawn_platform(8, 5.0, 8);
+        assert_eq!(generator.platform(), Some((8, 4, 8)));
+        let blocks = with_edits(&[(8, 4, 8, 0, 0), (2, 1, 3, 20, 0)]).await;
+
+        for &(cx, cz) in &CHUNKS {
+            let fast = build_chunk_data_18(cx, cz, &blocks, &generator).await;
+            let slow = build_18_the_old_way(cx, cz, &blocks, &generator).await;
+            assert_eq!(fast, slow, "void chunk ({cx}, {cz})");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_section_is_the_expected_size() {
+        let generator = FlatWorldGenerator::default();
+        let blocks = WorldBlocks::new();
+
+        let data = build_chunk_data_18(0, 0, &blocks, &generator).await;
+        assert_eq!(data.len(), 8192 + 2048 + 2048 + 256);
+
+        let data = build_chunk_data_17(0, 0, &blocks, &generator).await;
+        assert_eq!(data.len(), 4096 + 2048 + 2048 + 2048 + 256);
     }
 }

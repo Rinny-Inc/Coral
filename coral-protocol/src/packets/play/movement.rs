@@ -158,6 +158,8 @@ pub struct MovementBroadcast {
     pub entity_id: i32,
     pub kind: MoveKind,
     pub head_yaw: Option<f32>,
+    pub x: f64,
+    pub z: f64,
 }
 
 #[derive(Clone)]

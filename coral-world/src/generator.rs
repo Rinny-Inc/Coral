@@ -4,6 +4,15 @@ use std::{fmt::Debug, sync::Arc};
 pub trait WorldGenerator: Debug + Send + Sync {
     fn block_at(&self, x: i32, y: u8, z: i32) -> Block;
 
+    fn fill_layer(&self, chunk_x: i32, chunk_z: i32, y: u8, out: &mut [Block; 256]) {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                out[z * 16 + x] =
+                    self.block_at(chunk_x * 16 + x as i32, y, chunk_z * 16 + z as i32);
+            }
+        }
+    }
+
     fn name(&self) -> &'static str;
 
     fn spawn_y(&self) -> f64;
@@ -58,6 +67,10 @@ impl WorldGenerator for FlatWorldGenerator {
         self.get(y)
     }
 
+    fn fill_layer(&self, _chunk_x: i32, _chunk_z: i32, y: u8, out: &mut [Block; 256]) {
+        out.fill(self.get(y));
+    }
+
     fn name(&self) -> &'static str {
         "flat"
     }
@@ -95,6 +108,18 @@ impl WorldGenerator for VoidWorldGenerator {
         match self.platform {
             Some(pos) if pos == (x, y, z) => Block::new(1, 0),
             _ => Block::air(),
+        }
+    }
+
+    fn fill_layer(&self, chunk_x: i32, chunk_z: i32, y: u8, out: &mut [Block; 256]) {
+        out.fill(Block::air());
+
+        if let Some((px, py, pz)) = self.platform
+            && py == y
+            && px >> 4 == chunk_x
+            && pz >> 4 == chunk_z
+        {
+            out[((pz & 15) * 16 + (px & 15)) as usize] = Block::new(1, 0);
         }
     }
 
@@ -265,5 +290,119 @@ mod tests {
     fn both_report_a_level_type_the_client_understands() {
         assert_eq!(from_name("flat").level_type(), "flat");
         assert_eq!(from_name("void").level_type(), "flat");
+    }
+}
+
+#[cfg(test)]
+mod fill_layer_tests {
+    use super::*;
+
+    fn fill_layer_the_slow_way(
+        generator: &dyn WorldGenerator,
+        chunk_x: i32,
+        chunk_z: i32,
+        y: u8,
+        out: &mut [Block; 256],
+    ) {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                out[z * 16 + x] =
+                    generator.block_at(chunk_x * 16 + x as i32, y, chunk_z * 16 + z as i32);
+            }
+        }
+    }
+
+    fn assert_override_matches(generator: &dyn WorldGenerator, chunks: &[(i32, i32)]) {
+        for &(cx, cz) in chunks {
+            for y in 0..16u8 {
+                let mut fast = [Block::air(); 256];
+                let mut slow = [Block::air(); 256];
+                generator.fill_layer(cx, cz, y, &mut fast);
+                fill_layer_the_slow_way(generator, cx, cz, y, &mut slow);
+
+                for i in 0..256 {
+                    assert_eq!(
+                        fast[i], slow[i],
+                        "chunk ({cx}, {cz}) y={y} index {i}: override says {:?}, block_at says {:?}",
+                        fast[i], slow[i]
+                    );
+                }
+            }
+        }
+    }
+
+    const CHUNKS: [(i32, i32); 9] = [
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (-1, 0),
+        (0, -1),
+        (-1, -1),
+        (5, -3),
+        (-8, 12),
+        (100, -100),
+    ];
+
+    #[test]
+    fn the_flat_generators_override_matches_block_at() {
+        assert_override_matches(&FlatWorldGenerator::default(), &CHUNKS);
+    }
+
+    #[test]
+    fn the_void_generators_override_matches_block_at() {
+        assert_override_matches(&VoidWorldGenerator::default(), &CHUNKS);
+    }
+
+    #[test]
+    fn the_void_platform_lands_in_exactly_one_place() {
+        for (px, spawn_y, pz) in [(0, 5.0), (15, 5.0), (-1, 5.0), (-16, 8.0), (37, 3.0)]
+            .into_iter()
+            .zip([0, 15, -1, -16, -53])
+            .map(|((x, y), z)| (x, y, z))
+        {
+            let generator = VoidWorldGenerator::with_spawn_platform(px, spawn_y, pz);
+            let platform = generator.platform().expect("platform in range");
+
+            assert_override_matches(&generator, &CHUNKS);
+
+            let (px, py, pz) = platform;
+            let mut layer = [Block::air(); 256];
+            generator.fill_layer(px >> 4, pz >> 4, py, &mut layer);
+
+            let index = ((pz & 15) * 16 + (px & 15)) as usize;
+            assert_eq!(layer[index], Block::new(1, 0), "platform at {platform:?}");
+            assert_eq!(
+                layer.iter().filter(|b| **b != Block::air()).count(),
+                1,
+                "exactly one non-air block in the platform's layer"
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct Checkerboard;
+    impl WorldGenerator for Checkerboard {
+        fn block_at(&self, x: i32, y: u8, z: i32) -> Block {
+            if (x + z + y as i32).rem_euclid(2) == 0 {
+                Block::new(1, 0)
+            } else {
+                Block::air()
+            }
+        }
+        fn name(&self) -> &'static str {
+            "checkerboard"
+        }
+        fn spawn_y(&self) -> f64 {
+            64.0
+        }
+    }
+
+    #[test]
+    fn the_default_handles_a_generator_that_varies_horizontally() {
+        assert_override_matches(&Checkerboard, &CHUNKS);
+
+        let mut layer = [Block::air(); 256];
+        Checkerboard.fill_layer(0, 0, 0, &mut layer);
+        assert_eq!(layer.iter().filter(|b| **b == Block::air()).count(), 128);
     }
 }

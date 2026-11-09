@@ -403,7 +403,7 @@ impl FlowScan {
             }
         };
         match Self::index(level, x - ox, z - oz) {
-            Some(i) => self.blocks[i].clone(),
+            Some(i) => self.blocks[i],
             None => {
                 debug_assert!(false, "flow scan read ({x}, {y}, {z}), outside its radius");
                 Block::air()

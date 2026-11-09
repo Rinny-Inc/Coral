@@ -109,6 +109,8 @@ async fn settle_pending_teleport(
                 on_ground: mv.on_ground,
             },
             head_yaw: Some(r.yaw),
+            x: r.x,
+            z: r.z,
         })
         .ok();
     Some(Flow::Continue)
@@ -296,6 +298,8 @@ pub(in crate::codec::state::play) async fn player_moved(
             entity_id: state.entity_id,
             kind,
             head_yaw: if rotation_changed { Some(r.yaw) } else { None },
+            x: r.x,
+            z: r.z,
         })
         .ok();
     Flow::Continue

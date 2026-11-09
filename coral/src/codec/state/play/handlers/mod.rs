@@ -15,7 +15,7 @@ use coral_server::{
     projectile::Projectile,
     tile_entities::TileEntityStore,
 };
-use coral_world::{blocks::registry::BlockRegistry, world::World};
+use coral_world::{blocks::registry::BlockRegistry, spawn::SpawnPos, world::World};
 use tokio::sync::RwLock;
 
 pub(super) mod chat;
@@ -46,7 +46,7 @@ pub(super) struct PlayCtx<'a> {
     pub item_spawn_times: &'a Arc<RwLock<HashMap<i32, Instant>>>,
     pub dispatcher: &'a Arc<CommandDispatcher>,
     pub world: &'a Arc<World>,
-    pub spawn_point: &'a Arc<RwLock<(f64, f64, f64, f32, f32)>>,
+    pub spawn_point: &'a Arc<RwLock<SpawnPos>>,
     pub server_loaded_chunks: &'a Arc<RwLock<HashSet<(i32, i32)>>>,
     pub xp_orbs: &'a Arc<RwLock<Vec<XpOrb>>>,
     pub block_registry: &'a Arc<BlockRegistry>,

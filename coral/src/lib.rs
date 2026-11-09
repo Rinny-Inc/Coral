@@ -27,7 +27,7 @@ use coral_types::{
     ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate, SoundEffect,
     SplashEffect, TeleportRequest, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup,
 };
-use coral_world::weather::WeatherState;
+use coral_world::{spawn::SpawnPos, weather::WeatherState};
 use tokio::sync::{
     RwLock,
     broadcast::{Sender, channel},
@@ -151,7 +151,7 @@ pub async fn register_commands(
     ops: &Arc<RwLock<OpsFile>>,
     whitelist: &Arc<RwLock<WhitelistFile>>,
     resource_monitor: &Arc<ResourceMonitor>,
-    spawn_point: &Arc<RwLock<(f64, f64, f64, f32, f32)>>,
+    spawn_point: &Arc<RwLock<SpawnPos>>,
     world_dir: &Arc<PathBuf>,
     world_time: &Arc<AtomicI64>,
     world_difficulty: &Arc<AtomicU8>,

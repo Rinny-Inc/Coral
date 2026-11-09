@@ -3,7 +3,9 @@ use std::{net::SocketAddr, sync::Arc};
 use coral_config::Config;
 use coral_protocol::{
     auth::{AuthProfile, ProfileProperty, authenticate, compute_server_hash},
-    encryption::{Encryption, decrypt_rsa, generate_verify_token},
+    encryption::{
+        Encryption, decrypt_rsa, decrypt_shared_secret, generate_verify_token, tokens_match,
+    },
     packets::{
         handshake::{EnumProtocol, PacketHandshake},
         login::{EncryptionRequest, EncryptionResponse, LoginStart},
@@ -15,7 +17,7 @@ use coral_server::{
     whitelist::WhitelistFile,
 };
 use coral_types::offline_uuid;
-use rsa::RsaPrivateKey;
+use rsa::PrivateKey;
 use tokio::{net::TcpStream, sync::RwLock};
 use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
@@ -51,7 +53,7 @@ pub struct PrePlayContext {
     pub banlist: Arc<RwLock<BanList>>,
     pub whitelist: Arc<RwLock<WhitelistFile>>,
     pub ops: Arc<RwLock<OpsFile>>,
-    pub private_key: Arc<RsaPrivateKey>,
+    pub private_key: Arc<PrivateKey>,
     pub public_key_der: Arc<Vec<u8>>,
     pub channels: Channels,
     pub bungee_adresses: Arc<Vec<String>>,
@@ -249,18 +251,24 @@ pub async fn pre_play(
                                     }
                                     if packet.is::<EncryptionResponse>() {
                                         let enc_resp = decode_or_kick!(packet, EncryptionResponse);
-                                        let shared_secret = decrypt_rsa(&private_key, &enc_resp.shared_secret);
-                                        let decrypted_token = decrypt_rsa(&private_key, &enc_resp.verify_token);
 
-                                        if decrypted_token != verify_token {
+                                        let Some(shared_secret) = decrypt_shared_secret(&private_key, &enc_resp.shared_secret) else {
+                                            kick(framed, "Encryption Error!").await;
+                                            return None;
+                                        };
+                                        let Some(decrypted_token) = decrypt_rsa(&private_key, &enc_resp.verify_token) else {
+                                            kick(framed, "Encryption Error!").await;
+                                            return None;
+                                        };
+                                        if !tokens_match(&decrypted_token, &verify_token) {
                                             kick(framed, "Encryption Error!").await;
                                             return None;
                                         }
+
                                         let username = match pending_username.take() {
                                             Some(u) => u,
                                             None => return None
                                         };
-
                                         let server_hash = compute_server_hash("", &shared_secret, &public_key_der);
 
                                         let profile = match authenticate(&username, &server_hash).await {

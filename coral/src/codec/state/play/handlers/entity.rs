@@ -1,6 +1,6 @@
 use coral_protocol::packets::play::{
     PlayerAbilities,
-    chat::builder::ChatBuilder,
+    chat::builder::{ChatBuilder, ChatColor},
     entity::{
         EntityAction, EntityActionType, EntityAnimationType, MetadataValue, UseEntity,
         UseEntityAction,
@@ -74,6 +74,23 @@ pub(in crate::codec::state::play) async fn client_status(
         .await;
 
         let world_spawn = *ctx.spawn_point.read().await;
+
+        if let Some((bx, by, bz)) = state.bed_spawn {
+            let still_a_bed = (0..255).contains(&by)
+                && spawn::bed_is_intact(ctx.world.get(bx, by as u8, bz).await.id);
+
+            if !still_a_bed {
+                state.bed_spawn = None;
+                send_packet(
+                    framed,
+                    ChatBuilder::new("Your home bed was missing or obstructed")
+                        .color(ChatColor::Gray)
+                        .into_packet(),
+                )
+                .await;
+            }
+        }
+
         let (sx, sy, sz, syaw, spitch) = spawn::respawn_position(state.bed_spawn, world_spawn);
 
         ctx.player_registry

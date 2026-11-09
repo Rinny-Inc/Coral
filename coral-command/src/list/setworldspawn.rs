@@ -2,13 +2,14 @@ use std::{path::PathBuf, sync::Arc};
 
 use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_server::player::registry::PlayerRegistry;
+use coral_world::spawn::SpawnPos;
 use tokio::sync::RwLock;
 
 use crate::{Command, CommandResult, make_handler};
 
 pub async fn command(
     player_registry: Arc<PlayerRegistry>,
-    spawn_point: Arc<RwLock<(f64, f64, f64, f32, f32)>>,
+    spawn_point: Arc<RwLock<SpawnPos>>,
     world_dir: Arc<PathBuf>,
 ) -> Command {
     Command {

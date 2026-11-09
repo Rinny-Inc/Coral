@@ -71,6 +71,11 @@ impl TrackedEntity {
     }
 }
 
+#[inline]
+pub fn within_tracking_range(x: f64, z: f64, viewer_x: f64, viewer_z: f64, range: f64) -> bool {
+    dist_sq_xz(x, z, viewer_x, viewer_z) <= range * range
+}
+
 pub struct EntityTracker {
     pub entities: HashMap<i32, TrackedEntity>,
 }
@@ -117,7 +122,7 @@ impl EntityTracker {
 
     pub fn is_visible_to(&self, entity_id: i32, viewer_x: f64, viewer_z: f64) -> bool {
         if let Some(e) = self.entities.get(&entity_id) {
-            dist_sq_xz(e.x, e.z, viewer_x, viewer_z) <= e.tracking_range * e.tracking_range
+            within_tracking_range(e.x, e.z, viewer_x, viewer_z, e.tracking_range)
         } else {
             false
         }
@@ -126,9 +131,7 @@ impl EntityTracker {
     pub fn get_visible_for(&self, viewer_x: f64, viewer_z: f64) -> Vec<&TrackedEntity> {
         self.entities
             .values()
-            .filter(|e| {
-                dist_sq_xz(e.x, e.z, viewer_x, viewer_z) <= e.tracking_range * e.tracking_range
-            })
+            .filter(|e| within_tracking_range(e.x, e.z, viewer_x, viewer_z, e.tracking_range))
             .collect()
     }
 }
@@ -303,5 +306,82 @@ mod tests {
         for eid in [0, 2, 4] {
             assert_eq!(tracker.entities[&eid].entity_type, EntityType::Item);
         }
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    #[test]
+    fn the_helper_agrees_with_the_tracker() {
+        let range = 64.0;
+        let mut tracker = EntityTracker::new();
+
+        let mut seed = 0x1234_5678_9ABC_DEF0u64;
+        let mut next = || {
+            seed ^= seed >> 12;
+            seed ^= seed << 25;
+            seed ^= seed >> 27;
+            (seed.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
+        };
+
+        for eid in 0..500i32 {
+            let x = next() * 400.0 - 200.0;
+            let z = next() * 400.0 - 200.0;
+            tracker.track(TrackedEntity::player(eid, Uuid::nil(), x, 64.0, z, range));
+
+            for _ in 0..4 {
+                let vx = next() * 400.0 - 200.0;
+                let vz = next() * 400.0 - 200.0;
+                assert_eq!(
+                    tracker.is_visible_to(eid, vx, vz),
+                    within_tracking_range(x, z, vx, vz, range),
+                    "entity {eid} at ({x}, {z}) seen from ({vx}, {vz})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_boundary_is_inclusive() {
+        assert!(within_tracking_range(64.0, 0.0, 0.0, 0.0, 64.0));
+        assert!(!within_tracking_range(64.01, 0.0, 0.0, 0.0, 64.0));
+    }
+
+    #[test]
+    fn range_is_a_circle_not_a_square() {
+        let range = 10.0;
+        assert!(within_tracking_range(10.0, 0.0, 0.0, 0.0, range));
+        assert!(
+            !within_tracking_range(10.0, 10.0, 0.0, 0.0, range),
+            "the diagonal is 14.1 away and must be out of range"
+        );
+        assert!(within_tracking_range(7.0, 7.0, 0.0, 0.0, range), "9.9 away");
+    }
+
+    #[test]
+    fn height_is_ignored() {
+        assert!(within_tracking_range(0.0, 0.0, 0.0, 0.0, 64.0));
+    }
+
+    #[test]
+    fn negative_coordinates_measure_the_same_as_positive_ones() {
+        assert_eq!(
+            within_tracking_range(-30.0, -40.0, 0.0, 0.0, 50.0),
+            within_tracking_range(30.0, 40.0, 0.0, 0.0, 50.0)
+        );
+        assert!(within_tracking_range(-30.0, -40.0, 0.0, 0.0, 50.0));
+        assert!(!within_tracking_range(-30.0, -40.0, 0.0, 0.0, 49.9));
+    }
+
+    #[test]
+    fn the_tracker_hides_untracked_entities_and_the_helper_cannot() {
+        let tracker = EntityTracker::new();
+        assert!(!tracker.is_visible_to(99, 0.0, 0.0), "never tracked");
+        assert!(
+            within_tracking_range(0.0, 0.0, 0.0, 0.0, 64.0),
+            "distance alone says yes, because there is nothing to look up"
+        );
     }
 }

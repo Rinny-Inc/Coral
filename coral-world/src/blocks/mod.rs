@@ -18,8 +18,8 @@ pub mod definitions;
 pub mod fluid;
 pub mod registry;
 
-pub type ChunkBlock = Arc<HashMap<(i32, u8, i32), Block>>;
 pub type ChunkEdits = HashMap<(i32, u8, i32), Block>;
+pub type ChunkBlock = Arc<ChunkEdits>;
 
 pub trait BlockBehavior: Send + Sync {
     fn id(&self) -> u8;
@@ -72,7 +72,7 @@ pub trait BlockBehavior: Send + Sync {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Block {
     pub id: u8,
     pub metadata: u8,
@@ -98,7 +98,7 @@ pub struct WorldBlocks {
     // chunks loaded from disk into mem
     pub chunk_cache: RwLock<HashMap<(i32, i32), (Arc<Vec<u8>>, Instant)>>,
     // cache for better peformances
-    pub decoded_cache: RwLock<HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>>,
+    pub decoded_cache: RwLock<HashMap<(i32, i32), (ChunkBlock, Instant)>>,
     // chunks that need to be saved
     pub dirty_chunks: RwLock<HashSet<(i32, i32)>>,
     pub world_dir: RwLock<Option<std::path::PathBuf>>,
@@ -113,9 +113,7 @@ fn decoded_chunk_bytes(len: usize) -> usize {
     capacity * (PAIR + 1)
 }
 
-fn trim_decoded_cache(
-    cache: &mut HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>,
-) {
+fn trim_decoded_cache(cache: &mut HashMap<(i32, i32), (ChunkBlock, Instant)>) {
     let mut total: usize = cache
         .values()
         .map(|(blocks, _)| decoded_chunk_bytes(blocks.len()))
@@ -148,6 +146,11 @@ fn trim_decoded_cache(
     }
 }
 
+impl Default for WorldBlocks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl WorldBlocks {
     pub fn new() -> Self {
         Self {
@@ -191,7 +194,7 @@ impl WorldBlocks {
             .get(&(cx, cz))
             .and_then(|edits| edits.get(&(x, y, z)))
         {
-            return b.clone();
+            return *b;
         }
 
         if let Some((decoded, _)) = self.decoded_cache.read().await.get(&(cx, cz)) {
@@ -428,8 +431,7 @@ impl WorldBlocks {
         tokio::fs::create_dir_all(&region_dir).await.ok();
 
         // build merged block maps + is_new flags for each dirty chunk
-        let mut chunk_block_maps: HashMap<(i32, i32), HashMap<(i32, u8, i32), Block>> =
-            HashMap::new();
+        let mut chunk_block_maps: HashMap<(i32, i32), ChunkEdits> = HashMap::new();
         let mut chunk_is_new: HashMap<(i32, i32), bool> = HashMap::new();
 
         {
@@ -448,7 +450,7 @@ impl WorldBlocks {
                 let mut final_blocks = base;
                 if let Some(diffs) = diffs_by_chunk.get(&(*cx, *cz)) {
                     for (pos, block) in diffs {
-                        final_blocks.insert(*pos, block.clone());
+                        final_blocks.insert(*pos, *block);
                     }
                 }
 
@@ -826,7 +828,7 @@ mod region_tests {
 
         use super::*;
 
-        fn chunk(len: usize) -> Arc<HashMap<(i32, u8, i32), Block>> {
+        fn chunk(len: usize) -> ChunkBlock {
             let mut m = HashMap::with_capacity(len);
             for i in 0..len {
                 m.insert((i as i32, (i % 256) as u8, i as i32), Block::new(1, 0));
@@ -837,7 +839,7 @@ mod region_tests {
         fn cache_of(
             entries: usize,
             blocks_each: usize,
-        ) -> HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)> {
+        ) -> HashMap<(i32, i32), (ChunkBlock, Instant)> {
             let mut c = HashMap::new();
             let base = Instant::now();
             let shared = chunk(blocks_each);
@@ -848,7 +850,7 @@ mod region_tests {
             c
         }
 
-        fn total(c: &HashMap<(i32, i32), (Arc<HashMap<(i32, u8, i32), Block>>, Instant)>) -> usize {
+        fn total(c: &HashMap<(i32, i32), (ChunkBlock, Instant)>) -> usize {
             c.values().map(|(b, _)| decoded_chunk_bytes(b.len())).sum()
         }
 
