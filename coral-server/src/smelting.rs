@@ -1,29 +1,31 @@
+use coral_types::ids::items;
+
 // TODO: in the future make a MeltingBlock trait and add it to blocks definitions
 pub fn fuel_burn_ticks(item_id: i16) -> Option<i16> {
     Some(match item_id {
-        263 => 1600,            // coal
-        173 => 16000,           // coal block
-        280 => 100,             // stick
-        5 | 6 | 17 | 47 => 300, // planks, sapling, log, bookshelf
-        327 => 20000,           // lava bucket
-        369 => 2400,            // blaze rod
+        items::COAL => 1600,
+        items::COAL_BLOCK => 16000,
+        items::STICK => 100,
+        items::PLANKS | items::SAPLING | items::LOG | items::LOG2 | items::BOOKSHELF => 300,
+        items::LAVA_BUCKET => 20000,
+        items::BLAZE_ROD => 2400,
         _ => return None,
     })
 }
 
 pub fn smelt_result(item_id: i16) -> Option<(i16, i16)> {
     Some(match item_id {
-        15 => (265, 0),  // iron ore -> ingot
-        14 => (266, 0),  // gold ore -> ingot
-        12 => (20, 0),   // sand -> glass
-        4 => (1, 0),     // cobblestone -> stone
-        87 => (405, 0),  // netherrack -> nether brick
-        82 => (172, 0),  // clay -> hardened clay
-        319 => (320, 0), // raw porkchop -> cooked
-        363 => (364, 0), // raw beef -> steak
-        365 => (366, 0), // raw chicken -> cooked
-        349 => (350, 0), // raw fish -> cooked
-        392 => (393, 0), // potato -> baked
+        items::IRON_ORE => (items::IRON_INGOT, 0),
+        items::GOLD_ORE => (items::GOLD_INGOT, 0),
+        items::SAND => (items::GLASS, 0),
+        items::COBBLESTONE => (items::STONE, 0),
+        items::NETHERRACK => (items::NETHER_BRICK, 0),
+        items::CLAY => (items::HARDENED_CLAY, 0),
+        items::PORKCHOP => (items::COOKED_PORKCHOP, 0),
+        items::BEEF => (items::COOKED_BEEF, 0),
+        items::CHICKEN => (items::COOKED_CHICKEN, 0),
+        items::FISH => (items::COOKED_FISH, 0),
+        items::POTATO => (items::BAKED_POTATO, 0),
         _ => return None,
     })
 }

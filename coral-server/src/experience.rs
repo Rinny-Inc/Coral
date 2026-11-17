@@ -1,3 +1,5 @@
+use coral_types::ids::blocks;
+
 #[derive(Debug, Clone)]
 pub struct XpOrb {
     pub entity_id: i32,
@@ -11,12 +13,12 @@ pub struct XpOrb {
 
 pub fn xp_for_block(block_id: u8) -> i32 {
     match block_id {
-        16 => random_range(0, 2),
-        21 => random_range(2, 5),
-        56 => random_range(3, 7),
-        73 | 74 => random_range(1, 5),
-        129 => random_range(3, 7),
-        153 => random_range(2, 5),
+        blocks::COAL_ORE => random_range(0, 2),
+        blocks::LAPIS_ORE => random_range(2, 5),
+        blocks::DIAMOND_ORE => random_range(3, 7),
+        blocks::REDSTONE_ORE | blocks::LIT_REDSTONE_ORE => random_range(1, 5),
+        blocks::EMERALD_ORE => random_range(3, 7),
+        blocks::QUARTZ_ORE => random_range(2, 5),
         _ => 0,
     }
 }

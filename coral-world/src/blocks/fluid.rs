@@ -1,3 +1,5 @@
+use coral_types::ids::{blocks, items};
+
 use super::BlockBehavior;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,19 +34,19 @@ impl Fluid {
 
     pub fn block_id(&self) -> u8 {
         match (self.kind, self.flowing) {
-            (FluidKind::Water, true) => 8,
-            (FluidKind::Water, false) => 9,
-            (FluidKind::Lava, true) => 10,
-            (FluidKind::Lava, false) => 11,
+            (FluidKind::Water, true) => blocks::FLOWING_WATER,
+            (FluidKind::Water, false) => blocks::WATER,
+            (FluidKind::Lava, true) => blocks::FLOWING_LAVA,
+            (FluidKind::Lava, false) => blocks::LAVA,
         }
     }
 
     pub fn from_block_id(id: u8) -> Option<Fluid> {
         match id {
-            8 => Some(Fluid::FLOWING_WATER),
-            9 => Some(Fluid::STATIONARY_WATER),
-            10 => Some(Fluid::FLOWING_LAVA),
-            11 => Some(Fluid::STATIONARY_LAVA),
+            blocks::FLOWING_WATER => Some(Fluid::FLOWING_WATER),
+            blocks::WATER => Some(Fluid::STATIONARY_WATER),
+            blocks::FLOWING_LAVA => Some(Fluid::FLOWING_LAVA),
+            blocks::LAVA => Some(Fluid::STATIONARY_LAVA),
             _ => None,
         }
     }
@@ -65,24 +67,26 @@ impl Fluid {
 
     pub fn from_bucket_item(item_id: i16) -> Option<Fluid> {
         match item_id {
-            326 => Some(Fluid::STATIONARY_WATER),
-            327 => Some(Fluid::STATIONARY_LAVA),
+            items::WATER_BUCKET => Some(Fluid::STATIONARY_WATER),
+            items::LAVA_BUCKET => Some(Fluid::STATIONARY_LAVA),
             _ => None,
         }
     }
 
     pub fn is_water(id: u8) -> bool {
-        id == 8 || id == 9
+        id == blocks::FLOWING_WATER || id == blocks::WATER
     }
     pub fn is_lava(id: u8) -> bool {
-        id == 10 || id == 11
+        id == blocks::FLOWING_LAVA || id == blocks::LAVA
     }
     pub fn is_fluid(id: u8) -> bool {
-        matches!(id, 8..=11)
+        matches!(id, blocks::FLOWING_WATER..=blocks::LAVA)
     }
 
     pub fn is_source(id: u8, metadata: u8) -> bool {
-        matches!(id, 8..=11) && (metadata & 0x8) == 0 && (metadata & 0x7) == 0
+        matches!(id, blocks::FLOWING_WATER..=blocks::LAVA)
+            && (metadata & 0x8) == 0
+            && (metadata & 0x7) == 0
     }
 
     pub fn flow_level(_id: u8, metadata: u8) -> u8 {

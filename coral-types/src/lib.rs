@@ -1,6 +1,7 @@
 use uuid::Uuid;
 
 pub mod ext;
+pub mod ids;
 
 pub type DamageEvent = (Uuid, f32, i32, f32, i32);
 pub type PingUpdate = (Uuid, i32);
@@ -14,7 +15,7 @@ pub type TimeUpdate = (i64, i64);
 pub type EquipmentUpdate = (i32, i16, i16, u8, i16);
 pub type SoundEffect = (&'static str, f64, f64, f64, f32, u8);
 pub type ParticleEffect = (i32, i32, f32, f32, f32, f32, f32, f32, f32, i32, [i32; 2]);
-pub type ProjectileMove = (i32, f64, f64, f64);
+pub type ProjectileMove = (i32, f64, f64, f64, f32, f32);
 pub type SplashEffect = (Uuid, u8, u8, i32);
 pub type XpOrbSpawn = (i32, f64, f64, f64, i32);
 pub type XpOrbMove = (i32, f64, f64, f64);

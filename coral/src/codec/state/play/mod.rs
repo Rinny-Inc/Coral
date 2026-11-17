@@ -39,17 +39,15 @@ use coral_server::{
     effects::{ActiveEffect, EffectKind},
     entity_tracker::{self, TrackedEntity},
     experience::{self},
-    items::{
-        drop_physics::manual_drop_velocity, drops::DroppedItems, ids::EMPTY_HAND,
-        potions::PotionEffect,
-    },
+    items::{drop_physics::manual_drop_velocity, drops::DroppedItems, potions::PotionEffect},
     player::{
         Player,
         registry::{PlayerRegistry, next_entity_id},
     },
+    projectile,
     tile_entities::TileEntityStore,
 };
-use coral_types::{GameMode, dist_xz};
+use coral_types::{GameMode, dist_xz, ext::AngleExt, ids::EMPTY_SLOT};
 use coral_world::{
     chunk::{ChunkData, UnloadChunk},
     playerdata::{PlayerData, save_player_data},
@@ -79,6 +77,8 @@ use crate::{
 };
 use handlers::{PlayCtx, flow, movement as movement_handler, session, world as world_handler};
 
+pub mod crafting_window;
+pub mod drag;
 mod handlers;
 mod interact;
 pub mod inventory_click;
@@ -159,6 +159,7 @@ pub async fn play(
         player_registry,
         item_registry,
         block_registry,
+        recipes,
         config,
         dispatcher,
         entity_tracker,
@@ -232,6 +233,7 @@ pub async fn play(
         server_loaded_chunks: &server_loaded_chunks,
         xp_orbs: &xp_orbs,
         block_registry: &block_registry,
+        recipes: &recipes,
         fluid_queue: &fluid_queue,
         client_protocol,
     };
@@ -350,25 +352,27 @@ pub async fn play(
             Ok((eid, owner_eid, kind, x, y, z, vx, vy, vz)) = projectile_spawn_rx.recv() => {
                 let object_type = kind.entity_id();
 
+                let (yaw, pitch) = projectile::rotation(vx, vy, vz);
+
                 send_packet(framed, SpawnObject {
                     entity_id: eid,
                     object_type,
                     x, y, z,
-                    yaw: 0, pitch: 0,
+                    yaw: yaw.to_byte(), pitch: pitch.to_byte(),
                     data: owner_eid + 1,
                     vx: (vx * 8000.0) as i16,
                     vy: (vy * 8000.0) as i16,
                     vz: (vz * 8000.0) as i16,
                 }).await;
             }
-            Ok((eid, x, y, z)) = projectile_move_rx.recv() => {
+            Ok((eid, x, y, z, yaw, pitch)) = projectile_move_rx.recv() => {
                 if !state.has_chunk_at_pos(x, z) {
                     continue;
                 }
                 send_packet(framed, EntityTeleport {
                     entity_id: eid,
                     x, y, z,
-                    yaw: 0.0, pitch: 0.0,
+                    yaw, pitch,
                     on_ground: false
                 }).await;
             }
@@ -451,11 +455,11 @@ pub async fn play(
 
                         let slots = vec![slot_tuple(input), slot_tuple(fuel), slot_tuple(output)];
                         let mut all_slots = slots;
-                        for i in 9..36 {
-                            all_slots.push(slot_tuple(&state.inventory.slots[i]));
+                        for item in state.inventory.slots.iter().take(36).skip(9) {
+                            all_slots.push(slot_tuple(item));
                         }
-                        for i in 0..9 {
-                            all_slots.push(slot_tuple(&state.inventory.slots[i]));
+                        for item in state.inventory.slots.iter().take(9) {
+                            all_slots.push(slot_tuple(item));
                         }
                         send_packet(framed, WindowItems { window_id, slots: all_slots }).await;
                     }
@@ -973,6 +977,19 @@ pub async fn play(
     {
         drop_item_in_world(
             overflow,
+            state.entity_id,
+            &player_registry,
+            &channels,
+            &item_spawn_times,
+            &entity_tracker,
+            &item_positions,
+            config.tracking.item,
+        )
+        .await;
+    }
+    for stack in crafting_window::reclaim_grid(state) {
+        drop_item_in_world(
+            stack,
             state.entity_id,
             &player_registry,
             &channels,
@@ -1583,7 +1600,7 @@ async fn send_player_equipment(
         (1, boots),
     ];
     for (slot, item_id) in slots {
-        if item_id == EMPTY_HAND {
+        if item_id == EMPTY_SLOT {
             continue;
         }
         send_packet(

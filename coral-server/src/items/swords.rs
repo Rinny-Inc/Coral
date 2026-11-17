@@ -1,6 +1,7 @@
 use coral_types::ToolMaterial;
 
 use super::Item;
+use coral_types::ids::{blocks, items};
 
 pub struct Sword {
     pub id: i16,
@@ -23,38 +24,38 @@ impl Item for Sword {
         Some(self.durability)
     }
     fn mining_speed(&self, block_id: u8) -> f32 {
-        if block_id == 30 { 15.0 } else { 1.0 } // cobweb
+        if block_id == blocks::WEB { 15.0 } else { 1.0 }
     }
 }
 
 pub fn all() -> Vec<Sword> {
     vec![
         Sword {
-            id: 268,
+            id: items::WOODEN_SWORD,
             material: ToolMaterial::Wood,
             damage: 4.0,
             durability: 59,
         },
         Sword {
-            id: 272,
+            id: items::STONE_SWORD,
             material: ToolMaterial::Stone,
             damage: 5.0,
             durability: 131,
         },
         Sword {
-            id: 267,
+            id: items::IRON_SWORD,
             material: ToolMaterial::Iron,
             damage: 6.0,
             durability: 250,
         },
         Sword {
-            id: 283,
+            id: items::GOLDEN_SWORD,
             material: ToolMaterial::Gold,
             damage: 4.0,
             durability: 32,
         },
         Sword {
-            id: 276,
+            id: items::DIAMOND_SWORD,
             material: ToolMaterial::Diamond,
             damage: 7.0,
             durability: 1561,

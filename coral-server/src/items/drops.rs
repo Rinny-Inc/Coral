@@ -1,97 +1,99 @@
 use std::collections::HashMap;
 
 use coral_types::ItemInfo;
+use coral_types::ids::{blocks, items};
 
 pub fn block_drop(block_id: u8, metadata: u8) -> Option<(i16, u8, i16)> {
     let meta = metadata as i16;
+    let wood = meta & 3;
     match block_id {
-        0 => None,
-        1 => Some((4, 1, 0)),                  // stone -> cobblestone
-        2 => Some((3, 1, 0)),                  // grass -> dirt
-        3 => Some((3, 1, 0)),                  // dirt
-        4 => Some((4, 1, 0)),                  // cobblestone
-        5 => Some((5, 1, meta)),               // planks (keep wood type)
-        7 => None,                             // bedrock
-        14 => Some((14, 1, 0)), // gold ore -> itself (needs Silk Touch; otherwise Fortune applies but still drops ore)
-        15 => Some((15, 1, 0)), // iron ore -> itself
-        16 => Some((263, 1, 0)), // coal ore -> coal
-        17 => Some((17, 1, meta)), // log (keep wood type)
-        18 => None,             // leaves (sapling/apple chance handled separately)
-        20 => None,             // glass
-        21 => Some((351, 1, 4)), // lapis ore -> lapis dye (meta 4)
-        24 => Some((24, 1, meta)), // sandstone
-        35 => Some((35, 1, meta)), // wool (keep color)
-        37 => Some((37, 1, 0)), // dandelion
-        38 => Some((38, 1, 0)), // rose
-        39 => Some((39, 1, 0)), // brown mushroom
-        40 => Some((40, 1, 0)), // red mushroom
-        41 => Some((41, 1, 0)), // gold block
-        42 => Some((42, 1, 0)), // iron block
-        45 => Some((45, 1, 0)), // bricks
-        46 => Some((46, 1, 0)), // tnt
-        47 => Some((340, 3, 0)), // bookshelf -> 3 books
-        48 => Some((48, 1, 0)), // mossy cobblestone
-        49 => Some((49, 1, 0)), // obsidian
-        53 => Some((5, 1, 0)),  // oak stairs -> oak planks
-        54 => Some((54, 1, 0)), // chest
-        56 => Some((264, 1, 0)), // diamond ore -> diamond
-        57 => Some((57, 1, 0)), // diamond block
-        58 => Some((58, 1, 0)), // crafting table
-        60 => Some((3, 1, 0)),  // farmland -> dirt
-        61 | 62 => Some((61, 1, 0)), // furnace
-        63 => Some((323, 1, 0)), // sign post -> sign item
-        65 => Some((65, 1, 0)), // ladder
-        66 => Some((66, 1, 0)), // rail
-        67 => Some((67, 1, 0)), // cobblestone stairs
-        73 | 74 => Some((331, 1, 0)), // redstone ore -> redstone dust
-        78 => Some((332, 1, 0)), // snow layer -> snowball
-        79 => None,             // ice -> nothing
-        80 => Some((332, 4, 0)), // snow block -> 4 snowballs
-        81 => Some((340, 1, 0)), // cactus
-        82 => Some((337, 4, 0)), // clay block -> 4 clay balls
-        83 => Some((338, 1, 0)), // sugar cane
-        87 => Some((87, 1, 0)), // netherrack
-        88 => Some((88, 1, 0)), // soul sand
-        89 => Some((348, 2, 0)), // glowstone -> 2 glowstone dust (random 2-4 handled by caller)
-        91 => Some((91, 1, 0)), // jack o lantern
-        97 => Some((1, 1, 0)),  // monster egg -> stone
-        98 => Some((98, 1, meta)), // stone brick (keep variant)
-        99 => Some((99, 1, 0)), // brown mushroom block
-        100 => Some((100, 1, 0)), // red mushroom block
-        102 => None,            // glass pane
-        103 => Some((360, 3, 0)), // melon block -> 3 melon slices (random 3-7 handled by caller)
-        108 => Some((45, 1, 0)), // brick stairs -> bricks
-        109 => Some((98, 1, 0)), // stone brick stairs -> stone bricks
-        110 => Some((3, 1, 0)), // mycelium -> dirt
-        111 => Some((111, 1, 0)), // lily pad
-        112 => Some((112, 1, 0)), // nether brick
-        114 => Some((112, 1, 0)), // nether brick stairs -> nether brick
-        121 => Some((121, 1, 0)), // end stone
-        123 | 124 => Some((123, 1, 0)), // redstone lamp -> off lamp
-        125 => Some((5, 1, meta)), // double wood slab -> planks (keep type)
-        126 => Some((126, 1, meta)), // wood slab (keep type)
-        128 => Some((24, 1, 0)), // sandstone stairs -> sandstone
-        129 => Some((388, 1, 0)), // emerald ore -> emerald
-        133 => Some((133, 1, 0)), // emerald block
-        134 => Some((5, 1, 1)), // spruce stairs -> spruce planks
-        135 => Some((5, 1, 2)), // birch stairs -> birch planks
-        136 => Some((5, 1, 3)), // jungle stairs -> jungle planks
-        152 => Some((152, 1, 0)), // redstone block -> itself (not redstone dust!)
-        153 => Some((406, 1, 0)), // nether quartz ore -> quartz
-        155 => Some((155, 1, meta)), // quartz block
-        156 => Some((155, 1, 0)), // quartz stairs -> quartz block
-        159 => Some((159, 1, meta)), // stained clay (keep color)
-        160 => None,            // stained glass pane
-        161 => None,            // acacia/dark oak leaves
-        162 => Some((162, 1, meta)), // acacia/dark oak log
-        163 => Some((5, 1, 4)), // acacia stairs -> acacia planks
-        164 => Some((5, 1, 5)), // dark oak stairs -> dark oak planks
-        170 => Some((170, 1, meta)), // hay block
-        172 => Some((172, 1, 0)), // hardened clay
-        173 => Some((173, 1, 0)), // coal block
-        174 => None,            // packed ice
-        179 => Some((179, 1, meta)), // red sandstone
-        180 => Some((179, 1, 0)), // red sandstone stairs -> red sandstone
+        blocks::AIR => None,
+        blocks::STONE => Some((items::COBBLESTONE, 1, 0)), // stone -> cobblestone
+        blocks::GRASS => Some((items::DIRT, 1, 0)),        // grass -> dirt
+        blocks::DIRT => Some((items::DIRT, 1, 0)),
+        blocks::COBBLESTONE => Some((items::COBBLESTONE, 1, 0)),
+        blocks::PLANKS => Some((items::PLANKS, 1, meta)), // planks (keep wood type)
+        blocks::BEDROCK => None,
+        blocks::GOLD_ORE => Some((items::GOLD_ORE, 1, 0)), // gold ore -> itself (needs Silk Touch; otherwise Fortune applies but still drops ore)
+        blocks::IRON_ORE => Some((items::IRON_ORE, 1, 0)), // iron ore -> itself
+        blocks::COAL_ORE => Some((items::COAL, 1, 0)),     // coal ore -> coal
+        blocks::LOG => Some((items::LOG, 1, wood)),        // log (keep wood type)
+        blocks::LEAVES => None, // leaves (sapling/apple chance handled separately)
+        blocks::GLASS => None,
+        blocks::LAPIS_ORE => Some((items::DYE, 1, 4)), // lapis ore -> lapis dye (meta 4)
+        blocks::SANDSTONE => Some((items::SANDSTONE, 1, meta)),
+        blocks::WOOL => Some((items::WOOL, 1, meta)), // wool (keep color)
+        blocks::YELLOW_FLOWER => Some((items::YELLOW_FLOWER, 1, 0)), // dandelion
+        blocks::RED_FLOWER => Some((items::RED_FLOWER, 1, 0)), // rose
+        blocks::BROWN_MUSHROOM => Some((items::BROWN_MUSHROOM, 1, 0)),
+        blocks::RED_MUSHROOM => Some((items::RED_MUSHROOM, 1, 0)),
+        blocks::GOLD_BLOCK => Some((items::GOLD_BLOCK, 1, 0)),
+        blocks::IRON_BLOCK => Some((items::IRON_BLOCK, 1, 0)),
+        blocks::BRICK_BLOCK => Some((items::BRICK_BLOCK, 1, 0)), // bricks
+        blocks::TNT => Some((items::TNT, 1, 0)),
+        blocks::BOOKSHELF => Some((items::BOOK, 3, 0)), // bookshelf -> 3 books
+        blocks::MOSSY_COBBLESTONE => Some((items::MOSSY_COBBLESTONE, 1, 0)),
+        blocks::OBSIDIAN => Some((items::OBSIDIAN, 1, 0)),
+        blocks::OAK_STAIRS => Some((items::PLANKS, 1, 0)), // oak stairs -> oak planks
+        blocks::CHEST => Some((items::CHEST, 1, 0)),
+        blocks::DIAMOND_ORE => Some((items::DIAMOND, 1, 0)), // diamond ore -> diamond
+        blocks::DIAMOND_BLOCK => Some((items::DIAMOND_BLOCK, 1, 0)),
+        blocks::CRAFTING_TABLE => Some((items::CRAFTING_TABLE, 1, 0)),
+        blocks::FARMLAND => Some((items::DIRT, 1, 0)), // farmland -> dirt
+        blocks::FURNACE | blocks::LIT_FURNACE => Some((items::FURNACE, 1, 0)),
+        blocks::STANDING_SIGN => Some((items::SIGN, 1, 0)), // sign post -> sign item
+        blocks::LADDER => Some((items::LADDER, 1, 0)),
+        blocks::RAIL => Some((items::RAIL, 1, 0)),
+        blocks::STONE_STAIRS => Some((items::STONE_STAIRS, 1, 0)), // cobblestone stairs
+        blocks::REDSTONE_ORE | blocks::LIT_REDSTONE_ORE => Some((items::REDSTONE, 1, 0)), // redstone ore -> redstone dust
+        blocks::SNOW_LAYER => Some((items::SNOWBALL, 1, 0)), // snow layer -> snowball
+        blocks::ICE => None,                                 // ice -> nothing
+        blocks::SNOW => Some((items::SNOWBALL, 4, 0)),       // snow block -> 4 snowballs
+        blocks::CACTUS => Some((items::CACTUS, 1, 0)),
+        blocks::CLAY => Some((items::CLAY_BALL, 4, 0)), // clay block -> 4 clay balls
+        blocks::REEDS => Some((items::REEDS, 1, 0)),    // sugar cane
+        blocks::NETHERRACK => Some((items::NETHERRACK, 1, 0)),
+        blocks::SOUL_SAND => Some((items::SOUL_SAND, 1, 0)),
+        blocks::GLOWSTONE => Some((items::GLOWSTONE_DUST, 2, 0)), // glowstone -> 2 glowstone dust (random 2-4 handled by caller)
+        blocks::LIT_PUMPKIN => Some((items::LIT_PUMPKIN, 1, 0)),  // jack o lantern
+        blocks::MONSTER_EGG => Some((items::STONE, 1, 0)),        // monster egg -> stone
+        blocks::STONEBRICK => Some((items::STONEBRICK, 1, meta)), // stone brick (keep variant)
+        blocks::BROWN_MUSHROOM_BLOCK => Some((items::BROWN_MUSHROOM_BLOCK, 1, 0)),
+        blocks::RED_MUSHROOM_BLOCK => Some((items::RED_MUSHROOM_BLOCK, 1, 0)),
+        blocks::GLASS_PANE => None,
+        blocks::MELON_BLOCK => Some((items::MELON, 3, 0)), // melon block -> 3 melon slices (random 3-7 handled by caller)
+        blocks::BRICK_STAIRS => Some((items::BRICK_BLOCK, 1, 0)), // brick stairs -> bricks
+        blocks::STONE_BRICK_STAIRS => Some((items::STONEBRICK, 1, 0)), // stone brick stairs -> stone bricks
+        blocks::MYCELIUM => Some((items::DIRT, 1, 0)),                 // mycelium -> dirt
+        blocks::WATERLILY => Some((items::WATERLILY, 1, 0)),           // lily pad
+        blocks::NETHER_BRICK => Some((items::NETHER_BRICK, 1, 0)),
+        blocks::NETHER_BRICK_STAIRS => Some((items::NETHER_BRICK, 1, 0)), // nether brick stairs -> nether brick
+        blocks::END_STONE => Some((items::END_STONE, 1, 0)),
+        blocks::REDSTONE_LAMP | blocks::LIT_REDSTONE_LAMP => Some((items::REDSTONE_LAMP, 1, 0)), // redstone lamp -> off lamp
+        blocks::DOUBLE_WOODEN_SLAB => Some((items::PLANKS, 1, meta)), // double wood slab -> planks (keep type)
+        blocks::WOODEN_SLAB => Some((items::WOODEN_SLAB, 1, meta)),   // wood slab (keep type)
+        blocks::SANDSTONE_STAIRS => Some((items::SANDSTONE, 1, 0)), // sandstone stairs -> sandstone
+        blocks::EMERALD_ORE => Some((items::EMERALD, 1, 0)),        // emerald ore -> emerald
+        blocks::EMERALD_BLOCK => Some((items::EMERALD_BLOCK, 1, 0)),
+        blocks::SPRUCE_STAIRS => Some((items::PLANKS, 1, 1)), // spruce stairs -> spruce planks
+        blocks::BIRCH_STAIRS => Some((items::PLANKS, 1, 2)),  // birch stairs -> birch planks
+        blocks::JUNGLE_STAIRS => Some((items::PLANKS, 1, 3)), // jungle stairs -> jungle planks
+        blocks::REDSTONE_BLOCK => Some((items::REDSTONE_BLOCK, 1, 0)), // redstone block -> itself (not redstone dust!)
+        blocks::QUARTZ_ORE => Some((items::QUARTZ, 1, 0)), // nether quartz ore -> quartz
+        blocks::QUARTZ_BLOCK => Some((items::QUARTZ_BLOCK, 1, meta)),
+        blocks::QUARTZ_STAIRS => Some((items::QUARTZ_BLOCK, 1, 0)), // quartz stairs -> quartz block
+        blocks::STAINED_HARDENED_CLAY => Some((items::STAINED_HARDENED_CLAY, 1, meta)), // stained clay (keep color)
+        blocks::STAINED_GLASS_PANE => None,
+        blocks::LEAVES2 => None, // acacia/dark oak leaves
+        blocks::LOG2 => Some((items::LOG2, 1, wood)), // acacia/dark oak log
+        blocks::ACACIA_STAIRS => Some((items::PLANKS, 1, 4)), // acacia stairs -> acacia planks
+        blocks::DARK_OAK_STAIRS => Some((items::PLANKS, 1, 5)), // dark oak stairs -> dark oak planks
+        blocks::HAY_BLOCK => Some((items::HAY_BLOCK, 1, meta)),
+        blocks::HARDENED_CLAY => Some((items::HARDENED_CLAY, 1, 0)),
+        blocks::COAL_BLOCK => Some((items::COAL_BLOCK, 1, 0)),
+        blocks::PACKED_ICE => None,
+        blocks::RED_SANDSTONE => Some((items::RED_SANDSTONE, 1, meta)),
+        blocks::RED_SANDSTONE_STAIRS => Some((items::RED_SANDSTONE, 1, 0)), // red sandstone stairs -> red sandstone
         _ => Some((block_id as i16, 1, meta)), // default: drop self with metadata
     }
 }
@@ -168,6 +170,31 @@ mod tests {
         let mut found: Vec<i32> = items.candidates_near(x, z, radius).map(|i| i.0).collect();
         found.sort_unstable();
         found
+    }
+
+    #[test]
+    fn a_sideways_log_drops_as_its_wood_type() {
+        for wood in 0..4u8 {
+            for axis in 0..3u8 {
+                let placed = wood | (axis << 2);
+                assert_eq!(
+                    block_drop(17, placed),
+                    Some((17, 1, wood as i16)),
+                    "log metadata {placed} must drop as wood type {wood}"
+                );
+            }
+        }
+
+        for wood in 0..2u8 {
+            for axis in 0..3u8 {
+                let placed = wood | (axis << 2);
+                assert_eq!(
+                    block_drop(162, placed),
+                    Some((162, 1, wood as i16)),
+                    "log2 metadata {placed} must drop as wood type {wood}"
+                );
+            }
+        }
     }
 
     #[test]

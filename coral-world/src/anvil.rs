@@ -559,7 +559,7 @@ mod tests {
         assert_eq!(back.len(), 16 * 16 * 4);
         assert_eq!(back.get(&(32, 0, -48)).map(|b| b.id), Some(7));
         assert_eq!(back.get(&(32, 3, -48)).map(|b| b.id), Some(2));
-        assert!(back.get(&(32, 4, -48)).is_none());
+        assert!(!back.contains_key(&(32, 4, -48)));
     }
 
     #[test]

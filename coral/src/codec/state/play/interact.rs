@@ -13,12 +13,16 @@ use coral_protocol::packets::play::{
     inventory::{ItemStack, SignEditorOpen},
 };
 use coral_server::{
+    crafting::RecipeRegistry,
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind, launch_velocity},
     tile_entities::TileEntityStore,
 };
-use coral_types::GameMode;
+use coral_types::{
+    GameMode,
+    ids::{blocks, items},
+};
 use coral_world::{
     blocks::{
         Block,
@@ -31,9 +35,14 @@ use tokio_util::codec::Framed;
 
 use crate::{
     Channels,
-    codec::{Codec, PlayerState, send_packet, state::play::window_ops::open_tile_entity_window},
+    codec::{
+        Codec, PlayerState, send_packet,
+        state::play::{crafting_window::open_crafting_window, window_ops::open_tile_entity_window},
+    },
     fluid_sim::{FluidQueue, queue_fluid_update},
 };
+
+const RAY_MAX_BLOCKS: usize = 6;
 
 /// Return true if the itme interaction went well
 pub async fn try_with_item(
@@ -55,11 +64,11 @@ pub async fn try_with_item(
     }
 
     match state.held_item.id() {
-        coral_server::items::ids::BOW => {
+        items::BOW => {
             state.bow_charging = Some(Instant::now());
             true
         }
-        coral_server::items::ids::FISHING_ROD => {
+        items::FISHING_ROD => {
             if !state
                 .try_retract_fishing_hook(projectiles, &channels.despawn_tx)
                 .await
@@ -107,7 +116,7 @@ pub async fn try_with_item(
                 .ok();
             true
         }
-        coral_server::items::ids::SPLASH_POTION => {
+        items::POTION => {
             let meta = state.inventory.slots[state.held_slot as usize]
                 .as_ref()
                 .map(|s| s.metadata)
@@ -144,8 +153,8 @@ pub async fn try_with_item_on_block(
     clicked: Option<(i32, i32, i32)>,
 ) -> bool {
     match place.held_item_id {
-        coral_server::items::ids::EMPTY_BUCKET => {
-            tracing::info!(
+        items::BUCKET => {
+            tracing::debug!(
                 "[BUCKET] entered branch, checking ({}, {}, {})",
                 place.x,
                 place.y,
@@ -156,16 +165,15 @@ pub async fn try_with_item_on_block(
                 return false;
             };
 
-            // FIXME: might be problematic
             let hit = match clicked {
                 Some(l) => Some((l.0, l.1, l.2)),
                 None => {
                     let (x, y, z) = p.get_head_position();
-                    raytrace_for_fluid(x, y, z, p.yaw, p.pitch, 6.0, world).await
+                    raytrace_for_fluid(x, y, z, p.yaw, p.pitch, RAY_MAX_BLOCKS, world).await
                 }
             };
 
-            tracing::info!("[BUCKET] raytrace hit = {:?}", hit);
+            tracing::debug!("[BUCKET] raytrace hit = {:?}", hit);
 
             let Some(hit) = hit else {
                 return false;
@@ -178,25 +186,25 @@ pub async fn try_with_item_on_block(
 
             let target = world.get(bx, by as u8, bz).await;
 
-            tracing::info!("[BUCKET] target id={} meta={}", target.id, target.metadata);
+            tracing::debug!("[BUCKET] target id={} meta={}", target.id, target.metadata);
 
             let Some(fluid) = Fluid::from_block_id(target.id) else {
-                tracing::info!("[BUCKET] not a fluid block, aborting");
+                tracing::debug!("[BUCKET] not a fluid block, aborting");
                 return false;
             };
             if !Fluid::is_source(target.id, target.metadata) {
-                tracing::info!("[BUCKET] fluid found but not a source (falling/edge), aborting");
+                tracing::debug!("[BUCKET] fluid found but not a source (falling/edge), aborting");
                 return false;
             }
 
-            tracing::info!("[BUCKET] confirmed source, removing");
+            tracing::debug!("[BUCKET] confirmed source, removing");
             // remove the source
             world.set(bx, by as u8, bz, Block::air()).await;
             channels.block_tx.send((bx, by, bz, 0, 0)).ok();
 
             // recalculate neighbor fluids (it may now drain)
             queue_fluid_update(bx, by, bz, fluid_queue).await;
-            tracing::info!(
+            tracing::debug!(
                 "[BUCKET] queued, queue len = {}",
                 fluid_queue.read().await.len()
             );
@@ -340,7 +348,7 @@ pub async fn try_with_item_on_block(
                 .replace_held_item(
                     framed,
                     ItemStack {
-                        item_id: coral_server::items::ids::EMPTY_BUCKET,
+                        item_id: items::BUCKET,
                         count: 1,
                         metadata: 0,
                         durability: 0,
@@ -378,6 +386,7 @@ pub async fn try_with_block(
     tile_entities: &Arc<RwLock<TileEntityStore>>,
     fluid_queue: &Arc<RwLock<FluidQueue>>,
     channels: &Channels,
+    recipes: &Arc<RecipeRegistry>,
 ) -> bool {
     if place.face.is_none() {
         return false;
@@ -402,7 +411,7 @@ pub async fn try_with_block(
     }
 
     match clicked.id {
-        61 | 62 => {
+        blocks::FURNACE | blocks::LIT_FURNACE => {
             return open_tile_entity_window(
                 framed,
                 state,
@@ -414,7 +423,13 @@ pub async fn try_with_block(
             )
             .await;
         }
-        54 | 146 => {
+        blocks::CRAFTING_TABLE => {
+            if !(state.is_sneaking && place.held_item_id > 0) {
+                return open_crafting_window(framed, state, recipes).await;
+            }
+            false
+        }
+        blocks::CHEST | blocks::TRAPPED_CHEST => {
             if !(state.is_sneaking && place.held_item_id > 0) {
                 return open_tile_entity_window(
                     framed,
@@ -429,7 +444,7 @@ pub async fn try_with_block(
             }
             false
         }
-        26 => {
+        blocks::BED => {
             if !is_night(world.time.load(Relaxed)) {
                 send_packet(
                     framed,
@@ -476,52 +491,115 @@ fn is_night(time_of_day: i64) -> bool {
     (12542..=23459).contains(&time_of_day)
 }
 
+fn voxel_path(
+    eye: (f64, f64, f64),
+    direction: (f64, f64, f64),
+    max_blocks: usize,
+) -> Vec<(i32, i32, i32)> {
+    let (ox, oy, oz) = eye;
+    let (dx, dy, dz) = direction;
+
+    let mut block = (ox.floor() as i32, oy.floor() as i32, oz.floor() as i32);
+
+    if dx == 0.0 && dy == 0.0 && dz == 0.0 {
+        return if max_blocks == 0 {
+            Vec::new()
+        } else {
+            vec![block]
+        };
+    }
+
+    let step = (
+        if dx > 0.0 { 1 } else { -1 },
+        if dy > 0.0 { 1 } else { -1 },
+        if dz > 0.0 { 1 } else { -1 },
+    );
+
+    let first_boundary = |origin: f64, dir: f64, start: i32| -> f64 {
+        if dir > 0.0 {
+            (start as f64 + 1.0 - origin) / dir
+        } else if dir < 0.0 {
+            (start as f64 - origin) / dir
+        } else {
+            f64::INFINITY
+        }
+    };
+
+    let mut t_next = (
+        first_boundary(ox, dx, block.0),
+        first_boundary(oy, dy, block.1),
+        first_boundary(oz, dz, block.2),
+    );
+    let t_delta = (
+        if dx == 0.0 {
+            f64::INFINITY
+        } else {
+            (1.0 / dx).abs()
+        },
+        if dy == 0.0 {
+            f64::INFINITY
+        } else {
+            (1.0 / dy).abs()
+        },
+        if dz == 0.0 {
+            f64::INFINITY
+        } else {
+            (1.0 / dz).abs()
+        },
+    );
+
+    let mut path = Vec::with_capacity(max_blocks);
+    for _ in 0..max_blocks {
+        path.push(block);
+
+        if t_next.0 <= t_next.1 && t_next.0 <= t_next.2 {
+            block.0 += step.0;
+            t_next.0 += t_delta.0;
+        } else if t_next.1 <= t_next.2 {
+            block.1 += step.1;
+            t_next.1 += t_delta.1;
+        } else {
+            block.2 += step.2;
+            t_next.2 += t_delta.2;
+        }
+    }
+    path
+}
+
+fn look_direction(yaw: f32, pitch: f32) -> (f64, f64, f64) {
+    let yaw_rad = (yaw as f64).to_radians();
+    let pitch_rad = (pitch as f64).to_radians();
+
+    (
+        -yaw_rad.sin() * pitch_rad.cos(),
+        -pitch_rad.sin(),
+        yaw_rad.cos() * pitch_rad.cos(),
+    )
+}
+
 async fn raytrace_for_fluid(
     eye_x: f64,
     eye_y: f64,
     eye_z: f64,
     yaw: f32,
     pitch: f32,
-    max_dist: f64,
+    max_blocks: usize,
     world: &Arc<World>,
 ) -> Option<(i32, i32, i32)> {
-    let yaw_rad = (yaw as f64).to_radians();
-    let pitch_rad = (pitch as f64).to_radians();
+    let direction = look_direction(yaw, pitch);
 
-    let dx = -yaw_rad.sin() * pitch_rad.cos();
-    let dy = -pitch_rad.sin();
-    let dz = yaw_rad.cos() * pitch_rad.cos();
-
-    let step = 0.2;
-    let mut t = 0.0;
-
-    let mut last_block: Option<(i32, i32, i32)> = None;
-
-    while t <= max_dist {
-        let px = eye_x + dx * t;
-        let py = eye_y + dy * t;
-        let pz = eye_z + dz * t;
-
-        let bx = px.floor() as i32;
-        let by = py.floor() as i32;
-        let bz = pz.floor() as i32;
-
-        if last_block != Some((bx, by, bz)) {
-            last_block = Some((bx, by, bz));
-
-            if (0..=255).contains(&by) {
-                let block = world.get(bx, by as u8, bz).await;
-
-                if Fluid::is_fluid(block.id) && Fluid::is_source(block.id, block.metadata) {
-                    return Some((bx, by, bz));
-                }
-                if !block.is_air() && !is_replaceable(block.id) {
-                    return None;
-                }
-            }
+    for (bx, by, bz) in voxel_path((eye_x, eye_y, eye_z), direction, max_blocks) {
+        if !(0..=255).contains(&by) {
+            continue;
         }
+        let block = world.get(bx, by as u8, bz).await;
 
-        t += step;
+        if Fluid::is_fluid(block.id) && Fluid::is_source(block.id, block.metadata) {
+            return Some((bx, by, bz));
+        }
+        if !block.is_air() && is_replaceable(block.id) {
+            return None;
+        }
     }
 
     None
@@ -529,11 +607,10 @@ async fn raytrace_for_fluid(
 
 #[cfg(test)]
 mod raytrace_for_fluid_tests {
-    use super::raytrace_for_fluid;
+    use super::{RAY_MAX_BLOCKS, raytrace_for_fluid};
+    use coral_types::ids::blocks::WATER as WATER_SOURCE;
     use coral_world::{blocks::Block, generator::VoidWorldGenerator, world::World};
     use std::sync::Arc;
-
-    const WATER_SOURCE: u8 = 9;
 
     fn void_world() -> Arc<World> {
         Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
@@ -544,10 +621,11 @@ mod raytrace_for_fluid_tests {
         let world = void_world();
         world.set(300, 62, -140, Block::new(WATER_SOURCE, 0)).await;
 
-        let hit = raytrace_for_fluid(300.5, 65.62, -139.5, 0.0, 90.0, 6.0, &world).await;
+        let hit = raytrace_for_fluid(300.5, 65.62, -139.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(hit, Some((300, 62, -140)));
 
-        let as_direction = raytrace_for_fluid(0.0, -1.0, 0.0, 0.0, 90.0, 6.0, &world).await;
+        let as_direction =
+            raytrace_for_fluid(0.0, -1.0, 0.0, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(as_direction, None, "the old call could never have hit");
     }
 
@@ -556,7 +634,7 @@ mod raytrace_for_fluid_tests {
         let world = void_world();
         world.set(0, 60, 0, Block::new(WATER_SOURCE, 0)).await;
 
-        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world)
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world)
             .await
             .expect("the trace should reach the water");
         let block = world.get(hit.0, hit.1 as u8, hit.2).await;
@@ -569,7 +647,7 @@ mod raytrace_for_fluid_tests {
         world.set(0, 62, 0, Block::new(WATER_SOURCE, 0)).await;
         world.set(0, 63, 0, Block::new(1, 0)).await; // stone lid
 
-        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(hit, None);
     }
 
@@ -578,7 +656,7 @@ mod raytrace_for_fluid_tests {
         let world = void_world();
         world.set(0, 62, 0, Block::new(WATER_SOURCE, 3)).await;
 
-        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(hit, None);
     }
 
@@ -587,7 +665,221 @@ mod raytrace_for_fluid_tests {
         let world = void_world();
         world.set(0, 20, 0, Block::new(WATER_SOURCE, 0)).await;
 
-        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, 6.0, &world).await;
+        let hit = raytrace_for_fluid(0.5, 65.62, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(hit, None, "the water is well past the 6-block reach");
+    }
+}
+
+#[cfg(test)]
+mod voxel_path_tests {
+
+    use super::{RAY_MAX_BLOCKS, look_direction, voxel_path};
+
+    #[track_caller]
+    fn assert_contiguous(path: &[(i32, i32, i32)]) {
+        for pair in path.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let delta = ((b.0 - a.0).abs(), (b.1 - a.1).abs(), (b.2 - a.2).abs());
+            let moved = delta.0 + delta.1 + delta.2;
+            assert_eq!(
+                moved, 1,
+                "stepped from {a:?} to {b:?}, which is not one block on one axis"
+            );
+        }
+    }
+
+    #[test]
+    fn the_walk_starts_in_the_block_holding_the_eye() {
+        let path = voxel_path((10.7, 65.2, -3.4), (0.0, -1.0, 0.0), 4);
+        assert_eq!(path[0], (10, 65, -4), "floor, not truncate, for -3.4");
+    }
+
+    #[test]
+    fn a_downward_ray_descends_one_block_at_a_time() {
+        let path = voxel_path((0.5, 65.62, 0.5), (0.0, -1.0, 0.0), 6);
+        assert_eq!(
+            path,
+            vec![
+                (0, 65, 0),
+                (0, 64, 0),
+                (0, 63, 0),
+                (0, 62, 0),
+                (0, 61, 0),
+                (0, 60, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_walk_is_capped_at_the_block_budget_in_every_direction() {
+        for (yaw, pitch) in [
+            (0.0f32, 0.0f32),
+            (45.0, 0.0),
+            (45.0, 45.0),
+            (123.0, -37.0),
+            (-90.0, 89.0),
+            (17.0, -89.0),
+        ] {
+            let direction = look_direction(yaw, pitch);
+            let path = voxel_path((0.5, 64.5, 0.5), direction, RAY_MAX_BLOCKS);
+
+            assert_eq!(
+                path.len(),
+                RAY_MAX_BLOCKS,
+                "yaw {yaw} pitch {pitch} walked {} blocks",
+                path.len()
+            );
+            assert_contiguous(&path);
+        }
+    }
+
+    #[test]
+    fn no_block_is_visited_twice() {
+        for yaw in (0..360).step_by(7) {
+            for pitch in (-80..=80).step_by(13) {
+                let direction = look_direction(yaw as f32, pitch as f32);
+                let path = voxel_path((0.5, 64.5, 0.5), direction, 24);
+
+                let mut seen = path.clone();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(
+                    seen.len(),
+                    path.len(),
+                    "yaw {yaw} pitch {pitch} revisited a block"
+                );
+                assert_contiguous(&path);
+            }
+        }
+    }
+
+    #[test]
+    fn the_walk_sees_everything_a_dense_sample_sees() {
+        for yaw in (0..360).step_by(11) {
+            for pitch in (-75..=75).step_by(15) {
+                let direction = look_direction(yaw as f32, pitch as f32);
+                let eye = (0.5, 64.5, 0.5);
+                let path = voxel_path(eye, direction, 12);
+
+                let mut sampled: Vec<(i32, i32, i32)> = Vec::new();
+                let mut t = 0.0f64;
+                while t <= 12.0 {
+                    let block = (
+                        (eye.0 + direction.0 * t).floor() as i32,
+                        (eye.1 + direction.1 * t).floor() as i32,
+                        (eye.2 + direction.2 * t).floor() as i32,
+                    );
+                    if sampled.last() != Some(&block) {
+                        sampled.push(block);
+                    }
+                    t += 0.0005;
+                }
+
+                let mut cursor = 0usize;
+                for block in &sampled {
+                    let found = path[cursor..].iter().position(|p| p == block);
+                    match found {
+                        Some(offset) => cursor += offset + 1,
+                        None => {
+                            assert!(
+                                !path.contains(block),
+                                "yaw {yaw} pitch {pitch}: {block:?} is in the \
+                                 walk but out of order"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_zero_direction_ray_yields_only_its_own_block() {
+        let path = voxel_path((3.5, 64.5, -7.5), (0.0, 0.0, 0.0), 6);
+        assert_eq!(path, vec![(3, 64, -8)]);
+    }
+
+    #[test]
+    fn a_zero_budget_walks_nothing() {
+        assert!(voxel_path((0.5, 64.5, 0.5), (0.0, -1.0, 0.0), 0).is_empty());
+    }
+
+    #[test]
+    fn an_axis_with_no_component_never_moves() {
+        let path = voxel_path((0.5, 64.5, 0.5), look_direction(0.0, 0.0), 8);
+        for block in &path {
+            assert_eq!((block.0, block.1), (0, 64), "{block:?} drifted");
+        }
+        assert_eq!(path.len(), 8);
+    }
+}
+
+#[cfg(test)]
+mod ray_budget_tests {
+    use std::sync::Arc;
+
+    use coral_world::blocks::Block;
+    use coral_world::generator::VoidWorldGenerator;
+    use coral_world::world::World;
+
+    use super::{RAY_MAX_BLOCKS, raytrace_for_fluid};
+    use coral_types::ids::blocks::{STONE, WATER as WATER_SOURCE};
+
+    fn void_world() -> Arc<World> {
+        Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
+    }
+
+    #[tokio::test]
+    async fn a_source_at_the_last_block_of_the_budget_is_found() {
+        let world = void_world();
+        world.set(0, 59, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
+        assert_eq!(hit, Some((0, 59, 0)));
+    }
+
+    #[tokio::test]
+    async fn a_source_past_the_budget_is_not_found() {
+        let world = void_world();
+        world.set(0, 58, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
+        assert_eq!(hit, None, "the seventh block is out of reach");
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_six_blocks_on_a_diagonal_as_well() {
+        let world = void_world();
+        world.set(0, 64, 5, Block::new(WATER_SOURCE, 0)).await;
+        assert_eq!(
+            raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 0.0, RAY_MAX_BLOCKS, &world).await,
+            Some((0, 64, 5))
+        );
+
+        let further = void_world();
+        further.set(0, 64, 6, Block::new(WATER_SOURCE, 0)).await;
+        assert_eq!(
+            raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 0.0, RAY_MAX_BLOCKS, &further).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wall_hides_the_water_behind_it() {
+        let world = void_world();
+        world.set(0, 63, 0, Block::new(STONE, 0)).await;
+        world.set(0, 62, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
+        assert_eq!(hit, None, "a bucket cannot reach through stone");
+    }
+
+    #[tokio::test]
+    async fn the_block_holding_the_eye_counts() {
+        let world = void_world();
+        world.set(0, 64, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 0.0, RAY_MAX_BLOCKS, &world).await;
+        assert_eq!(hit, Some((0, 64, 0)));
     }
 }

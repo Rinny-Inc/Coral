@@ -1,11 +1,14 @@
-use coral_types::{ToolKind, ToolMaterial};
+use coral_types::{
+    ToolKind, ToolMaterial,
+    ids::blocks::{self},
+};
 
 use crate::blocks::BlockBehavior;
 
 pub struct Air;
 impl BlockBehavior for Air {
     fn id(&self) -> u8 {
-        0
+        blocks::AIR
     }
     fn hardness(&self) -> f32 {
         0.0
@@ -24,7 +27,7 @@ impl BlockBehavior for Air {
 pub struct Stone;
 impl BlockBehavior for Stone {
     fn id(&self) -> u8 {
-        1
+        blocks::STONE
     }
     fn hardness(&self) -> f32 {
         1.5
@@ -40,7 +43,7 @@ impl BlockBehavior for Stone {
 pub struct Grass;
 impl BlockBehavior for Grass {
     fn id(&self) -> u8 {
-        2
+        blocks::GRASS
     }
     fn hardness(&self) -> f32 {
         0.55
@@ -53,7 +56,7 @@ impl BlockBehavior for Grass {
 pub struct Dirt;
 impl BlockBehavior for Dirt {
     fn id(&self) -> u8 {
-        3
+        blocks::DIRT
     }
     fn hardness(&self) -> f32 {
         0.45
@@ -66,7 +69,7 @@ impl BlockBehavior for Dirt {
 pub struct Cobblestone;
 impl BlockBehavior for Cobblestone {
     fn id(&self) -> u8 {
-        4
+        blocks::COBBLESTONE
     }
     fn hardness(&self) -> f32 {
         2.0
@@ -82,7 +85,7 @@ impl BlockBehavior for Cobblestone {
 pub struct Planks;
 impl BlockBehavior for Planks {
     fn id(&self) -> u8 {
-        5
+        blocks::PLANKS
     }
     fn hardness(&self) -> f32 {
         2.0
@@ -98,7 +101,7 @@ impl BlockBehavior for Planks {
 pub struct Bedrock;
 impl BlockBehavior for Bedrock {
     fn id(&self) -> u8 {
-        7
+        blocks::BEDROCK
     }
     fn hardness(&self) -> f32 {
         f32::INFINITY
@@ -111,7 +114,7 @@ impl BlockBehavior for Bedrock {
 pub struct Sand;
 impl BlockBehavior for Sand {
     fn id(&self) -> u8 {
-        12
+        blocks::SAND
     }
     fn hardness(&self) -> f32 {
         0.5
@@ -124,7 +127,7 @@ impl BlockBehavior for Sand {
 pub struct Gravel;
 impl BlockBehavior for Gravel {
     fn id(&self) -> u8 {
-        13
+        blocks::GRAVEL
     }
     fn hardness(&self) -> f32 {
         0.6
@@ -137,7 +140,7 @@ impl BlockBehavior for Gravel {
 pub struct GoldOre;
 impl BlockBehavior for GoldOre {
     fn id(&self) -> u8 {
-        14
+        blocks::GOLD_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -153,7 +156,7 @@ impl BlockBehavior for GoldOre {
 pub struct IronOre;
 impl BlockBehavior for IronOre {
     fn id(&self) -> u8 {
-        15
+        blocks::IRON_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -169,7 +172,7 @@ impl BlockBehavior for IronOre {
 pub struct CoalOre;
 impl BlockBehavior for CoalOre {
     fn id(&self) -> u8 {
-        16
+        blocks::COAL_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -185,7 +188,7 @@ impl BlockBehavior for CoalOre {
 pub struct Log;
 impl BlockBehavior for Log {
     fn id(&self) -> u8 {
-        17
+        blocks::LOG
     }
     fn hardness(&self) -> f32 {
         2.0
@@ -201,7 +204,7 @@ impl BlockBehavior for Log {
 pub struct Leaves;
 impl BlockBehavior for Leaves {
     fn id(&self) -> u8 {
-        18
+        blocks::LEAVES
     }
     fn hardness(&self) -> f32 {
         0.2
@@ -220,7 +223,7 @@ impl BlockBehavior for Leaves {
 pub struct Glass;
 impl BlockBehavior for Glass {
     fn id(&self) -> u8 {
-        20
+        blocks::GLASS
     }
     fn hardness(&self) -> f32 {
         0.3
@@ -236,7 +239,7 @@ impl BlockBehavior for Glass {
 pub struct LapisOre;
 impl BlockBehavior for LapisOre {
     fn id(&self) -> u8 {
-        21
+        blocks::LAPIS_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -255,7 +258,7 @@ impl BlockBehavior for LapisOre {
 pub struct Sandstone;
 impl BlockBehavior for Sandstone {
     fn id(&self) -> u8 {
-        24
+        blocks::SANDSTONE
     }
     fn hardness(&self) -> f32 {
         0.8
@@ -271,7 +274,7 @@ impl BlockBehavior for Sandstone {
 pub struct Wool;
 impl BlockBehavior for Wool {
     fn id(&self) -> u8 {
-        35
+        blocks::WOOL
     }
     fn hardness(&self) -> f32 {
         0.8
@@ -284,7 +287,7 @@ impl BlockBehavior for Wool {
 pub struct GoldBlock;
 impl BlockBehavior for GoldBlock {
     fn id(&self) -> u8 {
-        41
+        blocks::GOLD_BLOCK
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -300,7 +303,7 @@ impl BlockBehavior for GoldBlock {
 pub struct IronBlock;
 impl BlockBehavior for IronBlock {
     fn id(&self) -> u8 {
-        42
+        blocks::IRON_BLOCK
     }
     fn hardness(&self) -> f32 {
         5.0
@@ -316,7 +319,7 @@ impl BlockBehavior for IronBlock {
 pub struct Bricks;
 impl BlockBehavior for Bricks {
     fn id(&self) -> u8 {
-        45
+        blocks::BRICK_BLOCK
     }
     fn hardness(&self) -> f32 {
         2.0
@@ -332,7 +335,7 @@ impl BlockBehavior for Bricks {
 pub struct DiamondOre;
 impl BlockBehavior for DiamondOre {
     fn id(&self) -> u8 {
-        56
+        blocks::DIAMOND_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -351,7 +354,7 @@ impl BlockBehavior for DiamondOre {
 pub struct DiamondBlock;
 impl BlockBehavior for DiamondBlock {
     fn id(&self) -> u8 {
-        57
+        blocks::DIAMOND_BLOCK
     }
     fn hardness(&self) -> f32 {
         5.0
@@ -367,7 +370,7 @@ impl BlockBehavior for DiamondBlock {
 pub struct CraftingTable;
 impl BlockBehavior for CraftingTable {
     fn id(&self) -> u8 {
-        58
+        blocks::CRAFTING_TABLE
     }
     fn hardness(&self) -> f32 {
         2.5
@@ -383,7 +386,7 @@ impl BlockBehavior for CraftingTable {
 pub struct Farmland;
 impl BlockBehavior for Farmland {
     fn id(&self) -> u8 {
-        60
+        blocks::FARMLAND
     }
     fn hardness(&self) -> f32 {
         0.6
@@ -399,7 +402,7 @@ impl BlockBehavior for Farmland {
 pub struct Furnace;
 impl BlockBehavior for Furnace {
     fn id(&self) -> u8 {
-        61
+        blocks::FURNACE
     }
     fn hardness(&self) -> f32 {
         3.5
@@ -415,7 +418,7 @@ impl BlockBehavior for Furnace {
 pub struct Obsidian;
 impl BlockBehavior for Obsidian {
     fn id(&self) -> u8 {
-        49
+        blocks::OBSIDIAN
     }
     fn hardness(&self) -> f32 {
         50.0
@@ -434,7 +437,7 @@ impl BlockBehavior for Obsidian {
 pub struct Chest;
 impl BlockBehavior for Chest {
     fn id(&self) -> u8 {
-        54
+        blocks::CHEST
     }
     fn hardness(&self) -> f32 {
         2.5
@@ -450,7 +453,7 @@ impl BlockBehavior for Chest {
 pub struct RedstoneOre;
 impl BlockBehavior for RedstoneOre {
     fn id(&self) -> u8 {
-        73
+        blocks::REDSTONE_ORE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -469,7 +472,7 @@ impl BlockBehavior for RedstoneOre {
 pub struct Ice;
 impl BlockBehavior for Ice {
     fn id(&self) -> u8 {
-        79
+        blocks::ICE
     }
     fn hardness(&self) -> f32 {
         0.5
@@ -488,7 +491,7 @@ impl BlockBehavior for Ice {
 pub struct SnowBlock;
 impl BlockBehavior for SnowBlock {
     fn id(&self) -> u8 {
-        80
+        blocks::SNOW
     }
     fn hardness(&self) -> f32 {
         0.2
@@ -507,7 +510,7 @@ impl BlockBehavior for SnowBlock {
 pub struct Cactus;
 impl BlockBehavior for Cactus {
     fn id(&self) -> u8 {
-        81
+        blocks::CACTUS
     }
     fn hardness(&self) -> f32 {
         0.4
@@ -520,7 +523,7 @@ impl BlockBehavior for Cactus {
 pub struct ClayBlock;
 impl BlockBehavior for ClayBlock {
     fn id(&self) -> u8 {
-        82
+        blocks::CLAY
     }
     fn hardness(&self) -> f32 {
         0.6
@@ -536,7 +539,7 @@ impl BlockBehavior for ClayBlock {
 pub struct SugarCane;
 impl BlockBehavior for SugarCane {
     fn id(&self) -> u8 {
-        83
+        blocks::REEDS
     }
     fn hardness(&self) -> f32 {
         0.0
@@ -549,7 +552,7 @@ impl BlockBehavior for SugarCane {
 pub struct Netherrack;
 impl BlockBehavior for Netherrack {
     fn id(&self) -> u8 {
-        87
+        blocks::NETHERRACK
     }
     fn hardness(&self) -> f32 {
         0.4
@@ -565,7 +568,7 @@ impl BlockBehavior for Netherrack {
 pub struct SoulSand;
 impl BlockBehavior for SoulSand {
     fn id(&self) -> u8 {
-        88
+        blocks::SOUL_SAND
     }
     fn hardness(&self) -> f32 {
         0.5
@@ -578,7 +581,7 @@ impl BlockBehavior for SoulSand {
 pub struct Glowstone;
 impl BlockBehavior for Glowstone {
     fn id(&self) -> u8 {
-        89
+        blocks::GLOWSTONE
     }
     fn hardness(&self) -> f32 {
         0.3
@@ -597,7 +600,7 @@ impl BlockBehavior for Glowstone {
 pub struct StoneBrick;
 impl BlockBehavior for StoneBrick {
     fn id(&self) -> u8 {
-        98
+        blocks::STONEBRICK
     }
     fn hardness(&self) -> f32 {
         1.5
@@ -613,7 +616,7 @@ impl BlockBehavior for StoneBrick {
 pub struct MelonBlock;
 impl BlockBehavior for MelonBlock {
     fn id(&self) -> u8 {
-        103
+        blocks::MELON_BLOCK
     }
     fn hardness(&self) -> f32 {
         1.0
@@ -626,7 +629,7 @@ impl BlockBehavior for MelonBlock {
 pub struct Mycelium;
 impl BlockBehavior for Mycelium {
     fn id(&self) -> u8 {
-        110
+        blocks::MYCELIUM
     }
     fn hardness(&self) -> f32 {
         0.6
@@ -642,7 +645,7 @@ impl BlockBehavior for Mycelium {
 pub struct NetherBrick;
 impl BlockBehavior for NetherBrick {
     fn id(&self) -> u8 {
-        112
+        blocks::NETHER_BRICK
     }
     fn hardness(&self) -> f32 {
         2.0
@@ -658,7 +661,7 @@ impl BlockBehavior for NetherBrick {
 pub struct EndStone;
 impl BlockBehavior for EndStone {
     fn id(&self) -> u8 {
-        121
+        blocks::END_STONE
     }
     fn hardness(&self) -> f32 {
         3.0
@@ -674,7 +677,7 @@ impl BlockBehavior for EndStone {
 pub struct CoalBlock;
 impl BlockBehavior for CoalBlock {
     fn id(&self) -> u8 {
-        173
+        blocks::COAL_BLOCK
     }
     fn hardness(&self) -> f32 {
         5.0
@@ -693,7 +696,7 @@ impl BlockBehavior for CoalBlock {
 pub struct HardenedClay;
 impl BlockBehavior for HardenedClay {
     fn id(&self) -> u8 {
-        172
+        blocks::HARDENED_CLAY
     }
     fn hardness(&self) -> f32 {
         1.25

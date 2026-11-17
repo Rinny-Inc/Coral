@@ -374,7 +374,9 @@ mod from_map_tests {
 
     fn states(data: &[u8], section: usize) -> Vec<u16> {
         data[section * 8192..(section + 1) * 8192]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect()
     }
@@ -470,8 +472,7 @@ mod spawn_platform_tests {
 
     use super::ChunkData;
     use crate::{generator::VoidWorldGenerator, world::World};
-
-    const STONE: u8 = 1;
+    use coral_types::ids::blocks::STONE;
 
     fn void_at_spawn(x: i32, y: f64, z: i32) -> Arc<World> {
         Arc::new(World::new(Arc::new(

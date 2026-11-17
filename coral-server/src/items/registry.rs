@@ -1,4 +1,5 @@
-use crate::items::{EmptyHand, UnknownItem, armor::ArmorSlot, ids::EMPTY_HAND};
+use crate::items::{EmptyHand, UnknownItem, armor::ArmorSlot};
+use coral_types::ids::EMPTY_SLOT;
 
 use super::{Item, UseAction};
 use std::{collections::HashMap, sync::Arc};
@@ -11,7 +12,7 @@ impl ItemRegistry {
     pub fn new() -> Self {
         let mut items: HashMap<i16, Arc<dyn Item>> = HashMap::new(); // TODO: size it once all items are done
 
-        items.insert(EMPTY_HAND, Arc::new(EmptyHand));
+        items.insert(EMPTY_SLOT, Arc::new(EmptyHand));
         for s in super::swords::all() {
             items.insert(s.id(), Arc::new(s));
         }
@@ -70,7 +71,7 @@ impl ItemRegistry {
 #[cfg(test)]
 mod resolve_tests {
     use super::*;
-    use crate::items::ids::{ARROW, BOW, FISHING_ROD, SPLASH_POTION};
+    use coral_types::ids::items::{ARROW, BOW, FISHING_ROD, POTION as SPLASH_POTION};
 
     #[test]
     fn an_unregistered_item_keeps_its_own_id() {
@@ -107,8 +108,8 @@ mod resolve_tests {
     #[test]
     fn an_empty_hand_is_still_an_empty_hand() {
         let registry = ItemRegistry::new();
-        let hand = registry.resolve(EMPTY_HAND);
-        assert_eq!(hand.id(), EMPTY_HAND);
+        let hand = registry.resolve(EMPTY_SLOT);
+        assert_eq!(hand.id(), EMPTY_SLOT);
         assert_eq!(hand.max_stack_size(), 1);
     }
 
@@ -126,6 +127,6 @@ mod resolve_tests {
     fn only_minus_one_is_the_empty_hand() {
         let registry = ItemRegistry::new();
         assert_eq!(registry.resolve(-2).id(), -2);
-        assert_eq!(registry.resolve(EMPTY_HAND).id(), EMPTY_HAND);
+        assert_eq!(registry.resolve(EMPTY_SLOT).id(), EMPTY_SLOT);
     }
 }

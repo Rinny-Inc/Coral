@@ -233,7 +233,7 @@ impl Inventory {
         }
     }
 
-    fn internal_to_packet(index: usize) -> i16 {
+    pub fn internal_to_packet(index: usize) -> i16 {
         match index {
             0..=8 => (index + 36) as i16, // hotbar: internal 0-8 -> packet 36-44
             9..=35 => index as i16,       // inventory: internal 9-35 -> packet 9-35
@@ -527,8 +527,8 @@ mod add_item_tests {
     #[test]
     fn a_full_inventory_reports_the_whole_stack_as_leftover() {
         let mut inv = Inventory::new();
-        for i in 0..36 {
-            inv.slots[i] = Some(stack(2, 64));
+        for slot in inv.slots.iter_mut().take(36) {
+            *slot = Some(stack(2, 64));
         }
         let out = inv.add_item(1, 5, 0);
         assert_eq!(out.leftover, 5);
@@ -538,8 +538,8 @@ mod add_item_tests {
     #[test]
     fn a_partly_full_inventory_takes_what_fits() {
         let mut inv = Inventory::new();
-        for i in 0..36 {
-            inv.slots[i] = Some(stack(1, 64));
+        for slot in inv.slots.iter_mut().take(36) {
+            *slot = Some(stack(1, 64));
         }
         inv.slots[35] = Some(stack(1, 60));
 

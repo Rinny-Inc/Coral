@@ -1,6 +1,7 @@
 use coral_types::{ToolKind, ToolMaterial};
 
 use super::Item;
+use coral_types::ids::items;
 
 pub struct Tool {
     pub id: i16,
@@ -54,109 +55,106 @@ pub fn all() -> Vec<Tool> {
     use coral_types::{ToolKind::*, ToolMaterial::*};
 
     vec![
-        // pickaxes
         Tool {
-            id: 270,
+            id: items::WOODEN_PICKAXE,
             kind: Pickaxe,
             material: Wood,
             damage: 2.0,
             durability: 59,
         },
         Tool {
-            id: 274,
+            id: items::STONE_PICKAXE,
             kind: Pickaxe,
             material: Stone,
             damage: 3.0,
             durability: 131,
         },
         Tool {
-            id: 257,
+            id: items::IRON_PICKAXE,
             kind: Pickaxe,
             material: Iron,
             damage: 4.0,
             durability: 250,
         },
         Tool {
-            id: 285,
+            id: items::GOLDEN_PICKAXE,
             kind: Pickaxe,
             material: Gold,
             damage: 2.0,
             durability: 32,
         },
         Tool {
-            id: 278,
+            id: items::DIAMOND_PICKAXE,
             kind: Pickaxe,
             material: Diamond,
             damage: 5.0,
             durability: 1561,
         },
-        // axes
         Tool {
-            id: 271,
+            id: items::WOODEN_AXE,
             kind: Axe,
             material: Wood,
             damage: 3.0,
             durability: 59,
         },
         Tool {
-            id: 275,
+            id: items::STONE_AXE,
             kind: Axe,
             material: Stone,
             damage: 4.0,
             durability: 131,
         },
         Tool {
-            id: 258,
+            id: items::IRON_AXE,
             kind: Axe,
             material: Iron,
             damage: 5.0,
             durability: 250,
         },
         Tool {
-            id: 286,
+            id: items::GOLDEN_AXE,
             kind: Axe,
             material: Gold,
             damage: 3.0,
             durability: 32,
         },
         Tool {
-            id: 279,
+            id: items::DIAMOND_AXE,
             kind: Axe,
             material: Diamond,
             damage: 6.0,
             durability: 1561,
         },
-        // shovels
         Tool {
-            id: 269,
+            id: items::WOODEN_SHOVEL,
             kind: Shovel,
             material: Wood,
             damage: 1.0,
             durability: 59,
         },
         Tool {
-            id: 273,
+            id: items::STONE_SHOVEL,
             kind: Shovel,
             material: Stone,
             damage: 2.0,
             durability: 131,
         },
         Tool {
-            id: 256,
+            id: items::IRON_SHOVEL,
             kind: Shovel,
             material: Iron,
             damage: 3.0,
             durability: 250,
         },
         Tool {
-            id: 284,
+            id: items::GOLDEN_SHOVEL,
             kind: Shovel,
             material: Gold,
             damage: 1.0,
             durability: 32,
         },
         Tool {
-            id: 277,
+            id: items::DIAMOND_SHOVEL,
             kind: Shovel,
             material: Diamond,
             damage: 4.0,

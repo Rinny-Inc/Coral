@@ -8,23 +8,27 @@ use coral_server::{
     bounding_box::EntityBounds,
     entity_tracker::TrackedEntity,
     experience::{self, XpOrb},
-    items::{drop_physics::break_drop_velocity, drops::block_drop, ids::EMPTY_HAND},
+    items::{drop_physics::break_drop_velocity, drops::block_drop},
     mining::{break_time_ticks, can_harvest},
     player::registry::next_entity_id,
     projectile::{Projectile, ProjectileKind},
     reach,
 };
 use coral_types::GameMode;
+use coral_types::ids::{EMPTY_SLOT, items};
 use coral_world::blocks::{Block, placement_metadata};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
-use crate::codec::{
-    Codec, PlayerState, send_packet,
-    state::play::{
-        PlayCtx, block_break_sound, drop_item_in_world, handlers::Flow, interact,
-        refuse_out_of_reach,
+use crate::{
+    codec::{
+        Codec, PlayerState, send_packet,
+        state::play::{
+            PlayCtx, block_break_sound, drop_item_in_world, handlers::Flow, interact,
+            refuse_out_of_reach,
+        },
     },
+    fluid_sim::queue_fluid_update,
 };
 
 async fn out_of_reach(
@@ -77,6 +81,7 @@ async fn start_dig(dig: &PlayerDig, state: &mut PlayerState, ctx: &PlayCtx<'_>) 
 
     if state.gamemode == GameMode::Creative {
         ctx.world.set(dig.x, dig.y, dig.z, Block::air()).await;
+        queue_fluid_update(dig.x, dig.y as i32, dig.z, ctx.fluid_queue).await;
         ctx.channels
             .block_tx
             .send((dig.x, dig.y as i32, dig.z, 0, 0))
@@ -160,6 +165,7 @@ async fn finish_dig(
             return Flow::Continue;
         }
         ctx.world.set(bx, by as u8, bz, Block::air()).await;
+        queue_fluid_update(bx, by, bz, ctx.fluid_queue).await;
         ctx.channels.block_tx.send((bx, by, bz, 0, 0)).ok();
         ctx.channels
             .break_tx
@@ -361,8 +367,7 @@ async fn shoot_or_finish_eating(
     ctx: &PlayCtx<'_>,
 ) -> Flow {
     if let Some(charge_start) = state.bow_charging.take()
-        && state.held_item.id() == coral_server::items::ids::BOW
-    // TODO: In the future identify magic numbers!
+        && state.held_item.id() == items::BOW
     {
         let charge_secs = charge_start.elapsed().as_secs_f32().min(1.0);
 
@@ -418,7 +423,7 @@ async fn shoot_or_finish_eating(
         }
         return Flow::Continue;
     }
-    if state.held_item.id() == coral_server::items::ids::SPLASH_POTION {
+    if state.held_item.id() == items::POTION {
         let meta = state.inventory.slots[state.held_slot as usize]
             .as_ref()
             .map(|s| s.metadata)
@@ -518,9 +523,10 @@ pub(in crate::codec::state::play) async fn player_block_placement(
         ctx.tile_entities,
         ctx.fluid_queue,
         ctx.channels,
+        ctx.recipes,
     )
     .await
-        || place.held_item_id == EMPTY_HAND
+        || place.held_item_id == EMPTY_SLOT
         || state.gamemode >= GameMode::Adventure
     {
         return Flow::Continue;
@@ -564,6 +570,7 @@ pub(in crate::codec::state::play) async fn player_block_placement(
         .blocks
         .set(tx, ty as u8, tz, Block::new(block_id as u8, block_meta))
         .await;
+    queue_fluid_update(tx, ty, tz, ctx.fluid_queue).await;
     ctx.channels
         .block_tx
         .send((tx, ty, tz, block_id, block_meta))

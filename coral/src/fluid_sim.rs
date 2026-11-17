@@ -598,9 +598,7 @@ mod flow_scan_tests {
         DIRS, FlowScan, MAX_FLOW_DEPTH, is_blocked, optimal_flow_directions,
         optimal_flow_directions_in,
     };
-
-    const STONE: u8 = 1;
-    const WATER: u8 = 9;
+    use coral_types::ids::blocks::{STONE, WATER};
 
     async fn oracle_passable(x: i32, y: i32, z: i32, fluid: Fluid, world: &Arc<World>) -> bool {
         if is_blocked(x, y, z, world).await {
@@ -790,5 +788,176 @@ mod flow_scan_tests {
 
         let dirs = optimal_flow_directions(0, 0, 0, Fluid::STATIONARY_WATER, &world).await;
         assert_eq!(dirs, [true; 4]);
+    }
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use std::sync::Arc;
+
+    use coral_world::blocks::Block;
+    use coral_world::blocks::fluid::Fluid;
+    use coral_world::generator::VoidWorldGenerator;
+    use coral_world::world::World;
+    use tokio::sync::RwLock;
+
+    use super::super::Channels;
+    use super::{FluidQueue, queue_fluid_update, update_tick};
+    use coral_types::ids::blocks::{STONE, WATER as WATER_SOURCE};
+
+    fn void_world() -> Arc<World> {
+        Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))
+    }
+
+    async fn floored_world(y: i32, reach: i32) -> Arc<World> {
+        let world = void_world();
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                world.set(x, (y - 1) as u8, z, Block::new(STONE, 0)).await;
+            }
+        }
+        world
+    }
+
+    async fn settle(
+        world: &Arc<World>,
+        queue: &Arc<RwLock<FluidQueue>>,
+        channels: &Channels,
+    ) -> usize {
+        for pass in 0..4000 {
+            let batch = queue.write().await.drain_batch(200);
+            if batch.is_empty() {
+                return pass;
+            }
+            for (x, y, z) in batch {
+                if !(0..=255).contains(&y) {
+                    continue;
+                }
+                let block = world.get(x, y as u8, z).await;
+                let Some(fluid) = Fluid::from_block_id(block.id) else {
+                    continue;
+                };
+                update_tick(x, y, z, fluid, block.metadata, world, channels, queue).await;
+            }
+        }
+        panic!("the simulation never settled");
+    }
+
+    async fn fluid_count(world: &Arc<World>, y: i32, reach: i32) -> usize {
+        let mut found = 0;
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                let b = world.get(x, y as u8, z).await;
+                if Fluid::is_fluid(b.id) {
+                    found += 1;
+                }
+            }
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn water_drains_once_its_source_is_replaced_by_a_block() {
+        let (y, reach) = (64, 8);
+        let world = floored_world(y, reach).await;
+        let queue = Arc::new(RwLock::new(FluidQueue::new()));
+        let channels = Channels::new();
+
+        world.set(0, y as u8, 0, Block::new(WATER_SOURCE, 0)).await;
+        queue_fluid_update(0, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+
+        let spread = fluid_count(&world, y, reach).await;
+        assert!(spread > 1, "the source should have spread, got {spread}");
+
+        world.set(0, y as u8, 0, Block::new(STONE, 0)).await;
+        queue_fluid_update(0, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+
+        assert_eq!(
+            fluid_count(&world, y, reach).await,
+            0,
+            "every stream the source fed must be gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_the_source_without_queueing_leaves_the_water_behind() {
+        let (y, reach) = (64, 8);
+        let world = floored_world(y, reach).await;
+        let queue = Arc::new(RwLock::new(FluidQueue::new()));
+        let channels = Channels::new();
+
+        world.set(0, y as u8, 0, Block::new(WATER_SOURCE, 0)).await;
+        queue_fluid_update(0, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+        let spread = fluid_count(&world, y, reach).await;
+
+        world.set(0, y as u8, 0, Block::new(STONE, 0)).await;
+        settle(&world, &queue, &channels).await;
+
+        assert_eq!(
+            fluid_count(&world, y, reach).await,
+            spread - 1,
+            "nothing drains when the simulation is never told; only the \
+             source itself is gone, because we overwrote it by hand"
+        );
+    }
+
+    #[tokio::test]
+    async fn water_flows_in_once_a_dam_is_broken() {
+        let (y, reach) = (64, 8);
+        let world = floored_world(y, reach).await;
+        let queue = Arc::new(RwLock::new(FluidQueue::new()));
+        let channels = Channels::new();
+
+        world.set(0, y as u8, 0, Block::new(WATER_SOURCE, 0)).await;
+        for (dx, dz) in super::DIRS {
+            world.set(dx, y as u8, dz, Block::new(STONE, 0)).await;
+        }
+        queue_fluid_update(0, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+
+        assert_eq!(
+            fluid_count(&world, y, reach).await,
+            1,
+            "walled in, it stays put"
+        );
+
+        world.set(1, y as u8, 0, Block::air()).await;
+        queue_fluid_update(1, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+
+        assert!(
+            fluid_count(&world, y, reach).await > 1,
+            "water should escape through the gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn blocking_mid_stream_drains_only_what_was_beyond_it() {
+        let (y, reach) = (64, 8);
+        let world = floored_world(y, reach).await;
+        let queue = Arc::new(RwLock::new(FluidQueue::new()));
+        let channels = Channels::new();
+
+        world.set(0, y as u8, 0, Block::new(WATER_SOURCE, 0)).await;
+        queue_fluid_update(0, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+        let spread = fluid_count(&world, y, reach).await;
+
+        world.set(2, y as u8, 0, Block::new(STONE, 0)).await;
+        queue_fluid_update(2, y, 0, &queue).await;
+        settle(&world, &queue, &channels).await;
+
+        let after = fluid_count(&world, y, reach).await;
+        assert!(
+            after < spread,
+            "something beyond the block should have gone"
+        );
+        assert!(
+            world.get(0, y as u8, 0).await.id == WATER_SOURCE,
+            "but the source itself is untouched"
+        );
     }
 }

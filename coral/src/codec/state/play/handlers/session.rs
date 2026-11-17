@@ -6,13 +6,14 @@ use coral_protocol::packets::play::{
     inventory::Inventory,
     keepalive::KeepAlive,
 };
-use coral_server::items::ids::EMPTY_HAND;
+use coral_types::ids::EMPTY_SLOT;
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use crate::codec::{
     Codec, PlayerState, kick, send_packet,
     state::play::{
+        crafting_window::reclaim_grid,
         drop_item_in_world,
         handlers::{Flow, PlayCtx},
         window_ops::close_tile_entity_window,
@@ -76,7 +77,7 @@ pub(in crate::codec::state::play) async fn held_item_change(
         state.inventory.slots[internal_idx]
             .as_ref()
             .map(|s| s.item_id)
-            .unwrap_or(EMPTY_HAND),
+            .unwrap_or(EMPTY_SLOT),
     );
 
     ctx.player_registry
@@ -105,6 +106,19 @@ pub(in crate::codec::state::play) async fn close_window(
     {
         drop_item_in_world(
             dropped,
+            state.entity_id,
+            ctx.player_registry,
+            ctx.channels,
+            ctx.item_spawn_times,
+            ctx.entity_tracker,
+            ctx.item_positions,
+            ctx.config.tracking.item,
+        )
+        .await;
+    }
+    for stack in reclaim_grid(state) {
+        drop_item_in_world(
+            stack,
             state.entity_id,
             ctx.player_registry,
             ctx.channels,

@@ -1,4 +1,5 @@
 use super::Item;
+use coral_types::ids::items;
 
 pub struct FoodItem {
     pub id: i16,
@@ -21,97 +22,97 @@ impl Item for FoodItem {
 pub fn all() -> Vec<FoodItem> {
     vec![
         FoodItem {
-            id: 297,
+            id: items::BREAD,
             hunger: 5,
             saturation: 6.0,
         },
         FoodItem {
-            id: 260,
+            id: items::APPLE,
             hunger: 4,
             saturation: 2.4,
         },
         FoodItem {
-            id: 322,
+            id: items::GOLDEN_APPLE,
             hunger: 10,
             saturation: 12.0,
         },
         FoodItem {
-            id: 319,
+            id: items::PORKCHOP,
             hunger: 3,
             saturation: 1.8,
         },
         FoodItem {
-            id: 320,
+            id: items::COOKED_PORKCHOP,
             hunger: 8,
             saturation: 12.8,
         },
         FoodItem {
-            id: 363,
+            id: items::BEEF,
             hunger: 3,
             saturation: 1.8,
         },
         FoodItem {
-            id: 364,
+            id: items::COOKED_BEEF,
             hunger: 8,
             saturation: 12.8,
         },
         FoodItem {
-            id: 365,
+            id: items::CHICKEN,
             hunger: 2,
             saturation: 1.2,
         },
         FoodItem {
-            id: 366,
+            id: items::COOKED_CHICKEN,
             hunger: 6,
             saturation: 7.2,
         },
         FoodItem {
-            id: 349,
+            id: items::FISH,
             hunger: 2,
             saturation: 0.2,
         },
         FoodItem {
-            id: 350,
+            id: items::COOKED_FISH,
             hunger: 5,
             saturation: 6.0,
         },
         FoodItem {
-            id: 357,
+            id: items::COOKIE,
             hunger: 6,
             saturation: 7.2,
         },
         FoodItem {
-            id: 391,
+            id: items::CARROT,
             hunger: 1,
             saturation: 0.6,
         },
         FoodItem {
-            id: 392,
+            id: items::POTATO,
             hunger: 1,
             saturation: 0.6,
         },
         FoodItem {
-            id: 393,
+            id: items::BAKED_POTATO,
             hunger: 6,
             saturation: 7.2,
         },
         FoodItem {
-            id: 400,
+            id: items::PUMPKIN_PIE,
             hunger: 6,
             saturation: 7.2,
         },
         FoodItem {
-            id: 367,
+            id: items::ROTTEN_FLESH,
             hunger: 3,
             saturation: 1.8,
         },
         FoodItem {
-            id: 423,
+            id: items::MUTTON,
             hunger: 1,
             saturation: 0.6,
         },
         FoodItem {
-            id: 424,
+            id: items::COOKED_MUTTON,
             hunger: 5,
             saturation: 6.0,
         },

@@ -18,15 +18,16 @@ use coral_protocol::packets::play::scoreboard::{
 use coral_protocol::reader::ReadError;
 use coral_protocol::{CONTINUE_BIT, SEGMENT_BITS};
 use coral_server::bounding_box::EntityBounds;
+use coral_server::crafting::CraftingGrid;
 use coral_server::data_watcher::DataWatcher;
 use coral_server::effects::{ActiveEffect, EffectKind};
 use coral_server::experience::xp_to_level;
-use coral_server::items::ids::EMPTY_HAND;
 use coral_server::items::{Item, ItemRegistry};
 use coral_server::projectile::Projectile;
 use coral_server::scoreboard::ScoreboardManager;
 use coral_server::scoreboard::team::TeamManager;
 use coral_server::tile_entities::TileEntityStore;
+use coral_types::ids::EMPTY_SLOT;
 use coral_types::{GameMode, SoundEffect};
 use coral_world::blocks::fluid::Fluid;
 use coral_world::playerdata::{MAX_AIR_TICKS, load_player_data};
@@ -343,7 +344,8 @@ struct PlayerState {
     open_window: Option<WindowType>,
     window_id_counter: u8,
     cursor_item: Option<ItemStack>,
-    crafting_grid: Vec<Option<ItemStack>>,
+    crafting_grid: CraftingGrid,
+    drag: Option<crate::codec::state::play::drag::Drag>,
     editing_sign: Option<(i32, i32, i32)>,
     last_message_from: Option<String>,
     last_position: (f64, f64, f64),
@@ -369,7 +371,7 @@ impl PlayerState {
             uuid,
             entity_id: 0,
             gamemode: GameMode::Survival,
-            held_item: item_registry.resolve(EMPTY_HAND),
+            held_item: item_registry.resolve(EMPTY_SLOT),
             held_slot: 0,
             health: 20.0,
             food: 20,
@@ -414,7 +416,8 @@ impl PlayerState {
             open_window: None,
             window_id_counter: 1,
             cursor_item: None,
-            crafting_grid: vec![],
+            crafting_grid: CraftingGrid::player(),
+            drag: None,
             editing_sign: None,
             last_message_from: None,
             last_position: (0.0, 0.0, 0.0),
@@ -476,7 +479,7 @@ impl PlayerState {
         slot.metadata += cost;
         if slot.metadata >= max_dur {
             self.inventory.slots[slot_idx] = None;
-            self.held_item = item_registry.resolve(EMPTY_HAND);
+            self.held_item = item_registry.resolve(EMPTY_SLOT);
             return true;
         }
         false
@@ -667,7 +670,7 @@ impl PlayerState {
         let item_id = self.inventory.slots[self.held_slot as usize]
             .as_ref()
             .map(|s| s.item_id)
-            .unwrap_or(EMPTY_HAND);
+            .unwrap_or(EMPTY_SLOT);
         self.sync_held_item_registry(item_id, player_registry, item_registry, channels)
             .await;
     }
@@ -682,7 +685,7 @@ impl PlayerState {
     ) {
         self.send_hotbar_slot_packet(framed).await;
         if broke {
-            self.sync_held_item_registry(EMPTY_HAND, player_registry, item_registry, channels)
+            self.sync_held_item_registry(EMPTY_SLOT, player_registry, item_registry, channels)
                 .await;
         }
     }
@@ -1301,7 +1304,7 @@ async fn make_player_join(
         state.inventory.slots[state.held_slot as usize]
             .as_ref()
             .map(|s| s.item_id)
-            .unwrap_or(EMPTY_HAND),
+            .unwrap_or(EMPTY_SLOT),
     );
     state.health = phealth;
     state.food = pfood;

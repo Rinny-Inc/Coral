@@ -1,4 +1,5 @@
 use coral_types::ToolMaterial;
+use coral_types::ids::items;
 
 use crate::items::{Item, ItemRegistry};
 
@@ -52,146 +53,141 @@ pub fn all() -> Vec<Armor> {
     use ToolMaterial::*;
 
     vec![
-        // leather
         Armor {
-            id: 298,
+            id: items::LEATHER_HELMET,
             slot: Helmet,
             material: Wood,
             defense: 1,
             durability: 55,
         },
         Armor {
-            id: 299,
+            id: items::LEATHER_CHESTPLATE,
             slot: Chestplate,
             material: Wood,
             defense: 3,
             durability: 80,
         },
         Armor {
-            id: 300,
+            id: items::LEATHER_LEGGINGS,
             slot: Leggings,
             material: Wood,
             defense: 2,
             durability: 75,
         },
         Armor {
-            id: 301,
+            id: items::LEATHER_BOOTS,
             slot: Boots,
             material: Wood,
             defense: 1,
             durability: 65,
         },
-        // chainmail
         Armor {
-            id: 302,
+            id: items::CHAINMAIL_HELMET,
             slot: Helmet,
             material: Stone,
             defense: 2,
             durability: 165,
         },
         Armor {
-            id: 303,
+            id: items::CHAINMAIL_CHESTPLATE,
             slot: Chestplate,
             material: Stone,
             defense: 5,
             durability: 240,
         },
         Armor {
-            id: 304,
+            id: items::CHAINMAIL_LEGGINGS,
             slot: Leggings,
             material: Stone,
             defense: 4,
             durability: 225,
         },
         Armor {
-            id: 305,
+            id: items::CHAINMAIL_BOOTS,
             slot: Boots,
             material: Stone,
             defense: 1,
             durability: 195,
         },
-        // iron
         Armor {
-            id: 306,
+            id: items::IRON_HELMET,
             slot: Helmet,
             material: Iron,
             defense: 2,
             durability: 165,
         },
         Armor {
-            id: 307,
+            id: items::IRON_CHESTPLATE,
             slot: Chestplate,
             material: Iron,
             defense: 6,
             durability: 240,
         },
         Armor {
-            id: 308,
+            id: items::IRON_LEGGINGS,
             slot: Leggings,
             material: Iron,
             defense: 5,
             durability: 225,
         },
         Armor {
-            id: 309,
+            id: items::IRON_BOOTS,
             slot: Boots,
             material: Iron,
             defense: 2,
             durability: 195,
         },
-        // diamond
         Armor {
-            id: 310,
+            id: items::DIAMOND_HELMET,
             slot: Helmet,
             material: Diamond,
             defense: 3,
             durability: 363,
         },
         Armor {
-            id: 311,
+            id: items::DIAMOND_CHESTPLATE,
             slot: Chestplate,
             material: Diamond,
             defense: 8,
             durability: 528,
         },
         Armor {
-            id: 312,
+            id: items::DIAMOND_LEGGINGS,
             slot: Leggings,
             material: Diamond,
             defense: 6,
             durability: 495,
         },
         Armor {
-            id: 313,
+            id: items::DIAMOND_BOOTS,
             slot: Boots,
             material: Diamond,
             defense: 3,
             durability: 429,
         },
-        // gold
         Armor {
-            id: 314,
+            id: items::GOLDEN_HELMET,
             slot: Helmet,
             material: Gold,
             defense: 2,
             durability: 77,
         },
         Armor {
-            id: 315,
+            id: items::GOLDEN_CHESTPLATE,
             slot: Helmet,
             material: Gold,
             defense: 5,
             durability: 112,
         },
         Armor {
-            id: 316,
+            id: items::GOLDEN_LEGGINGS,
             slot: Helmet,
             material: Gold,
             defense: 3,
             durability: 105,
         },
         Armor {
-            id: 317,
+            id: items::GOLDEN_BOOTS,
             slot: Helmet,
             material: Gold,
             defense: 1,

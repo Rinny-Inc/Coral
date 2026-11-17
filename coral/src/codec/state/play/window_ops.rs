@@ -81,14 +81,14 @@ pub async fn open_tile_entity_window(
     .await;
 
     let mut slots = data.container_slots;
-    for internal in 9..36 {
-        match &state.inventory.slots[internal] {
+    for internal in state.inventory.slots.iter().take(36).skip(9) {
+        match internal {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }
     }
-    for internal in 0..9 {
-        match &state.inventory.slots[internal] {
+    for internal in state.inventory.slots.iter().take(9) {
+        match internal {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }
@@ -147,14 +147,14 @@ pub async fn handle_tile_entity_click(
 
     // resend the full window
     let mut slots = container_slots;
-    for internal in 9..36 {
-        match &state.inventory.slots[internal] {
+    for internal in state.inventory.slots.iter().take(36).skip(9) {
+        match internal {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }
     }
-    for internal in 0..9 {
-        match &state.inventory.slots[internal] {
+    for internal in state.inventory.slots.iter().take(9) {
+        match internal {
             Some(s) => slots.push((s.item_id, s.count, s.metadata)),
             None => slots.push((-1, 0, 0)),
         }

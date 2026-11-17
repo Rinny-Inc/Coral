@@ -19,7 +19,7 @@ use coral_server::{
     experience::XpOrb,
     items::drops::DroppedItems,
     player::registry::PlayerRegistry,
-    projectile::{Projectile, ProjectileKind},
+    projectile::{self, Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, smelt_result},
     tile_entities::TileEntityStore,
 };
@@ -495,7 +495,8 @@ pub fn spawn_projectile_task(
                         continue;
                     }
 
-                    moves.push((proj.entity_id, proj.x, proj.y, proj.z));
+                    let (yaw, pitch) = projectile::rotation(proj.vx, proj.vy, proj.vz);
+                    moves.push((proj.entity_id, proj.x, proj.y, proj.z, yaw, pitch));
                 }
 
                 list.retain(|p| !to_remove.contains(&p.entity_id));

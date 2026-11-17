@@ -266,8 +266,7 @@ mod movement_tests {
         mob::{Mob, MobRegistry, MobType},
         player::registry::PlayerRegistry,
     };
-
-    const STONE: u8 = 1;
+    use coral_types::ids::blocks::STONE;
 
     fn world() -> Arc<World> {
         Arc::new(World::new(Arc::new(VoidWorldGenerator::new())))

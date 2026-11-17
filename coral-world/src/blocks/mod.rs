@@ -5,6 +5,7 @@ use crate::{
     region::RegionFile,
 };
 use coral_protocol::packets::play::block::BlockFace;
+use coral_types::ids::blocks;
 use coral_types::{ToolKind, ToolMaterial};
 use std::{
     collections::{HashMap, HashSet},
@@ -639,8 +640,7 @@ pub fn placement_metadata(
     cursor_y: f32,
 ) -> u8 {
     match block_id {
-        // logs
-        17 => {
+        blocks::LOG => {
             let wood_type = item_meta & 0x3;
             let axis = match face {
                 BlockFace::Down | BlockFace::Up => 0x00,
@@ -649,8 +649,19 @@ pub fn placement_metadata(
             };
             wood_type | axis
         }
-        // stairs
-        53 | 67 | 108 | 109 | 114 | 128 | 134 | 135 | 136 | 156 | 163 | 164 | 180 => {
+        blocks::OAK_STAIRS
+        | blocks::STONE_STAIRS
+        | blocks::BRICK_STAIRS
+        | blocks::STONE_BRICK_STAIRS
+        | blocks::NETHER_BRICK_STAIRS
+        | blocks::SANDSTONE_STAIRS
+        | blocks::SPRUCE_STAIRS
+        | blocks::BIRCH_STAIRS
+        | blocks::JUNGLE_STAIRS
+        | blocks::QUARTZ_STAIRS
+        | blocks::ACACIA_STAIRS
+        | blocks::DARK_OAK_STAIRS
+        | blocks::RED_SANDSTONE_STAIRS => {
             let facing = match yaw_to_facing(yaw) {
                 BlockFace::North => 2,
                 BlockFace::East => 1,
@@ -666,8 +677,7 @@ pub fn placement_metadata(
             };
             facing | upside_down
         }
-        // torches
-        50 | 75 | 76 => match face {
+        blocks::TORCH | blocks::UNLIT_REDSTONE_TORCH | blocks::REDSTONE_TORCH => match face {
             BlockFace::Up => 5,
             BlockFace::North => 4,
             BlockFace::South => 3,
@@ -675,27 +685,27 @@ pub fn placement_metadata(
             BlockFace::East => 1,
             _ => 5,
         },
-        // ladders, wall signs
-        65 | 68 => match face {
+        blocks::LADDER | blocks::WALL_SIGN => match face {
             BlockFace::North => 2,
             BlockFace::South => 3,
             BlockFace::West => 4,
             BlockFace::East => 5,
             _ => 2,
         },
-        // furnaces, chests, pumpkins, dispenser, enderchest
-        54 | 61 | 62 | 130 | 146 => match yaw_to_facing(yaw) {
+        blocks::FURNACE
+        | blocks::LIT_FURNACE
+        | blocks::CHEST
+        | blocks::ENDER_CHEST
+        | blocks::TRAPPED_CHEST => match yaw_to_facing(yaw) {
             BlockFace::North => 2,
             BlockFace::East => 5,
             BlockFace::South => 3,
             _ => 4,
         },
 
-        // pumpkin & jack'o
-        86 | 91 => yaw_to_facing(yaw) as u8,
+        blocks::PUMPKIN | blocks::LIT_PUMPKIN => yaw_to_facing(yaw) as u8,
 
-        // slabs
-        44 | 126 => {
+        blocks::STONE_SLAB | blocks::WOODEN_SLAB => {
             let variant = item_meta & 0x7;
             let top = if face == BlockFace::Up
                 || (face as u8 >= BlockFace::North as u8 && cursor_y > 0.5)

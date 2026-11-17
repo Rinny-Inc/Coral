@@ -11,7 +11,7 @@ use coral_server::{
     items::{ItemRegistry, drops::DroppedItems},
     player::{Player, registry::PlayerRegistry},
 };
-use coral_types::{GameMode, ext::TicksExt};
+use coral_types::{GameMode, ext::TicksExt, ids::items};
 use coral_world::{playerdata::MAX_AIR_TICKS, world::World};
 use rand::RngExt;
 use tokio::{
@@ -253,7 +253,7 @@ async fn tick_eating(
     {
         state.eating = None;
 
-        if state.held_item.id() == coral_server::items::ids::SPLASH_POTION {
+        if state.held_item.id() == items::POTION {
             let meta = state.inventory.slots[state.held_slot as usize]
                 .as_ref()
                 .map(|s| s.metadata)

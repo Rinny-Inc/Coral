@@ -71,12 +71,11 @@ mod tests {
 
     use super::{break_time_ticks, can_harvest, material_meets};
     use crate::items::ItemRegistry;
-
-    const STONE: u8 = 1;
-    const DIRT: u8 = 3;
+    use coral_types::ids::blocks::DIRT;
+    use coral_types::ids::blocks::STONE;
+    use coral_types::ids::items::DIAMOND_PICKAXE;
+    use coral_types::ids::items::WOODEN_PICKAXE;
     const BARE_HAND: i16 = -1;
-    const WOODEN_PICKAXE: i16 = 270;
-    const DIAMOND_PICKAXE: i16 = 278;
 
     fn registries() -> (ItemRegistry, BlockRegistry) {
         (ItemRegistry::new(), BlockRegistry::new())

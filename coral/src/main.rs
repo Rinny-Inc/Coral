@@ -21,6 +21,7 @@ use coral_config::Config;
 use coral_protocol::encryption::generate_rsa_key;
 use coral_server::{
     banlist::BanList,
+    crafting::RecipeRegistry,
     entity_tracker::EntityTracker,
     experience::XpOrb,
     items::{ItemRegistry, drops::DroppedItems},
@@ -279,6 +280,7 @@ pub struct ServerContext {
     scoreboard: Arc<ScoreboardManager>,
     teams: Arc<TeamManager>,
     stats: Arc<StatTracker>,
+    recipes: Arc<RecipeRegistry>,
 }
 impl ServerContext {
     fn new(
@@ -318,6 +320,7 @@ impl ServerContext {
             scoreboard: Arc::new(ScoreboardManager::new()),
             teams: Arc::new(TeamManager::new()),
             stats: Arc::new(StatTracker::new()),
+            recipes: Arc::new(RecipeRegistry::vanilla()),
         }
     }
 }

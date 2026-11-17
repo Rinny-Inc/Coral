@@ -1,5 +1,7 @@
 use coral_protocol::packets::play::inventory::{ClickWindow, Inventory, ItemStack};
 
+use crate::codec::state::play::drag::{Drag, DragStep, classify, plan_drag};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClickOutcome {
     Applied,
@@ -27,7 +29,15 @@ pub fn apply_click(
     cursor: &mut Option<ItemStack>,
     click: &ClickWindow,
     dropped: &mut Vec<ItemStack>,
+    drag: &mut Option<Drag>,
 ) -> ClickOutcome {
+    if click.mode != 5 && drag.is_some() {
+        *drag = None;
+    }
+
+    if click.mode == 5 {
+        return apply_drag_step(slots, cursor, click, drag);
+    }
     if click.slot == OUTSIDE {
         return match (click.mode, cursor.take()) {
             (0, Some(mut held)) => {
@@ -122,6 +132,17 @@ pub fn apply_click(
             }
             outcome(armor)
         }
+        (2, button) => {
+            let hotbar = button as usize;
+            if hotbar >= 9 {
+                return ClickOutcome::Resync;
+            }
+            if hotbar == idx {
+                return ClickOutcome::Applied;
+            }
+            slots.swap(idx, hotbar);
+            outcome(armor || Inventory::ARMOR_SLOTS.contains(&hotbar))
+        }
         (4, button) => {
             let Some(mut in_slot) = slots[idx].take() else {
                 return ClickOutcome::Applied;
@@ -139,6 +160,83 @@ pub fn apply_click(
             outcome(armor)
         }
         _ => ClickOutcome::Resync,
+    }
+}
+
+fn apply_drag_step(
+    slots: &mut [Option<ItemStack>; 44],
+    cursor: &mut Option<ItemStack>,
+    click: &ClickWindow,
+    drag: &mut Option<Drag>,
+) -> ClickOutcome {
+    let Some(step) = classify(click.button) else {
+        *drag = None;
+        return ClickOutcome::Resync;
+    };
+
+    match step {
+        DragStep::Start(kind) => {
+            if cursor.is_none() {
+                *drag = None;
+                return ClickOutcome::Resync;
+            }
+            *drag = Some(Drag::new(kind));
+            ClickOutcome::Applied
+        }
+        DragStep::Add(kind) => {
+            let Some(active) = drag.as_mut() else {
+                return ClickOutcome::Resync;
+            };
+            if active.kind != kind {
+                *drag = None;
+                return ClickOutcome::Resync;
+            }
+            if Inventory::packet_to_internal(click.slot).is_some() {
+                active.paint(click.slot);
+            }
+            ClickOutcome::Applied
+        }
+        DragStep::End(kind) => {
+            let Some(active) = drag.take() else {
+                return ClickOutcome::Resync;
+            };
+            if active.kind != kind {
+                return ClickOutcome::Resync;
+            }
+            let Some(held) = cursor.clone() else {
+                return ClickOutcome::Resync;
+            };
+
+            let painted: Vec<(i16, Option<ItemStack>)> = active
+                .painted
+                .iter()
+                .filter_map(|packet_slot| {
+                    let idx = Inventory::packet_to_internal(*packet_slot)?;
+                    Some((*packet_slot, slots[idx].clone()))
+                })
+                .collect();
+
+            let plan = plan_drag(active.kind, &painted, &held, 64);
+
+            let mut changed_armor = false;
+            for (packet_slot, count) in plan.placements {
+                let Some(idx) = Inventory::packet_to_internal(packet_slot) else {
+                    continue;
+                };
+                changed_armor |= Inventory::ARMOR_SLOTS.contains(&idx);
+                slots[idx] = Some(ItemStack {
+                    count,
+                    ..held.clone()
+                });
+            }
+            *cursor = plan.cursor_left;
+
+            if changed_armor {
+                ClickOutcome::AppliedArmorChanged
+            } else {
+                ClickOutcome::Applied
+            }
+        }
     }
 }
 
@@ -174,6 +272,7 @@ mod tests {
         slots: [Option<ItemStack>; 44],
         cursor: Option<ItemStack>,
         dropped: Vec<ItemStack>,
+        drag: Option<Drag>,
     }
 
     impl Fixture {
@@ -182,10 +281,33 @@ mod tests {
                 slots: [const { None }; 44],
                 cursor: None,
                 dropped: Vec::new(),
+                drag: None,
             }
         }
         fn go(&mut self, c: ClickWindow) -> ClickOutcome {
-            apply_click(&mut self.slots, &mut self.cursor, &c, &mut self.dropped)
+            apply_click(
+                &mut self.slots,
+                &mut self.cursor,
+                &c,
+                &mut self.dropped,
+                &mut self.drag,
+            )
+        }
+        fn total_of(&self, item_id: i16) -> u32 {
+            let in_slots: u32 = self
+                .slots
+                .iter()
+                .flatten()
+                .filter(|s| s.item_id == item_id)
+                .map(|s| s.count as u32)
+                .sum();
+            let held: u32 = self
+                .cursor
+                .iter()
+                .filter(|s| s.item_id == item_id)
+                .map(|s| s.count as u32)
+                .sum();
+            in_slots + held
         }
         fn at(&self, internal: usize) -> Option<(i16, u8)> {
             self.slots[internal].as_ref().map(|s| (s.item_id, s.count))
@@ -337,7 +459,7 @@ mod tests {
 
     #[test]
     fn unmodelled_modes_ask_for_a_resync_and_change_nothing() {
-        for mode in [1u8, 2, 3, 5, 6] {
+        for mode in [1u8, 3, 6] {
             let mut f = Fixture::new();
             f.slots[0] = Some(stack(1, 10));
             assert_eq!(
@@ -355,5 +477,164 @@ mod tests {
         let mut f = Fixture::new();
         assert_eq!(f.go(click(-5, 0, 0)), ClickOutcome::Resync);
         assert_eq!(f.go(click(999, 0, 0)), ClickOutcome::Resync);
+    }
+
+    fn packet_for(internal: usize) -> i16 {
+        Inventory::internal_to_packet(internal)
+    }
+
+    #[test]
+    fn a_number_key_swaps_the_slot_with_that_hotbar_slot() {
+        let mut f = Fixture::new();
+        f.slots[20] = Some(stack(1, 10)); // a main-inventory slot
+        f.slots[3] = Some(stack(2, 5)); // hotbar slot 3
+
+        assert_eq!(f.go(click(packet_for(20), 3, 2)), ClickOutcome::Applied);
+
+        assert_eq!(f.at(20), Some((2, 5)), "the hotbar item came up");
+        assert_eq!(f.at(3), Some((1, 10)), "and the other went down");
+        assert_eq!(f.total_of(1) + f.total_of(2), 15, "nothing created");
+    }
+
+    #[test]
+    fn a_number_key_onto_an_empty_hotbar_slot_moves_it() {
+        let mut f = Fixture::new();
+        f.slots[20] = Some(stack(1, 7));
+
+        f.go(click(packet_for(20), 0, 2));
+
+        assert_eq!(f.at(20), None);
+        assert_eq!(f.at(0), Some((1, 7)));
+    }
+
+    #[test]
+    fn a_number_key_outside_the_hotbar_resyncs() {
+        let mut f = Fixture::new();
+        f.slots[20] = Some(stack(1, 7));
+
+        for button in [9u8, 10, 255] {
+            assert_eq!(
+                f.go(click(packet_for(20), button, 2)),
+                ClickOutcome::Resync,
+                "button {button}"
+            );
+            assert_eq!(f.at(20), Some((1, 7)), "and nothing moved");
+        }
+    }
+
+    #[test]
+    fn a_left_drag_spreads_the_held_stack_across_the_painted_slots() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 9));
+
+        assert_eq!(f.go(click(-999, 0, 5)), ClickOutcome::Applied, "start");
+        f.go(click(packet_for(9), 1, 5));
+        f.go(click(packet_for(10), 1, 5));
+        f.go(click(packet_for(11), 1, 5));
+        assert_eq!(f.go(click(-999, 2, 5)), ClickOutcome::Applied, "end");
+
+        assert_eq!(f.at(9), Some((1, 3)));
+        assert_eq!(f.at(10), Some((1, 3)));
+        assert_eq!(f.at(11), Some((1, 3)));
+        assert!(f.held().is_none());
+        assert_eq!(f.total_of(1), 9, "nothing created or lost");
+    }
+
+    #[test]
+    fn a_right_drag_places_one_per_slot_and_keeps_the_rest() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 10));
+
+        f.go(click(-999, 4, 5));
+        f.go(click(packet_for(9), 5, 5));
+        f.go(click(packet_for(10), 5, 5));
+        f.go(click(-999, 6, 5));
+
+        assert_eq!(f.at(9), Some((1, 1)));
+        assert_eq!(f.at(10), Some((1, 1)));
+        assert_eq!(f.held(), Some((1, 8)));
+        assert_eq!(f.total_of(1), 10);
+    }
+
+    #[test]
+    fn an_abandoned_drag_changes_nothing() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 9));
+
+        f.go(click(-999, 0, 5));
+        f.go(click(packet_for(9), 1, 5));
+        f.go(click(packet_for(10), 1, 5));
+
+        f.go(click(packet_for(20), 0, 0));
+
+        assert_eq!(f.at(9), None, "nothing was placed");
+        assert_eq!(f.at(10), None);
+        assert!(f.drag.is_none(), "and the gesture was discarded");
+        assert_eq!(f.total_of(1), 9);
+    }
+
+    #[test]
+    fn an_end_step_without_a_start_does_nothing() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 9));
+        f.slots[9] = None;
+
+        assert_eq!(f.go(click(-999, 2, 5)), ClickOutcome::Resync);
+        assert_eq!(f.held(), Some((1, 9)), "the stack is untouched");
+        assert_eq!(f.at(9), None);
+    }
+
+    #[test]
+    fn a_drag_started_with_an_empty_cursor_is_refused() {
+        let mut f = Fixture::new();
+        assert_eq!(f.go(click(-999, 0, 5)), ClickOutcome::Resync);
+        assert!(f.drag.is_none());
+    }
+
+    #[test]
+    fn changing_button_mid_drag_abandons_it() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 9));
+
+        f.go(click(-999, 0, 5)); // start left
+        f.go(click(packet_for(9), 1, 5)); // add left
+        assert_eq!(
+            f.go(click(packet_for(10), 5, 5)),
+            ClickOutcome::Resync,
+            "an add with the right button"
+        );
+        assert!(f.drag.is_none());
+        assert_eq!(f.total_of(1), 9);
+        assert_eq!(f.at(9), None, "and nothing was placed");
+    }
+
+    #[test]
+    fn an_unassigned_drag_button_resyncs() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 4));
+        for button in [3u8, 7, 11, 200] {
+            assert_eq!(
+                f.go(click(-999, button, 5)),
+                ClickOutcome::Resync,
+                "button {button}"
+            );
+        }
+        assert_eq!(f.held(), Some((1, 4)));
+    }
+
+    #[test]
+    fn a_drag_skips_slots_holding_another_item() {
+        let mut f = Fixture::new();
+        f.cursor = Some(stack(1, 4));
+        f.slots[9] = Some(stack(999, 1));
+
+        f.go(click(-999, 0, 5));
+        f.go(click(packet_for(9), 1, 5));
+        f.go(click(packet_for(10), 1, 5));
+        f.go(click(-999, 2, 5));
+
+        assert_eq!(f.at(9), Some((999, 1)), "left alone");
+        assert_eq!(f.at(10), Some((1, 4)), "and all four went to the other");
+        assert_eq!(f.total_of(1), 4);
     }
 }

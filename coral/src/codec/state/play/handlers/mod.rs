@@ -8,6 +8,7 @@ use coral::Channels;
 use coral_command::CommandDispatcher;
 use coral_config::Config;
 use coral_server::{
+    crafting::RecipeRegistry,
     entity_tracker::EntityTracker,
     experience::XpOrb,
     items::{ItemRegistry, drops::DroppedItems},
@@ -50,6 +51,7 @@ pub(super) struct PlayCtx<'a> {
     pub server_loaded_chunks: &'a Arc<RwLock<HashSet<(i32, i32)>>>,
     pub xp_orbs: &'a Arc<RwLock<Vec<XpOrb>>>,
     pub block_registry: &'a Arc<BlockRegistry>,
+    pub recipes: &'a Arc<RecipeRegistry>,
     pub fluid_queue: &'a Arc<RwLock<FluidQueue>>,
     pub client_protocol: i32,
 }

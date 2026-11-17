@@ -1,6 +1,7 @@
 pub mod banlist;
 pub mod bounding_box;
 pub mod bungee;
+pub mod crafting;
 pub mod data_watcher;
 pub mod effects;
 pub mod entity_tracker;

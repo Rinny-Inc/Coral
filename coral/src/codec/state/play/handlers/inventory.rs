@@ -1,15 +1,18 @@
 use coral_protocol::packets::play::inventory::{
     ClickWindow, ConfirmTransaction, CreativeInventoryAction, Inventory, ItemStack,
 };
-use coral_server::items::ids::EMPTY_HAND;
 use coral_types::GameMode;
+use coral_types::ids::EMPTY_SLOT;
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 use crate::codec::{
     Codec, PlayerState, send_packet,
     state::play::{
-        PlayCtx, handlers::Flow, inventory_click, spawn_dropped_item,
+        PlayCtx,
+        crafting_window::{CraftClick, CraftDeps, handle_crafting_click},
+        handlers::Flow,
+        inventory_click, spawn_dropped_item,
         window_ops::handle_tile_entity_click,
     },
 };
@@ -24,7 +27,7 @@ pub(in crate::codec::state::play) async fn creative_inventory_action(
     }
     let internal = Inventory::packet_to_internal(creative.slot);
     if let Some(idx) = internal {
-        if creative.item_id == EMPTY_HAND {
+        if creative.item_id == EMPTY_SLOT {
             state.inventory.slots[idx] = None;
         } else {
             state.inventory.slots[idx] = Some(ItemStack {
@@ -73,12 +76,39 @@ pub(in crate::codec::state::play) async fn click_window(
         return Flow::Continue;
     }
 
+    let deps = CraftDeps {
+        recipes: ctx.recipes,
+        items: ctx.item_registry,
+    };
+    match handle_crafting_click(framed, state, &click, &deps).await {
+        CraftClick::NotMine => {}
+        CraftClick::Handled => return Flow::Continue,
+        CraftClick::HandledWithOverflow(overflow) => {
+            for stack in overflow {
+                if let Some(p) = ctx.player_registry.get(&state.uuid).await {
+                    spawn_dropped_item(
+                        &p,
+                        stack,
+                        ctx.channels,
+                        ctx.item_spawn_times,
+                        ctx.entity_tracker,
+                        ctx.item_positions,
+                        ctx.config.tracking.item,
+                    )
+                    .await;
+                }
+            }
+            return Flow::Continue;
+        }
+    }
+
     let mut dropped = Vec::new();
     let outcome = inventory_click::apply_click(
         &mut state.inventory.slots,
         &mut state.cursor_item,
         &click,
         &mut dropped,
+        &mut state.drag,
     );
 
     for stack in dropped {
@@ -110,7 +140,7 @@ pub(in crate::codec::state::play) async fn click_window(
         let held = state.inventory.slots[state.held_slot as usize]
             .as_ref()
             .map(|s| s.item_id)
-            .unwrap_or(EMPTY_HAND);
+            .unwrap_or(EMPTY_SLOT);
         state
             .sync_held_item_registry(held, ctx.player_registry, ctx.item_registry, ctx.channels)
             .await;
