@@ -26,7 +26,7 @@ use coral_types::{
 use coral_world::{
     blocks::{
         Block,
-        fluid::{Fluid, FluidKind, is_replaceable},
+        fluid::{Fluid, FluidKind, is_replaceable, occludes_ray},
     },
     world::World,
 };
@@ -594,10 +594,10 @@ async fn raytrace_for_fluid(
         }
         let block = world.get(bx, by as u8, bz).await;
 
-        if Fluid::is_fluid(block.id) && Fluid::is_source(block.id, block.metadata) {
-            return Some((bx, by, bz));
+        if Fluid::is_fluid(block.id) {
+            return Fluid::is_source(block.id, block.metadata).then_some((bx, by, bz));
         }
-        if !block.is_air() && is_replaceable(block.id) {
+        if occludes_ray(block.id) {
             return None;
         }
     }
@@ -872,6 +872,33 @@ mod ray_budget_tests {
 
         let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
         assert_eq!(hit, None, "a bucket cannot reach through stone");
+    }
+
+    #[tokio::test]
+    async fn passable_blocks_do_not_hide_the_water() {
+        for passable in [
+            coral_types::ids::blocks::TORCH,
+            coral_types::ids::blocks::TALLGRASS,
+            coral_types::ids::blocks::WHEAT,
+            coral_types::ids::blocks::RAIL,
+        ] {
+            let world = void_world();
+            world.set(0, 63, 0, Block::new(passable, 0)).await;
+            world.set(0, 62, 0, Block::new(WATER_SOURCE, 0)).await;
+
+            let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
+            assert_eq!(hit, Some((0, 62, 0)), "block {passable} should not occlude");
+        }
+    }
+
+    #[tokio::test]
+    async fn flowing_water_in_the_way_stops_the_ray() {
+        let world = void_world();
+        world.set(0, 63, 0, Block::new(WATER_SOURCE, 3)).await;
+        world.set(0, 62, 0, Block::new(WATER_SOURCE, 0)).await;
+
+        let hit = raytrace_for_fluid(0.5, 64.5, 0.5, 0.0, 90.0, RAY_MAX_BLOCKS, &world).await;
+        assert_eq!(hit, None, "the flowing water ends the trace");
     }
 
     #[tokio::test]
