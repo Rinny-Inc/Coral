@@ -1,3 +1,5 @@
+use coral_types::nbt::{NbtReader, NbtTag};
+
 use crate::{
     packets::{
         PacketIn, PacketOut,
@@ -82,7 +84,7 @@ impl PacketOut for OpenWindow {
         writer.write_byte(self.window_id);
         writer.write_string(self.window_type.id());
         writer.write_string(&self.title.to_json());
-        writer.write_byte(self.slot_count);
+        writer.write_byte(self.window_type.wire_slot_count(self.slot_count));
         // writer.write_bool(false); // only when riding a horse
         Ok(())
     }
@@ -120,19 +122,100 @@ pub struct SetSlot {
     pub item_id: i16,
     pub count: u8,
     pub metadata: i16,
+    pub nbt: Option<NbtTag>,
 }
 impl PacketOut for SetSlot {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x2F);
         writer.write_byte(self.window_id as u8);
         writer.write_i16(self.slot);
-        writer.write_i16(self.item_id);
-        if self.item_id != -1 {
-            writer.write_byte(self.count);
-            writer.write_i16(self.metadata);
-            writer.write_byte(0);
+        Slot {
+            item_id: self.item_id,
+            count: self.count,
+            metadata: self.metadata,
+            nbt: self.nbt.clone(),
         }
+        .write(writer);
         Ok(())
+    }
+}
+
+/// An item slot as the write carries it
+#[derive(Debug, Clone, Default)]
+pub struct Slot {
+    pub item_id: i16,
+    pub count: u8,
+    pub metadata: i16,
+    pub nbt: Option<NbtTag>,
+}
+impl Slot {
+    pub const EMPTY: Self = Self {
+        item_id: -1,
+        count: 0,
+        metadata: 0,
+        nbt: None,
+    };
+
+    pub fn is_empty(&self) -> bool {
+        self.item_id == -1 || self.count == 0
+    }
+
+    pub fn write(&self, writer: &mut crate::writer::Writer) {
+        if self.is_empty() {
+            writer.write_i16(-1);
+            return;
+        }
+        writer.write_i16(self.item_id);
+        writer.write_byte(self.count);
+        writer.write_i16(self.metadata);
+        match &self.nbt {
+            Some(tag) => {
+                let mut bytes = Vec::new();
+                NbtTag::write_named_root("", tag, &mut bytes);
+                writer.write_bytes(&bytes);
+            }
+            None => writer.write_byte(0),
+        }
+    }
+
+    pub fn read_untrusted(reader: &mut Reader) -> Self {
+        let item_id = reader.read_i16();
+        if item_id == -1 {
+            return Self::EMPTY;
+        }
+        let count = reader.read_byte();
+        let metadata = reader.read_i16();
+
+        let rest = reader.remaining_slice();
+        if !rest.is_empty() && rest[0] != 0 {
+            let mut nbt = NbtReader::new(rest);
+            nbt.read_named_root();
+            reader.advance(nbt.consumed());
+        } else if !rest.is_empty() {
+            reader.advance(1);
+        }
+
+        Self {
+            item_id,
+            count,
+            metadata,
+            nbt: None,
+        }
+    }
+}
+impl From<&ItemStack> for Slot {
+    fn from(stack: &ItemStack) -> Self {
+        Self {
+            item_id: stack.item_id,
+            count: stack.count,
+            metadata: stack.metadata,
+            nbt: stack.nbt.clone(),
+        }
+    }
+}
+impl From<Option<&ItemStack>> for Slot {
+    fn from(stack: Option<&ItemStack>) -> Self {
+        stack.map(Slot::from).unwrap_or(Slot::EMPTY)
     }
 }
 
@@ -142,6 +225,7 @@ pub struct ItemStack {
     pub count: u8,
     pub metadata: i16,
     pub durability: i16,
+    pub nbt: Option<NbtTag>,
 }
 
 /// Result of [`Inventory::add_item`]
@@ -221,6 +305,7 @@ impl Inventory {
                     count: placed,
                     metadata,
                     durability: 0,
+                    nbt: None,
                 });
                 remaining -= placed;
                 touched.push((Self::internal_to_packet(i), i));
@@ -266,20 +351,15 @@ impl Default for Inventory {
 #[derive(Debug)]
 pub struct WindowItems {
     pub window_id: u8,
-    pub slots: Vec<(i16, u8, i16)>,
+    pub slots: Vec<Slot>,
 }
 impl PacketOut for WindowItems {
     fn encode(&self, writer: &mut crate::writer::Writer) -> std::io::Result<()> {
         writer.write_varint(0x30);
         writer.write_byte(self.window_id);
         writer.write_i16(self.slots.len() as i16);
-        for (item_id, count, metadata) in &self.slots {
-            writer.write_i16(*item_id);
-            if *item_id != -1 {
-                writer.write_byte(*count);
-                writer.write_i16(*metadata);
-                writer.write_byte(0);
-            }
+        for slot in &self.slots {
+            slot.write(writer);
         }
         Ok(())
     }
@@ -383,6 +463,15 @@ impl WindowType {
             }
             WindowType::Hopper { .. } => "minecraft:hopper",
             WindowType::Beacon { .. } => "minecraft:beacon",
+        }
+    }
+
+    pub fn wire_slot_count(&self, slots: u8) -> u8 {
+        match self {
+            WindowType::Crafting { .. }
+            | WindowType::Enchanting { .. }
+            | WindowType::Anvil { .. } => 0,
+            _ => slots,
         }
     }
 }
@@ -492,6 +581,7 @@ mod add_item_tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 
@@ -556,6 +646,7 @@ mod add_item_tests {
             count: 10,
             metadata: 1,
             durability: 0,
+            nbt: None,
         });
         let out = inv.add_item(35, 5, 14);
         assert_eq!(
@@ -587,6 +678,7 @@ mod insert_itemstack_tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 
@@ -642,6 +734,7 @@ mod insert_itemstack_tests {
             count: 1,
             metadata: 4,
             durability: 0,
+            nbt: None,
         });
 
         let other = ItemStack {
@@ -649,6 +742,7 @@ mod insert_itemstack_tests {
             count: 1,
             metadata: 1,
             durability: 0,
+            nbt: None,
         };
         assert!(inv.insert_itemstack(other).is_none());
         assert_eq!(filled(&inv), 2);
@@ -693,5 +787,91 @@ mod insert_itemstack_tests {
         for (i, slot) in inv.slots.iter().enumerate().skip(36) {
             assert!(slot.is_none(), "slot {i} was written to");
         }
+    }
+}
+
+#[cfg(test)]
+mod open_window_tests {
+    use super::*;
+    use crate::writer::Writer;
+
+    fn encoded(window_type: WindowType, slot_count: u8) -> Vec<u8> {
+        let mut w = Writer::new();
+        OpenWindow {
+            window_id: window_type.window_id(),
+            window_type,
+            title: ChatBuilder::new("t"),
+            slot_count,
+        }
+        .encode(&mut w)
+        .unwrap();
+        w.into_data()
+    }
+
+    fn wire_slots(bytes: &[u8]) -> u8 {
+        *bytes.last().unwrap()
+    }
+
+    #[test]
+    fn a_bench_announces_no_slots_so_the_client_opens_gui_crafting() {
+        let bytes = encoded(WindowType::Crafting { window_id: 3 }, 10);
+        assert_eq!(wire_slots(&bytes), 0);
+        assert!(
+            bytes
+                .windows(b"minecraft:crafting_table".len())
+                .any(|w| w == b"minecraft:crafting_table")
+        );
+    }
+
+    #[test]
+    fn the_other_two_simple_tile_windows_do_the_same() {
+        assert_eq!(
+            wire_slots(&encoded(
+                WindowType::Enchanting {
+                    window_id: 1,
+                    pos: (0, 0, 0)
+                },
+                2
+            )),
+            0
+        );
+        assert_eq!(
+            wire_slots(&encoded(WindowType::Anvil { window_id: 1 }, 3)),
+            0
+        );
+    }
+
+    #[test]
+    fn container_windows_keep_their_real_slot_count() {
+        assert_eq!(
+            wire_slots(&encoded(
+                WindowType::Chest {
+                    window_id: 1,
+                    pos: (0, 0, 0)
+                },
+                27
+            )),
+            27
+        );
+        assert_eq!(
+            wire_slots(&encoded(
+                WindowType::Furnace {
+                    window_id: 1,
+                    pos: (0, 0, 0)
+                },
+                3
+            )),
+            3
+        );
+        assert_eq!(
+            wire_slots(&encoded(
+                WindowType::Hopper {
+                    window_id: 1,
+                    pos: (0, 0, 0)
+                },
+                5
+            )),
+            5
+        );
     }
 }

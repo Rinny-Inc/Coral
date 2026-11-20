@@ -58,6 +58,14 @@ impl<'a> Reader<'a> {
         self.position < self.data.len()
     }
 
+    pub fn remaining_slice(&self) -> &[u8] {
+        self.data.get(self.position..).unwrap_or(&[])
+    }
+
+    pub fn advance(&mut self, count: usize) {
+        self.position = (self.position + count).min(self.data.len());
+    }
+
     pub fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.position)
     }

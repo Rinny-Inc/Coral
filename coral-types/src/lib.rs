@@ -2,6 +2,9 @@ use uuid::Uuid;
 
 pub mod ext;
 pub mod ids;
+pub mod nbt;
+
+pub const FURNACE_COOK_TICKS: i16 = 200;
 
 pub type DamageEvent = (Uuid, f32, i32, f32, i32);
 pub type PingUpdate = (Uuid, i32);

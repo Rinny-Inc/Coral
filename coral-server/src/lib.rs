@@ -4,6 +4,7 @@ pub mod bungee;
 pub mod crafting;
 pub mod data_watcher;
 pub mod effects;
+pub mod enchantment;
 pub mod entity_tracker;
 pub mod experience;
 pub mod items;

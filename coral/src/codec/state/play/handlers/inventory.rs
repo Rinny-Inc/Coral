@@ -35,6 +35,7 @@ pub(in crate::codec::state::play) async fn creative_inventory_action(
                 count: creative.item_count,
                 metadata: creative.item_damage,
                 durability: 0,
+                nbt: None,
             });
         }
         if idx < 9 && idx == state.held_slot as usize {
@@ -100,6 +101,12 @@ pub(in crate::codec::state::play) async fn click_window(
             }
             return Flow::Continue;
         }
+    }
+
+    if click.mode == 5 && state.open_window.is_some() {
+        state.drag = None;
+        state.send_full_inventory(framed).await;
+        return Flow::Continue;
     }
 
     let mut dropped = Vec::new();

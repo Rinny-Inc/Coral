@@ -53,7 +53,7 @@ use coral_protocol::packets::play::chat::builder::ChatColor;
 use coral_protocol::packets::play::entity::MetadataValue;
 use coral_protocol::packets::play::game::{ChangeGameState, SetExperience, UpdateHealth};
 use coral_protocol::packets::play::inventory::{
-    Inventory, ItemStack, SetSlot, WindowItems, WindowType,
+    Inventory, ItemStack, SetSlot, Slot, WindowItems, WindowType,
 };
 use coral_protocol::packets::play::movement::PlayerPositionAndLook;
 use coral_protocol::packets::play::player_list::{PlayerListItem17, PlayerListItemAdd};
@@ -491,10 +491,10 @@ impl PlayerState {
             if let Some(idx) = Inventory::packet_to_internal(i as i16)
                 && let Some(Some(s)) = self.inventory.slots.get(idx)
             {
-                slots.push((s.item_id, s.count, s.metadata));
+                slots.push(Slot::from(s));
                 continue;
             }
-            slots.push((-1, 0, 0));
+            slots.push(Slot::EMPTY);
         }
         send_packet(
             framed,
@@ -512,6 +512,7 @@ impl PlayerState {
                 item_id: self.cursor_item.as_ref().map_or(-1, |s| s.item_id),
                 count: self.cursor_item.as_ref().map_or(0, |s| s.count),
                 metadata: self.cursor_item.as_ref().map_or(0, |s| s.metadata),
+                nbt: None,
             },
         )
         .await;
@@ -642,6 +643,7 @@ impl PlayerState {
                 item_id: remaining.map(|s| s.item_id).unwrap_or(-1),
                 count: remaining.map(|s| s.count).unwrap_or(0),
                 metadata: remaining.map(|s| s.metadata).unwrap_or(0),
+                nbt: None,
             },
         )
         .await;
@@ -1082,6 +1084,7 @@ async fn make_player_join(
                     count: *count,
                     metadata: *metadata,
                     durability: 0,
+                    nbt: None,
                 });
             }
         }
@@ -1330,10 +1333,10 @@ async fn make_player_join(
         if let Some(idx) = internal
             && let Some(Some(s)) = state.inventory.slots.get(idx)
         {
-            slots.push((s.item_id, s.count, s.metadata));
+            slots.push(Slot::from(s));
             continue;
         }
-        slots.push((-1, 0, 0)); // empty
+        slots.push(Slot::EMPTY);
     }
 
     send_packet(

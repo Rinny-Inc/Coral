@@ -223,6 +223,7 @@ async fn tick_item_pickup(
                 item_id,
                 count,
                 metadata,
+                nbt: None,
             },
         )
         .await;

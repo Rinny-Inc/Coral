@@ -668,13 +668,12 @@ pub fn placement_metadata(
                 BlockFace::South => 3,
                 _ => 0,
             };
-            let upside_down = if face == BlockFace::Down
-                || (face as u8 >= BlockFace::South as u8 && cursor_y > 0.5)
-            {
-                0x4
-            } else {
-                0x0
-            };
+            let upside_down =
+                if face == BlockFace::Down || (face != BlockFace::Up && cursor_y > 0.5) {
+                    0x4
+                } else {
+                    0x0
+                };
             facing | upside_down
         }
         blocks::TORCH | blocks::UNLIT_REDSTONE_TORCH | blocks::REDSTONE_TORCH => match face {
@@ -703,13 +702,16 @@ pub fn placement_metadata(
             _ => 4,
         },
 
-        blocks::PUMPKIN | blocks::LIT_PUMPKIN => yaw_to_facing(yaw) as u8,
+        blocks::PUMPKIN | blocks::LIT_PUMPKIN => match yaw_to_facing(yaw) {
+            BlockFace::South => 0,
+            BlockFace::West => 1,
+            BlockFace::North => 2,
+            _ => 3,
+        },
 
-        blocks::STONE_SLAB | blocks::WOODEN_SLAB => {
+        blocks::STONE_SLAB | blocks::WOODEN_SLAB | blocks::STONE_SLAB2 => {
             let variant = item_meta & 0x7;
-            let top = if face == BlockFace::Up
-                || (face as u8 >= BlockFace::North as u8 && cursor_y > 0.5)
-            {
+            let top = if face == BlockFace::Down || (face != BlockFace::Up && cursor_y > 0.5) {
                 0x8
             } else {
                 0x0
@@ -1062,5 +1064,181 @@ mod chunk_edit_index_tests {
             assert!(b.chunk_has_edits(i, 0).await, "chunk ({i}, 0)");
         }
         assert!(!b.chunk_has_edits(0, 1).await);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    const FACES: [BlockFace; 6] = [
+        BlockFace::Down,
+        BlockFace::Up,
+        BlockFace::North,
+        BlockFace::South,
+        BlockFace::West,
+        BlockFace::East,
+    ];
+    const YAWS: [f32; 8] = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0];
+
+    fn player_facing(yaw: f32) -> BlockFace {
+        match ((yaw / 90.0) + 0.5).floor() as i32 & 3 {
+            0 => BlockFace::South,
+            1 => BlockFace::West,
+            2 => BlockFace::North,
+            _ => BlockFace::East,
+        }
+    }
+
+    fn index(face: BlockFace) -> u8 {
+        match face {
+            BlockFace::Down => 0,
+            BlockFace::Up => 1,
+            BlockFace::North => 2,
+            BlockFace::South => 3,
+            BlockFace::West => 4,
+            BlockFace::East => 5,
+        }
+    }
+
+    fn opposite(face: BlockFace) -> BlockFace {
+        match face {
+            BlockFace::North => BlockFace::South,
+            BlockFace::South => BlockFace::North,
+            BlockFace::West => BlockFace::East,
+            BlockFace::East => BlockFace::West,
+            BlockFace::Up => BlockFace::Down,
+            BlockFace::Down => BlockFace::Up,
+        }
+    }
+
+    fn upper_half(face: BlockFace, cursor_y: f32) -> bool {
+        face == BlockFace::Down || (face != BlockFace::Up && cursor_y > 0.5)
+    }
+
+    #[test]
+    fn stairs_match_vanilla_for_every_yaw_and_face() {
+        for yaw in YAWS {
+            let want_facing = 5 - index(player_facing(yaw));
+            for face in FACES {
+                for cursor_y in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    let want = want_facing | if upper_half(face, cursor_y) { 4 } else { 0 };
+                    let got = placement_metadata(blocks::OAK_STAIRS, 0, face, yaw, cursor_y);
+                    assert_eq!(
+                        got, want,
+                        "stairs at yaw {yaw} face {face:?} cursor_y {cursor_y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stair_ascends_away_from_the_player() {
+        assert_eq!(
+            placement_metadata(blocks::OAK_STAIRS, 0, BlockFace::Up, 0.0, 0.5),
+            2
+        );
+        assert_eq!(
+            placement_metadata(blocks::OAK_STAIRS, 0, BlockFace::Up, 180.0, 0.5),
+            3
+        );
+    }
+
+    #[test]
+    fn slabs_match_vanilla_and_keep_their_variant() {
+        for variant in 0..6u8 {
+            for face in FACES {
+                for cursor_y in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    let want = variant | if upper_half(face, cursor_y) { 8 } else { 0 };
+                    let got = placement_metadata(blocks::STONE_SLAB, variant, face, 0.0, cursor_y);
+                    assert_eq!(
+                        got, want,
+                        "slab {variant} face {face:?} cursor_y {cursor_y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn laying_a_slab_on_top_of_a_block_puts_it_on_the_floor() {
+        assert_eq!(
+            placement_metadata(blocks::STONE_SLAB, 0, BlockFace::Up, 0.0, 0.9),
+            0
+        );
+        assert_eq!(
+            placement_metadata(blocks::STONE_SLAB, 0, BlockFace::Down, 0.0, 0.1),
+            8
+        );
+    }
+
+    #[test]
+    fn chests_and_furnaces_face_the_player() {
+        for yaw in YAWS {
+            let want = index(opposite(player_facing(yaw)));
+            for id in [blocks::CHEST, blocks::FURNACE, blocks::TRAPPED_CHEST] {
+                assert_eq!(
+                    placement_metadata(id, 0, BlockFace::Up, yaw, 0.5),
+                    want,
+                    "block {id} at yaw {yaw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pumpkins_face_the_player_by_horizontal_index() {
+        for yaw in YAWS {
+            let want = match opposite(player_facing(yaw)) {
+                BlockFace::South => 0,
+                BlockFace::West => 1,
+                BlockFace::North => 2,
+                _ => 3,
+            };
+            assert_eq!(
+                placement_metadata(blocks::PUMPKIN, 0, BlockFace::Up, yaw, 0.5),
+                want,
+                "pumpkin at yaw {yaw}"
+            );
+            assert!(placement_metadata(blocks::PUMPKIN, 0, BlockFace::Up, yaw, 0.5) < 4);
+        }
+    }
+
+    #[test]
+    fn logs_take_their_axis_from_the_clicked_face() {
+        for wood in 0..4u8 {
+            assert_eq!(
+                placement_metadata(blocks::LOG, wood, BlockFace::Up, 0.0, 0.5),
+                wood
+            );
+            assert_eq!(
+                placement_metadata(blocks::LOG, wood, BlockFace::North, 0.0, 0.5),
+                wood | 0x8
+            );
+            assert_eq!(
+                placement_metadata(blocks::LOG, wood, BlockFace::East, 0.0, 0.5),
+                wood | 0x4
+            );
+        }
+    }
+
+    #[test]
+    fn torches_and_ladders_attach_to_the_clicked_face() {
+        assert_eq!(
+            placement_metadata(blocks::TORCH, 0, BlockFace::Up, 0.0, 0.5),
+            5
+        );
+        for face in [
+            BlockFace::North,
+            BlockFace::South,
+            BlockFace::West,
+            BlockFace::East,
+        ] {
+            assert_eq!(
+                placement_metadata(blocks::LADDER, 0, face, 0.0, 0.5),
+                index(face)
+            );
+        }
     }
 }

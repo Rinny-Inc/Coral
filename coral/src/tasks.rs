@@ -20,7 +20,7 @@ use coral_server::{
     items::drops::DroppedItems,
     player::registry::PlayerRegistry,
     projectile::{self, Projectile, ProjectileKind},
-    smelting::{fuel_burn_ticks, smelt_result},
+    smelting::{fuel_burn_ticks, fuel_residue, smelt_result},
     tile_entities::TileEntityStore,
 };
 use coral_types::{DespawnEntity, dist_sq3, dist3, ext::TicksExt};
@@ -646,7 +646,7 @@ pub fn spawn_furnace_task(
 
                 let can_smelt = input
                     .as_ref()
-                    .and_then(|i| smelt_result(i.item_id))
+                    .and_then(|i| smelt_result(i.item_id, i.metadata))
                     .map(|(rid, rmeta)| match output {
                         None => true,
                         Some(o) => o.item_id == rid && o.metadata == rmeta && o.count < 64,
@@ -659,9 +659,16 @@ pub fn spawn_furnace_task(
                 {
                     *burn_ticks = burn;
                     *burn_ticks_total = burn;
+                    let spent = f.item_id;
                     f.count -= 1;
                     if f.count == 0 {
-                        *fuel = None;
+                        *fuel = fuel_residue(spent).map(|id| ItemStack {
+                            item_id: id,
+                            count: 1,
+                            metadata: 0,
+                            durability: 0,
+                            nbt: None,
+                        });
                     }
                 }
 
@@ -673,8 +680,8 @@ pub fn spawn_furnace_task(
                         *cook_ticks += 1;
                         if *cook_ticks >= 200 {
                             *cook_ticks = 0;
-                            let (rid, rmeta) =
-                                smelt_result(input.as_ref().unwrap().item_id).unwrap();
+                            let inp = input.as_ref().unwrap();
+                            let (rid, rmeta) = smelt_result(inp.item_id, inp.metadata).unwrap();
                             match output {
                                 Some(o) => o.count += 1,
                                 None => {
@@ -683,6 +690,7 @@ pub fn spawn_furnace_task(
                                         count: 1,
                                         metadata: rmeta,
                                         durability: 0,
+                                        nbt: None,
                                     })
                                 }
                             }

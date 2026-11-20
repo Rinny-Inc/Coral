@@ -147,6 +147,7 @@ mod tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 

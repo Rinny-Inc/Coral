@@ -116,6 +116,20 @@ impl NbtTag {
             None
         }
     }
+
+    pub fn remove(&mut self, key: &str) -> bool {
+        if let NbtTag::Compound(entries) = self {
+            let before = entries.len();
+            entries.retain(|(k, _)| k != key);
+            return entries.len() != before;
+        }
+        false
+    }
+
+    pub fn is_empty_compound(&self) -> bool {
+        matches!(self, NbtTag::Compound(entries) if entries.is_empty())
+    }
+
     pub fn get_mut(&mut self, key: &str) -> Option<&mut NbtTag> {
         if let NbtTag::Compound(entries) = self {
             entries.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
@@ -204,6 +218,10 @@ impl<'a> NbtReader<'a> {
 
     pub fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
+    }
+
+    pub fn consumed(&self) -> usize {
+        self.pos
     }
 
     fn fail(&mut self) {

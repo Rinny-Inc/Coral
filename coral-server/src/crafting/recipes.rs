@@ -9,6 +9,7 @@ fn stack(item_id: i16, count: u8, metadata: i16) -> ItemStack {
         count,
         metadata,
         durability: 0,
+        nbt: None,
     }
 }
 

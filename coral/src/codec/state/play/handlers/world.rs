@@ -324,6 +324,7 @@ async fn drop_item(
             count: 1,
             metadata: slot.metadata,
             durability: 0,
+            nbt: None,
         };
         if slot.count == 0 {
             state.inventory.slots[hotbar_slot] = None;
@@ -478,7 +479,7 @@ pub(in crate::codec::state::play) async fn player_block_placement(
     state: &mut PlayerState,
     ctx: &PlayCtx<'_>,
 ) -> Flow {
-    let Some(face) = place.face.clone() else {
+    let Some(face) = place.face else {
         if interact::try_with_item(
             state,
             ctx.item_registry,

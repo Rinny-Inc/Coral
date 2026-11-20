@@ -16,7 +16,7 @@ fn split_half(stack: &mut ItemStack) -> ItemStack {
     stack.count -= taken;
     ItemStack {
         count: taken,
-        ..*stack
+        ..stack.clone()
     }
 }
 
@@ -42,7 +42,10 @@ pub fn apply_click(
         return match (click.mode, cursor.take()) {
             (0, Some(mut held)) => {
                 if click.button == 1 {
-                    let one = ItemStack { count: 1, ..held };
+                    let one = ItemStack {
+                        count: 1,
+                        ..held.clone()
+                    };
                     held.count -= 1;
                     if held.count > 0 {
                         *cursor = Some(held);
@@ -109,7 +112,10 @@ pub fn apply_click(
                     }
                 }
                 (Some(mut held), None) => {
-                    slots[idx] = Some(ItemStack { count: 1, ..held });
+                    slots[idx] = Some(ItemStack {
+                        count: 1,
+                        ..held.clone()
+                    });
                     held.count -= 1;
                     if held.count > 0 {
                         *cursor = Some(held);
@@ -150,7 +156,7 @@ pub fn apply_click(
             if button == 0 && in_slot.count > 1 {
                 dropped.push(ItemStack {
                     count: 1,
-                    ..in_slot
+                    ..in_slot.clone()
                 });
                 in_slot.count -= 1;
                 slots[idx] = Some(in_slot);
@@ -254,6 +260,7 @@ mod tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 

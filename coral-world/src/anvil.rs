@@ -292,6 +292,7 @@ pub fn parse_tile_entity(raw: &RawTileEntity) -> Option<TileEntity> {
                                 .and_then(|t| t.as_i16_val())
                                 .unwrap_or(0),
                             durability: 0,
+                            nbt: None,
                         });
                     }
                 }
@@ -314,6 +315,7 @@ pub fn parse_tile_entity(raw: &RawTileEntity) -> Option<TileEntity> {
                             .and_then(|t| t.as_i16_val())
                             .unwrap_or(0),
                         durability: 0,
+                        nbt: None,
                     };
                     match slot {
                         0 => input = Some(stack),

@@ -24,6 +24,10 @@ impl Writer {
         self.data.push(byte);
     }
 
+    pub fn write_bytes(&mut self, bytes: &[u8]) {
+        self.data.extend_from_slice(bytes);
+    }
+
     pub fn write_varint(&mut self, value: i32) {
         let mut value = value as u32;
         loop {

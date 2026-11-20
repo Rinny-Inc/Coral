@@ -1,6 +1,8 @@
 use coral_protocol::packets::play::{
     chat::builder::ChatBuilder,
-    inventory::{ClickWindow, Inventory, ItemStack, OpenWindow, SetSlot, WindowItems, WindowType},
+    inventory::{
+        ClickWindow, Inventory, ItemStack, OpenWindow, SetSlot, Slot, WindowItems, WindowType,
+    },
 };
 use coral_server::{
     crafting::{CraftingGrid, OutputClick, RecipeRegistry, craft_once},
@@ -79,7 +81,7 @@ fn swap_or_merge(
                 in_slot.count -= taken;
                 *cursor = Some(ItemStack {
                     count: taken,
-                    ..in_slot
+                    ..in_slot.clone()
                 });
                 if in_slot.count > 0 {
                     *slot = Some(in_slot);
@@ -90,7 +92,10 @@ fn swap_or_merge(
             if whole {
                 *slot = Some(held);
             } else {
-                *slot = Some(ItemStack { count: 1, ..held });
+                *slot = Some(ItemStack {
+                    count: 1,
+                    ..held.clone()
+                });
                 held.count -= 1;
                 if held.count > 0 {
                     *cursor = Some(held);
@@ -318,11 +323,8 @@ fn quick_move_within_inventory(inventory: &mut Inventory, index: usize) {
     inventory.slots[index] = Some(moving);
 }
 
-fn slot_tuple(stack: Option<&ItemStack>) -> (i16, u8, i16) {
-    match stack {
-        Some(s) => (s.item_id, s.count, s.metadata),
-        None => (-1, 0, 0),
-    }
+fn slot_tuple(stack: Option<&ItemStack>) -> Slot {
+    Slot::from(stack)
 }
 
 /// Resend the whole window result slot included
@@ -382,6 +384,7 @@ pub async fn send_crafting_window(
             item_id: cursor.map(|s| s.item_id).unwrap_or(-1),
             count: cursor.map(|s| s.count).unwrap_or(0),
             metadata: cursor.map(|s| s.metadata).unwrap_or(0),
+            nbt: None,
         },
     )
     .await
@@ -525,6 +528,7 @@ mod tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         })
     }
 
@@ -667,6 +671,7 @@ mod apply_tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 

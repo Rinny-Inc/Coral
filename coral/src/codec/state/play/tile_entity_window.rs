@@ -1,6 +1,6 @@
 use coral_protocol::packets::play::{
     entity::TileEntity,
-    inventory::{ClickWindow, ItemStack},
+    inventory::{ClickWindow, ItemStack, Slot},
 };
 use coral_server::smelting::fuel_burn_ticks;
 
@@ -10,7 +10,7 @@ pub struct WindowOpenData {
     pub window_type_ctor: fn(u8, (i32, i32, i32)) -> WindowType,
     pub slot_count: u8,
     pub title: &'static str,
-    pub container_slots: Vec<(i16, u8, i16)>,
+    pub container_slots: Vec<Slot>,
 }
 
 pub trait TileEntityWindow {
@@ -18,11 +18,7 @@ pub trait TileEntityWindow {
 
     async fn open(&mut self) -> Option<WindowOpenData>;
 
-    async fn click(
-        &mut self,
-        state: &mut PlayerState,
-        click: &ClickWindow,
-    ) -> Option<Vec<(i16, u8, i16)>>;
+    async fn click(&mut self, state: &mut PlayerState, click: &ClickWindow) -> Option<Vec<Slot>>;
 
     async fn close(&mut self) -> u8;
 }
@@ -40,8 +36,8 @@ impl TileEntityWindow for TileEntity {
                     .iter()
                     .take(27)
                     .map(|item| match item {
-                        Some(s) => (s.item_id, s.count, s.metadata),
-                        None => (-1, 0, 0),
+                        Some(s) => Slot::from(s),
+                        None => Slot::EMPTY,
                     })
                     .collect();
 
@@ -72,11 +68,7 @@ impl TileEntityWindow for TileEntity {
         }
     }
 
-    async fn click(
-        &mut self,
-        state: &mut PlayerState,
-        click: &ClickWindow,
-    ) -> Option<Vec<(i16, u8, i16)>> {
+    async fn click(&mut self, state: &mut PlayerState, click: &ClickWindow) -> Option<Vec<Slot>> {
         match self {
             super::TileEntity::Chest { items, .. } => {
                 fn resolve(slot: i16) -> Option<(bool, usize)> {
@@ -129,8 +121,8 @@ impl TileEntityWindow for TileEntity {
                         .iter()
                         .take(27)
                         .map(|item| match item {
-                            Some(s) => (s.item_id, s.count, s.metadata),
-                            None => (-1, 0, 0),
+                            Some(s) => Slot::from(s),
+                            None => Slot::EMPTY,
                         })
                         .collect(),
                 )
@@ -243,11 +235,8 @@ impl TileEntityWindow for TileEntity {
     }
 }
 
-pub fn slot_tuple(item: &Option<ItemStack>) -> (i16, u8, i16) {
-    match item {
-        Some(s) => (s.item_id, s.count, s.metadata),
-        None => (-1, 0, 0),
-    }
+pub fn slot_tuple(item: &Option<ItemStack>) -> Slot {
+    Slot::from(item.as_ref())
 }
 
 fn insert_into_inventory(
@@ -336,6 +325,7 @@ mod take_from_output_tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 
@@ -407,12 +397,14 @@ mod take_from_output_tests {
             count: 4,
             metadata: 4,
             durability: 0,
+            nbt: None,
         };
         let out = ItemStack {
             item_id: 351,
             count: 4,
             metadata: 1,
             durability: 0,
+            nbt: None,
         };
         let (cursor, output) = take_from_output(Some(held), Some(out));
         assert_eq!(seen(&cursor), Some((351, 4, 4)));

@@ -1,7 +1,7 @@
 use std::io::Error;
 
 use crate::{
-    packets::{PacketIn, PacketOut},
+    packets::{PacketIn, PacketOut, play::inventory::Slot},
     reader::Reader,
 };
 
@@ -71,7 +71,7 @@ impl TryFrom<u8> for DigStatus {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub enum BlockFace {
     Down,
@@ -196,20 +196,11 @@ impl PacketIn for PlayerBlockPlacement {
                 ));
             }
         };
-        let held_item_id = reader.read_i16();
-        let (held_item_count, held_item_damage, cursor_x, cursor_y, cursor_z) = {
-            if held_item_id != -1 {
-                (
-                    reader.read_byte(),
-                    reader.read_i16(),
-                    reader.read_byte(),
-                    reader.read_byte(),
-                    reader.read_byte(),
-                )
-            } else {
-                (0, 0, 0, 0, 0)
-            }
-        };
+        let held = Slot::read_untrusted(&mut reader);
+        let (cursor_x, cursor_y, cursor_z) =
+            (reader.read_byte(), reader.read_byte(), reader.read_byte());
+        let (held_item_id, held_item_count, held_item_damage) =
+            (held.item_id, held.count, held.metadata);
         Ok(PlayerBlockPlacement {
             x,
             y,
@@ -375,5 +366,50 @@ mod dig_status_tests {
     #[test]
     fn a_cancel_is_let_through_at_any_distance() {
         assert!(!DigStatus::CancelDig.needs_reach_check());
+    }
+}
+
+#[cfg(test)]
+mod block_placement_decode_tests {
+    use super::*;
+
+    fn long_pos(x: i64, y: i64, z: i64) -> [u8; 8] {
+        (((x & 0x3FFFFFF) << 38) | ((y & 0xFFF) << 26) | (z & 0x3FFFFFF)).to_be_bytes()
+    }
+
+    fn packet(held: &[u8], cursor: [u8; 3]) -> bytes::Bytes {
+        let mut v = Vec::new();
+        v.extend_from_slice(&long_pos(1, 4, 0));
+        v.push(3); // south
+        v.extend_from_slice(held);
+        v.extend_from_slice(&cursor);
+        bytes::Bytes::from(v)
+    }
+
+    #[test]
+    fn the_cursor_survives_the_held_item_s_nbt_field() {
+        let held = [0x00, 0x35, 0x01, 0x00, 0x00, 0x00];
+        let mut buf = packet(&held, [8, 12, 4]);
+        let p = PlayerBlockPlacement::decode(&mut buf).unwrap();
+        assert_eq!(p.held_item_id, 53);
+        assert_eq!(p.held_item_count, 1);
+        assert_eq!((p.cursor_x, p.cursor_y, p.cursor_z), (8, 12, 4));
+    }
+
+    #[test]
+    fn an_empty_hand_still_carries_a_cursor() {
+        let mut buf = packet(&[0xFF, 0xFF], [2, 15, 9]);
+        let p = PlayerBlockPlacement::decode(&mut buf).unwrap();
+        assert_eq!(p.held_item_id, -1);
+        assert_eq!((p.cursor_x, p.cursor_y, p.cursor_z), (2, 15, 9));
+    }
+
+    #[test]
+    fn a_held_item_carrying_real_nbt_is_walked_past() {
+        let held = [0x00, 0x35, 0x01, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00];
+        let mut buf = packet(&held, [1, 2, 3]);
+        let p = PlayerBlockPlacement::decode(&mut buf).unwrap();
+        assert_eq!(p.held_item_id, 53);
+        assert_eq!((p.cursor_x, p.cursor_y, p.cursor_z), (1, 2, 3));
     }
 }

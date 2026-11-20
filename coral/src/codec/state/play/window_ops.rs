@@ -3,7 +3,7 @@ use std::sync::Arc;
 use coral_protocol::packets::play::{
     chat::builder::ChatBuilder,
     entity::TileEntity,
-    inventory::{ClickWindow, OpenWindow, SetSlot, WindowItems},
+    inventory::{ClickWindow, OpenWindow, SetSlot, Slot, WindowItems},
 };
 use coral_server::tile_entities::TileEntityStore;
 use coral_types::ChestAnimation;
@@ -83,14 +83,14 @@ pub async fn open_tile_entity_window(
     let mut slots = data.container_slots;
     for internal in state.inventory.slots.iter().take(36).skip(9) {
         match internal {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
+            Some(s) => slots.push(Slot::from(s)),
+            None => slots.push(Slot::EMPTY),
         }
     }
     for internal in state.inventory.slots.iter().take(9) {
         match internal {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
+            Some(s) => slots.push(Slot::from(s)),
+            None => slots.push(Slot::EMPTY),
         }
     }
 
@@ -149,14 +149,14 @@ pub async fn handle_tile_entity_click(
     let mut slots = container_slots;
     for internal in state.inventory.slots.iter().take(36).skip(9) {
         match internal {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
+            Some(s) => slots.push(Slot::from(s)),
+            None => slots.push(Slot::EMPTY),
         }
     }
     for internal in state.inventory.slots.iter().take(9) {
         match internal {
-            Some(s) => slots.push((s.item_id, s.count, s.metadata)),
-            None => slots.push((-1, 0, 0)),
+            Some(s) => slots.push(Slot::from(s)),
+            None => slots.push(Slot::EMPTY),
         }
     }
     send_packet(
@@ -176,6 +176,7 @@ pub async fn handle_tile_entity_click(
             item_id: state.cursor_item.as_ref().map(|s| s.item_id).unwrap_or(-1),
             count: state.cursor_item.as_ref().map(|s| s.count).unwrap_or(0),
             metadata: state.cursor_item.as_ref().map(|s| s.metadata).unwrap_or(0),
+            nbt: None,
         },
     )
     .await;

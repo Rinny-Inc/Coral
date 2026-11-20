@@ -220,6 +220,7 @@ pub async fn try_with_item_on_block(
                             count: 1,
                             metadata: 0,
                             durability: 0,
+                            nbt: None,
                         },
                         player_registry,
                         item_registry,
@@ -249,7 +250,7 @@ pub async fn try_with_item_on_block(
             let Some(face) = &place.face else {
                 return false;
             };
-            let (block_id, meta, tx, ty, tz) = match face.clone() as u8 {
+            let (block_id, meta, tx, ty, tz) = match *face as u8 {
                 1 => {
                     let yaw = player_registry
                         .get(&state.uuid)
@@ -260,7 +261,7 @@ pub async fn try_with_item_on_block(
                     (63u8, rotation, place.x, place.y as i32 + 1, place.z)
                 }
                 2..=5 => {
-                    let meta = match face.clone() as u8 {
+                    let meta = match *face as u8 {
                         2 => 2,
                         3 => 3,
                         4 => 4,
@@ -352,6 +353,7 @@ pub async fn try_with_item_on_block(
                         count: 1,
                         metadata: 0,
                         durability: 0,
+                        nbt: None,
                     },
                     player_registry,
                     item_registry,

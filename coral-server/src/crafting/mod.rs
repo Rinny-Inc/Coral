@@ -374,6 +374,7 @@ mod output_tests {
             count,
             metadata: 0,
             durability: 0,
+            nbt: None,
         }
     }
 
@@ -520,6 +521,7 @@ mod tests {
             count,
             metadata,
             durability: 0,
+            nbt: None,
         })
     }
 
@@ -537,6 +539,7 @@ mod tests {
                 count: 4,
                 metadata: 0,
                 durability: 0,
+                nbt: None,
             },
         }
     }
@@ -556,6 +559,7 @@ mod tests {
                 count: 1,
                 metadata: 0,
                 durability: 0,
+                nbt: None,
             },
         }
     }
@@ -647,6 +651,7 @@ mod tests {
                 count: 1,
                 metadata: 0,
                 durability: 0,
+                nbt: None,
             },
         };
 
@@ -666,6 +671,7 @@ mod tests {
                 count: 1,
                 metadata: 0,
                 durability: 0,
+                nbt: None,
             },
         };
 
@@ -691,6 +697,7 @@ mod tests {
                 count: 1,
                 metadata: 0,
                 durability: 0,
+                nbt: None,
             },
         };
 
@@ -717,12 +724,14 @@ mod tests {
             count: 1,
             metadata: 0,
             durability: 0,
+            nbt: None,
         };
         let red = ItemStack {
             item_id: WOOL,
             count: 1,
             metadata: 14,
             durability: 0,
+            nbt: None,
         };
 
         assert!(white_only.accepts(&white));
