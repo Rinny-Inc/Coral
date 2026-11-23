@@ -15,22 +15,35 @@ use coral_protocol::packets::play::{
     inventory::ItemStack,
 };
 use coral_server::{
-    entity_tracker::EntityTracker,
+    bounding_box::EntityBounds,
+    entity_tracker::{EntityTracker, TrackedEntity},
     experience::XpOrb,
-    items::drops::DroppedItems,
-    player::registry::PlayerRegistry,
+    explosion::{
+        blast_reach, destroyed_blocks, drop_chance, entity_effect, entity_radius,
+        explosion_resistance, exposure,
+    },
+    falling::{
+        FallingEntity, FallingKind, MAX_FALL_TICKS, TNT_POWER, bounce as falling_bounce,
+        can_fall_through, chained_fuse, should_start_falling, spawn_object_data, spawn_object_type,
+        step as falling_step, tnt_launch_velocity,
+    },
+    items::drops::{DroppedItems, block_drop},
+    player::registry::{PlayerRegistry, next_entity_id},
     projectile::{self, Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, fuel_residue, smelt_result},
     tile_entities::TileEntityStore,
 };
-use coral_types::{DespawnEntity, dist_sq3, dist3, ext::TicksExt};
+use coral_types::{
+    DespawnEntity, ExplosionEvent, GameMode, dist_sq3, dist3, ext::TicksExt, ids::blocks,
+};
 use coral_world::{
     anvil::tile_entity_to_nbt,
-    blocks::Block,
+    blocks::{Block, fluid::occludes_ray, registry::BlockRegistry},
     nbt::NbtTag,
     weather::{Weather, WeatherState},
     world::World,
 };
+use rand::RngExt;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     sync::{RwLock, broadcast::Sender},
@@ -38,7 +51,10 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::Channels;
+use crate::{
+    Channels,
+    fluid_sim::{FluidQueue, queue_fluid_update},
+};
 
 const SPLASH_RADIUS: f64 = 4.0;
 const ARROW_SCAN_RADIUS: f64 = 2.0;
@@ -734,4 +750,393 @@ pub fn spawn_furnace_task(
             }
         }
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_explosion_task(
+    world: Arc<World>,
+    block_registry: Arc<BlockRegistry>,
+    player_registry: Arc<PlayerRegistry>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
+    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: Arc<RwLock<DroppedItems>>,
+    fluid_queue: Arc<RwLock<FluidQueue>>,
+    tracking_range: f64,
+    channels: Channels,
+) {
+    tokio::spawn(async move {
+        let mut requests = channels.explosion_rq_tx.subscribe();
+        while let Ok((x, y, z, power)) = requests.recv().await {
+            if power <= 0.0 {
+                continue;
+            }
+
+            let radius = blast_reach(power).max(entity_radius(power).ceil() as i32 + 2);
+            let (cx, cy, cz) = (x.floor() as i32, y.floor() as i32, z.floor() as i32);
+            let mut nearby: HashMap<(i32, i32, i32), u8> = HashMap::new();
+            for bx in cx - radius..=cx + radius {
+                for by in (cy - radius).max(0)..=(cy + radius).min(255) {
+                    for bz in cz - radius..=cz + radius {
+                        let block = world.get(bx, by as u8, bz).await;
+                        if block.id != blocks::AIR {
+                            nearby.insert((bx, by, bz), block.id);
+                        }
+                    }
+                }
+            }
+            let destroyed = {
+                let mut rng = rand::rng();
+                let registry = &block_registry;
+                let nearby = &nearby;
+                destroyed_blocks(x, y, z, power, &mut || rng.random::<f32>(), |bx, by, bz| {
+                    nearby
+                        .get(&(bx, by, bz))
+                        .map(|&id| explosion_resistance(registry.blast_resitance(id)))
+                })
+            };
+
+            let chance = drop_chance(power);
+            let mut cleared = Vec::with_capacity(destroyed.len());
+            for &(bx, by, bz) in &destroyed {
+                if !(0..=255).contains(&by) {
+                    continue;
+                }
+                let before = world.get(bx, by as u8, bz).await;
+                if before.id == blocks::AIR {
+                    continue;
+                }
+                world.set(bx, by as u8, bz, Block::air()).await;
+                channels.block_tx.send((bx, by, bz, 0, 0)).ok();
+                queue_fluid_update(bx, by, bz, &fluid_queue).await;
+                cleared.push((bx, by, bz));
+
+                if before.id == blocks::TNT {
+                    let fuse = chained_fuse(rand::rng().random::<f64>());
+                    channels
+                        .tnt_prime_tx
+                        .send((bx as f64 + 0.5, by as f64, bz as f64 + 0.5, fuse))
+                        .ok();
+                    continue;
+                }
+
+                if rand::rng().random::<f32>() < chance
+                    && let Some((item_id, count, metadata)) = block_drop(before.id, before.metadata)
+                {
+                    spawn_blast_drop(
+                        (bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5),
+                        (item_id, count, metadata),
+                        &entity_tracker,
+                        &item_spawn_times,
+                        &item_positions,
+                        tracking_range,
+                        &channels,
+                    )
+                    .await;
+                }
+            }
+
+            let solid = |bx: i32, by: i32, bz: i32| {
+                nearby
+                    .get(&(bx, by, bz))
+                    .is_some_and(|&id| occludes_ray(id))
+            };
+            let mut motion = HashMap::new();
+            for player in player_registry.get_all().await {
+                if player.is_dead {
+                    continue;
+                }
+                let bound = EntityBounds::player(player.is_sneaking);
+                let (dx, dy, dz) = (player.x - x, player.y - y, player.z - z);
+                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+                let to_eye = (dx, player.y + bound.height - y, dz);
+                let seen = exposure(
+                    x,
+                    y,
+                    z,
+                    (player.x - 0.3, player.y, player.z - 0.3),
+                    (player.x + 0.3, player.y + bound.height, player.z + 0.3),
+                    solid,
+                );
+                let Some((damage, shove)) = entity_effect(distance, to_eye, power, seen) else {
+                    continue;
+                };
+                motion.insert(player.uuid, shove);
+
+                if player.gamemode == GameMode::Creative {
+                    continue;
+                }
+                let health = (player.health - damage).max(0.0);
+                player_registry
+                    .update_health(&player.uuid, health, player.food, player.food_saturation)
+                    .await;
+                channels
+                    .dmg_tx
+                    .send((player.uuid, health, player.food, player.food_saturation, -1))
+                    .ok();
+            }
+
+            channels
+                .explosion_tx
+                .send(ExplosionEvent {
+                    x,
+                    y,
+                    z,
+                    power,
+                    destroyed: Arc::new(cleared),
+                    motion: Arc::new(motion),
+                })
+                .ok();
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn spawn_blast_drop(
+    (x, y, z): (f64, f64, f64),
+    (item_id, count, metadata): (i16, u8, i16),
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
+    item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
+    tracking_range: f64,
+    channels: &Channels,
+) {
+    let entity_id = next_entity_id();
+    entity_tracker
+        .write()
+        .await
+        .track(TrackedEntity::item(entity_id, x, y, z, tracking_range));
+    item_spawn_times
+        .write()
+        .await
+        .insert(entity_id, Instant::now());
+    item_positions
+        .write()
+        .await
+        .insert((entity_id, x, y, z, item_id, count, metadata));
+
+    let mut rng = rand::rng();
+    let spread = |rng: &mut rand::rngs::ThreadRng| (rng.random::<f64>() - 0.5) * 0.4;
+    channels
+        .item_tx
+        .send((
+            entity_id,
+            x,
+            y,
+            z,
+            item_id,
+            count,
+            metadata,
+            spread(&mut rng),
+            0.2,
+            spread(&mut rng),
+        ))
+        .ok();
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_falling_task(
+    falling: Arc<RwLock<Vec<FallingEntity>>>,
+    world: Arc<World>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
+    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: Arc<RwLock<DroppedItems>>,
+    tracking_range: f64,
+    channels: Channels,
+) {
+    // Block changes come in on their own loop so a slow tick cannot make the task miss one and leave sand hanging
+    {
+        let world = world.clone();
+        let falling = falling.clone();
+        let channels = channels.clone();
+        tokio::spawn(async move {
+            let mut blocks_rx = channels.block_tx.subscribe();
+            while let Ok((x, y, z, _, _)) = blocks_rx.recv().await {
+                for check_y in [y, y + 1] {
+                    if !(0..=255).contains(&check_y) {
+                        continue;
+                    }
+                    let here = world.get(x, check_y as u8, z).await;
+                    let below = world.get(x, (check_y - 1) as u8, z).await;
+                    if !should_start_falling(here.id, below.id, check_y) {
+                        continue;
+                    }
+                    world.set(x, check_y as u8, z, Block::air()).await;
+                    channels.block_tx.send((x, check_y, z, 0, 0)).ok();
+
+                    let entity = FallingEntity {
+                        entity_id: next_entity_id(),
+                        kind: coral_server::falling::FallingKind::Block {
+                            block_id: here.id,
+                            metadata: here.metadata,
+                        },
+                        x: x as f64 + 0.5,
+                        y: check_y as f64,
+                        z: z as f64 + 0.5,
+                        vx: 0.0,
+                        vy: 0.0,
+                        vz: 0.0,
+                        ticks_alive: 0,
+                    };
+                    announce_falling(&entity, &channels);
+                    falling.write().await.push(entity);
+                }
+            }
+        });
+    }
+
+    tokio::spawn(async move {
+        let mut lit_rx = channels.tnt_prime_tx.subscribe();
+        let mut interval = interval(Duration::from_ticks(1));
+        loop {
+            tokio::select! {
+                Ok((x, y, z, fuse)) = lit_rx.recv() => {
+                    let roll = rand::rng().random::<f64>();
+                    let (vx, vy, vz) = tnt_launch_velocity(roll);
+                    let entity = FallingEntity {
+                        entity_id: next_entity_id(),
+                        kind: coral_server::falling::FallingKind::PrimedTnt { fuse },
+                        x, y, z,
+                        vx, vy, vz,
+                        ticks_alive: 0
+                    };
+                    announce_falling(&entity, &channels);
+                    falling.write().await.push(entity);
+                }
+                _ = interval.tick() => {
+                    let mut landed = Vec::new();
+                    let mut detonated = Vec::new();
+                    let mut gone = Vec::new();
+                    let mut moves = Vec::new();
+
+                    {
+                        let mut list = falling.write().await;
+                        for entity in list.iter_mut() {
+                            entity.ticks_alive += 1;
+
+                            if let FallingKind::PrimedTnt { fuse } = &mut entity.kind {
+                                *fuse = fuse.saturating_sub(1);
+                                if *fuse == 0 {
+                                    detonated.push((entity.entity_id, entity.x, entity.y, entity.z));
+                                    continue;
+                                }
+                            }
+                            let (position, velocity) = falling_step(entity);
+                            let below = world.get(position.0.floor() as i32, position.1.floor().clamp(0.0, 255.0) as u8, position.2.floor() as i32).await;
+
+                            if matches!(entity.kind, FallingKind::Block { .. }) && !can_fall_through(below.id) {
+                                landed.push(entity.clone());
+                                continue;
+                            }
+
+                            (entity.x, entity.y, entity.z) = position;
+                            (entity.vx, entity.vy, entity.vz) = velocity;
+
+                            if matches!(entity.kind, FallingKind::PrimedTnt { .. }) && !can_fall_through(below.id) {
+                                (entity.vx, entity.vy, entity.vz) = falling_bounce(velocity);
+                                entity.y = position.1.floor() + 1.0;
+                            }
+
+                            if entity.y < 0.0 || entity.ticks_alive > MAX_FALL_TICKS * 6 {
+                                gone.push(entity.clone());
+                                continue;
+                            }
+
+                            moves.push((entity.entity_id, entity.x, entity.y, entity.z));
+                        }
+
+                        let finished: Vec<i32> = landed.iter().chain(gone.iter()).map(|e| e.entity_id).chain(detonated.iter().map(|(id, ..)| *id)).collect();
+                        list.retain(|e| !finished.contains(&e.entity_id));
+                    }
+
+                    for entity in landed {
+                        land_falling_block(
+                            &entity,
+                            &world,
+                            &entity_tracker,
+                            &item_spawn_times,
+                            &item_positions,
+                            tracking_range,
+                            &channels,
+                        ).await;
+                    }
+                    for (_, x, y, z) in &detonated {
+                        channels.explosion_rq_tx.send((*x, *y, *z, TNT_POWER)).ok();
+                    }
+
+                    let despawned: Vec<i32> = gone.iter().map(|e| e.entity_id).chain(detonated.iter().map(|(id, ..)| *id)).collect();
+                    if !despawned.is_empty() {
+                        channels.despawn_tx.send(despawned).ok();
+                    }
+                    for mv in moves {
+                        channels.falling_move_tx.send(mv).ok();
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn announce_falling(entity: &FallingEntity, channels: &Channels) {
+    channels
+        .falling_spawn_tx
+        .send((
+            entity.entity_id,
+            spawn_object_type(&entity.kind),
+            spawn_object_data(&entity.kind),
+            entity.x,
+            entity.y,
+            entity.z,
+            entity.vx,
+            entity.vy,
+            entity.vz,
+        ))
+        .ok();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn land_falling_block(
+    entity: &FallingEntity,
+    world: &Arc<World>,
+    entity_tracker: &Arc<RwLock<EntityTracker>>,
+    item_spawn_times: &Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: &Arc<RwLock<DroppedItems>>,
+    tracking_range: f64,
+    channels: &Channels,
+) {
+    let FallingKind::Block { block_id, metadata } = entity.kind else {
+        return;
+    };
+    let (bx, by, bz) = (
+        entity.x.floor() as i32,
+        entity.y.floor() as i32,
+        entity.z.floor() as i32,
+    );
+    channels.despawn_tx.send(vec![entity.entity_id]).ok();
+
+    let resting = (0..=255).contains(&by);
+    let occupied = resting && !can_fall_through(world.get(bx, by as u8, bz).await.id);
+
+    if resting && !occupied {
+        world
+            .set(bx, by as u8, bz, Block::new(block_id, metadata))
+            .await;
+        channels
+            .block_tx
+            .send((bx, by, bz, block_id as i32, metadata))
+            .ok();
+        return;
+    }
+
+    if let Some((item_id, count, item_meta)) = block_drop(block_id, metadata) {
+        spawn_blast_drop(
+            (entity.x, entity.y, entity.z),
+            (item_id, count, item_meta),
+            entity_tracker,
+            item_spawn_times,
+            item_positions,
+            tracking_range,
+            channels,
+        )
+        .await;
+    }
 }

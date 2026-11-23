@@ -95,6 +95,10 @@ impl BlockRegistry {
         self.get(id).and_then(|b| b.required_material())
     }
 
+    pub fn blast_resitance(&self, id: u8) -> f32 {
+        self.get(id).map(|b| b.blast_resistance()).unwrap_or(5.0)
+    }
+
     pub fn is_solid(&self, id: u8) -> bool {
         self.get(id).map(|b| b.is_solid()).unwrap_or(true)
     }

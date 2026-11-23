@@ -14,6 +14,7 @@ use coral_protocol::packets::play::{
 };
 use coral_server::{
     crafting::RecipeRegistry,
+    falling::TNT_FUSE_TICKS,
     items::ItemRegistry,
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{Projectile, ProjectileKind, launch_velocity},
@@ -153,6 +154,22 @@ pub async fn try_with_item_on_block(
     clicked: Option<(i32, i32, i32)>,
 ) -> bool {
     match place.held_item_id {
+        items::FLINT_AND_STEEL => {
+            let Some((bx, by, bz)) = clicked else {
+                return false;
+            };
+            if world.get(bx, by as u8, bz).await.id != blocks::TNT {
+                // TODO: place fire and remove durability to the flint and steel
+                return false;
+            }
+            world.set(bx, by as u8, bz, Block::air()).await;
+            channels.block_tx.send((bx, by, bz, 0, 0)).ok();
+            channels
+                .tnt_prime_tx
+                .send((bx as f64 + 0.5, by as f64, bz as f64 + 0.5, TNT_FUSE_TICKS))
+                .ok();
+            return true;
+        }
         items::BUCKET => {
             tracing::debug!(
                 "[BUCKET] entered branch, checking ({}, {}, {})",

@@ -7,6 +7,8 @@ pub mod effects;
 pub mod enchantment;
 pub mod entity_tracker;
 pub mod experience;
+pub mod explosion;
+pub mod falling;
 pub mod items;
 pub mod mining;
 pub mod mob;

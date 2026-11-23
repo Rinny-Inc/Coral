@@ -125,7 +125,7 @@ impl BlockBehavior for Fluid {
         }
     }
     fn blast_resistance(&self) -> f32 {
-        100.0
+        500.0
     }
     fn drops_self(&self) -> bool {
         false

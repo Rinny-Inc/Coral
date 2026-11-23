@@ -24,6 +24,7 @@ use coral_server::{
     crafting::RecipeRegistry,
     entity_tracker::EntityTracker,
     experience::XpOrb,
+    falling::FallingEntity,
     items::{ItemRegistry, drops::DroppedItems},
     ops::OpsFile,
     player::registry::PlayerRegistry,
@@ -153,6 +154,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctx.world.clone(),
         ctx.channels.clone(),
     );
+    tasks::spawn_falling_task(
+        ctx.falling.clone(),
+        ctx.world.clone(),
+        ctx.entity_tracker.clone(),
+        ctx.item_spawn_times.clone(),
+        ctx.item_positions.clone(),
+        config.tracking.item,
+        ctx.channels.clone(),
+    );
+    tasks::spawn_explosion_task(
+        ctx.world.clone(),
+        ctx.block_registry.clone(),
+        ctx.player_registry.clone(),
+        ctx.entity_tracker.clone(),
+        ctx.item_spawn_times.clone(),
+        ctx.item_positions.clone(),
+        ctx.fluid_queue.clone(),
+        config.tracking.item,
+        ctx.channels.clone(),
+    );
 
     if config.world.enable_auto_save {
         tasks::spawn_world_save_task(
@@ -264,6 +285,7 @@ pub struct ServerContext {
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<DroppedItems>>,
     projectiles: Arc<RwLock<Vec<Projectile>>>,
+    falling: Arc<RwLock<Vec<FallingEntity>>>,
     channels: Channels,
     world: Arc<World>,
     private_key: Arc<PrivateKey>,
@@ -303,6 +325,7 @@ impl ServerContext {
             item_spawn_times: Arc::new(RwLock::new(HashMap::new())),
             item_positions: Arc::new(RwLock::new(DroppedItems::new())),
             projectiles: Arc::new(RwLock::new(Vec::new())),
+            falling: Arc::new(RwLock::new(Vec::new())),
             channels: Channels::new(),
             world,
             player_registry: Arc::new(PlayerRegistry::new()),

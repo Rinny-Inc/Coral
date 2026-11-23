@@ -23,9 +23,10 @@ use coral_server::{
 };
 use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, ChestAnimation, DamageEvent, DespawnEntity,
-    EntityVelocityUpdate, EquipmentUpdate, GamemodeUpdate, ItemDrop, ItemPickup, KickRequest,
-    ParticleEffect, PingUpdate, PrivateMessage, ProjectileMove, SignUpdate, SoundEffect,
-    SplashEffect, TeleportRequest, TimeUpdate, XpOrbMove, XpOrbSpawn, XpPickup,
+    EntityVelocityUpdate, EquipmentUpdate, ExplosionEvent, ExplosionRequest, FallingMove,
+    FallingSpawn, GamemodeUpdate, ItemDrop, ItemPickup, KickRequest, ParticleEffect, PingUpdate,
+    PrivateMessage, ProjectileMove, SignUpdate, SoundEffect, SplashEffect, TeleportRequest,
+    TimeUpdate, TntPrime, XpOrbMove, XpOrbSpawn, XpPickup,
 };
 use coral_world::{spawn::SpawnPos, weather::WeatherState};
 use tokio::sync::{
@@ -77,6 +78,11 @@ pub struct Channels {
     pub chest_anim_tx: Arc<Sender<ChestAnimation>>,
     pub furnace_update_tx: Arc<Sender<(i32, i32, i32)>>,
     pub difficulty_tx: Arc<Sender<u8>>,
+    pub explosion_rq_tx: Arc<Sender<ExplosionRequest>>,
+    pub explosion_tx: Arc<Sender<ExplosionEvent>>,
+    pub falling_spawn_tx: Arc<Sender<FallingSpawn>>,
+    pub falling_move_tx: Arc<Sender<FallingMove>>,
+    pub tnt_prime_tx: Arc<Sender<TntPrime>>,
     // TODO: mob_spawn_tx
 }
 impl Channels {
@@ -119,6 +125,11 @@ impl Channels {
             chest_anim_tx: Arc::new(channel::<ChestAnimation>(30).0),
             furnace_update_tx: Arc::new(channel::<(i32, i32, i32)>(100).0),
             difficulty_tx: Arc::new(channel::<u8>(4).0),
+            explosion_rq_tx: Arc::new(channel::<ExplosionRequest>(16).0),
+            explosion_tx: Arc::new(channel::<ExplosionEvent>(16).0),
+            falling_spawn_tx: Arc::new(channel::<FallingSpawn>(256).0),
+            falling_move_tx: Arc::new(channel::<FallingMove>(1024).0),
+            tnt_prime_tx: Arc::new(channel::<TntPrime>(256).0),
         }
     }
 }

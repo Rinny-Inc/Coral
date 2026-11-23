@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use uuid::Uuid;
 
 pub mod ext;
@@ -13,6 +15,10 @@ pub type BreakAnimation = (i32, i32, i32, i32, u8);
 pub type ItemDrop = (i32, f64, f64, f64, i16, u8, i16, f64, f64, f64);
 pub type DespawnEntity = Vec<i32>;
 pub type ItemInfo = (i32, f64, f64, f64, i16, u8, i16);
+pub type ExplosionRequest = (f64, f64, f64, f32);
+pub type FallingSpawn = (i32, u8, i32, f64, f64, f64, f64, f64, f64);
+pub type FallingMove = (i32, f64, f64, f64);
+pub type TntPrime = (f64, f64, f64, u16);
 pub type ItemPickup = (i32, Uuid, i32);
 pub type TimeUpdate = (i64, i64);
 pub type EquipmentUpdate = (i32, i16, i16, u8, i16);
@@ -113,4 +119,14 @@ pub fn offline_uuid(username: &str) -> Uuid {
         &Uuid::NAMESPACE_DNS,
         format!("OfflinePlayer:{}", username).as_bytes(),
     )
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplosionEvent {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub power: f32,
+    pub destroyed: Arc<Vec<(i32, i32, i32)>>,
+    pub motion: Arc<HashMap<Uuid, (f64, f64, f64)>>,
 }

@@ -20,6 +20,7 @@ use coral_protocol::packets::play::{
         EntityMetadata, EntityRelativeMove, EntityTeleport, EntityVelocity, MetadataValue,
         SpawnExperienceOrb, SpawnObject, SpawnPlayer, TileEntity, UpdateSign, UseBed, UseEntity,
     },
+    explosion::Explosion,
     game::{
         ChangeGameState, ClientStatus, EntityStatus, EntityStatusType, GameStateChangeReason,
         ServerDifficulty, SetExperience, UpdateHealth,
@@ -214,6 +215,9 @@ pub async fn play(
     let mut chest_anim_rx = channels.chest_anim_tx.subscribe();
     let mut furnace_update_rx = channels.furnace_update_tx.subscribe();
     let mut difficulty_rx = channels.difficulty_tx.subscribe();
+    let mut explosion_rx = channels.explosion_tx.subscribe();
+    let mut falling_spawn_rx = channels.falling_spawn_tx.subscribe();
+    let mut falling_move_rx = channels.falling_move_tx.subscribe();
 
     let mut keep_alive_interval = interval(KEEP_ALIVE_INTERVAL); // 30 seconds is timed out
 
@@ -463,6 +467,55 @@ pub async fn play(
                         }
                         send_packet(framed, WindowItems { window_id, slots: all_slots }).await;
                     }
+                }
+            }
+
+            Ok((eid, object_type, data, x, y, z, vx, vy, vz)) = falling_spawn_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
+                send_packet(framed, SpawnObject {
+                    entity_id: eid,
+                    object_type,
+                    x, y, z,
+                    yaw: 0, pitch: 0,
+                    data,
+                    vx: (vx * 8000.0) as i16,
+                    vy: (vy * 8000.0) as i16,
+                    vz: (vz * 8000.0) as i16,
+                }).await;
+            }
+            Ok((eid, x, y, z)) = falling_move_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
+                send_packet(framed, EntityTeleport {
+                    entity_id: eid,
+                    x, y, z,
+                    yaw: 0.0, pitch: 0.0,
+                    on_ground: false
+                }).await;
+            }
+
+            Ok(blast) = explosion_rx.recv() => {
+                let (px, py, pz) = state.last_position;
+                let (dx, dy, dz) = (px - blast.x, py - blast.y, pz - blast.z);
+                if dx * dx + dy * dy + dz * dz <= 64.0 {
+                    let records = Explosion::records_from(
+                        blast.x,
+                        blast.y,
+                        blast.z,
+                        blast.destroyed.iter().copied()
+                    );
+                    let motion = blast.motion.get(&state.uuid).copied().unwrap_or((0.0, 0.0, 0.0));
+                    send_packet(framed, Explosion {
+                        x: blast.x,
+                        y: blast.y,
+                        z: blast.z,
+                        power: blast.power,
+                        records,
+                        motion
+                    }).await;
                 }
             }
 

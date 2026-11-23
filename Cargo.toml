@@ -13,7 +13,7 @@ members = [
 [workspace.dependencies]
 aes = "0.9.4"
 base64 = "0.23.1"
-bytes = "1.12.1"
+bytes = "1.12.2"
 cfb8 = "0.9.1"
 cipher = "0.5.2"
 flate2 = "1.1.11"
@@ -27,13 +27,13 @@ serde_json = "1.0.154"
 sha1 = "0.11.0"
 sha2 = "0.11.1"
 tar = "0.4.46"
-zip = { version = "9.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-stream = { version = "0.1.19", features = ["full"] }
 tokio-util = { version = "0.7.20", features = ["codec"] }
-toml = "1.2.1+spec-1.1.0"
-toml_edit = "0.25.19+spec-1.1.0"
-uuid = { version = "1.29.2", features = ["v3", "v4"] }
-sysinfo = "0.40.3"
+toml = "1.2.2+spec-1.1.0"
+toml_edit = "0.25.20+spec-1.1.0"
+uuid = { version = "1.29.3", features = ["v3", "v4"] }
+sysinfo = "0.40.4"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
