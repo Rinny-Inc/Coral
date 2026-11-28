@@ -28,6 +28,7 @@ use coral_server::{
         step as falling_step, tnt_launch_velocity,
     },
     items::drops::{DroppedItems, block_drop},
+    mob::{MobRegistry, ai::tick_mob, kill},
     player::registry::{PlayerRegistry, next_entity_id},
     projectile::{self, Projectile, ProjectileKind},
     smelting::{fuel_burn_ticks, fuel_residue, smelt_result},
@@ -757,6 +758,7 @@ pub fn spawn_explosion_task(
     world: Arc<World>,
     block_registry: Arc<BlockRegistry>,
     player_registry: Arc<PlayerRegistry>,
+    mob_registry: Arc<MobRegistry>,
     entity_tracker: Arc<RwLock<EntityTracker>>,
     item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
     item_positions: Arc<RwLock<DroppedItems>>,
@@ -822,7 +824,7 @@ pub fn spawn_explosion_task(
                 if rand::rng().random::<f32>() < chance
                     && let Some((item_id, count, metadata)) = block_drop(before.id, before.metadata)
                 {
-                    spawn_blast_drop(
+                    spawn_world_drop(
                         (bx as f64 + 0.5, by as f64 + 0.5, bz as f64 + 0.5),
                         (item_id, count, metadata),
                         &entity_tracker,
@@ -875,6 +877,35 @@ pub fn spawn_explosion_task(
                     .ok();
             }
 
+            for mob in mob_registry.all().await {
+                let (dx, dy, dz) = (mob.x - x, mob.y - y, mob.z - z);
+                let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+                let size = mob.mob_type.size();
+                let seen = exposure(
+                    x,
+                    y,
+                    z,
+                    (mob.x - size.width / 2.0, mob.y, mob.z - size.width / 2.0),
+                    (
+                        mob.x + size.width / 2.0,
+                        mob.y + size.height,
+                        mob.z + size.width / 2.0,
+                    ),
+                    solid,
+                );
+                let to_eyes = (dx, mob.y + size.height * 0.85 - y, dz);
+                let Some((damage, _)) = entity_effect(distance, to_eyes, power, seen) else {
+                    continue;
+                };
+                let Some((_, died)) = mob_registry.damage(mob.entity_id, damage).await else {
+                    continue;
+                };
+                channels.entity_status_tx.send((mob.entity_id, 2)).ok();
+                if died && let Some(death) = kill(&mob_registry, mob.entity_id).await {
+                    channels.mob_death_tx.send(death).ok();
+                }
+            }
+
             channels
                 .explosion_tx
                 .send(ExplosionEvent {
@@ -891,7 +922,7 @@ pub fn spawn_explosion_task(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn spawn_blast_drop(
+async fn spawn_world_drop(
     (x, y, z): (f64, f64, f64),
     (item_id, count, metadata): (i16, u8, i16),
     entity_tracker: &Arc<RwLock<EntityTracker>>,
@@ -1128,7 +1159,7 @@ async fn land_falling_block(
     }
 
     if let Some((item_id, count, item_meta)) = block_drop(block_id, metadata) {
-        spawn_blast_drop(
+        spawn_world_drop(
             (entity.x, entity.y, entity.z),
             (item_id, count, item_meta),
             entity_tracker,
@@ -1139,4 +1170,70 @@ async fn land_falling_block(
         )
         .await;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_mob_task(
+    mob_registry: Arc<MobRegistry>,
+    player_registry: Arc<PlayerRegistry>,
+    world: Arc<World>,
+    entity_tracker: Arc<RwLock<EntityTracker>>,
+    item_spawn_times: Arc<RwLock<HashMap<i32, Instant>>>,
+    item_positions: Arc<RwLock<DroppedItems>>,
+    tracking_range: f64,
+    channels: Channels,
+) {
+    {
+        let channels = channels.clone();
+        tokio::spawn(async move {
+            let mut deaths = channels.mob_death_tx.subscribe();
+            while let Ok((entity_id, x, y, z, drops, xp)) = deaths.recv().await {
+                channels.despawn_tx.send(vec![entity_id]).ok();
+                for (item_id, count) in drops {
+                    spawn_world_drop(
+                        (x, y + 0.5, z),
+                        (item_id, count, 0),
+                        &entity_tracker,
+                        &item_spawn_times,
+                        &item_positions,
+                        tracking_range,
+                        &channels,
+                    )
+                    .await;
+                }
+                if xp > 0 {
+                    let orb = next_entity_id();
+                    entity_tracker
+                        .write()
+                        .await
+                        .track(TrackedEntity::experience_orb(
+                            orb,
+                            x,
+                            y + 0.5,
+                            z,
+                            tracking_range,
+                        ));
+                    channels.xp_orb_spawn_tx.send((orb, x, y + 0.5, z, xp)).ok();
+                }
+            }
+        });
+    }
+
+    tokio::spawn(async move {
+        let mut interval = interval(Duration::from_ticks(1));
+        loop {
+            interval.tick().await;
+            if mob_registry.count().await == 0 {
+                continue;
+            }
+            let (moves, attacks) =
+                tick_mob(mob_registry.clone(), player_registry.clone(), world.clone()).await;
+            for mv in moves {
+                channels.mob_move_tx.send(mv).ok();
+            }
+            for attack in attacks {
+                channels.mob_attack_tx.send(attack).ok();
+            }
+        }
+    });
 }

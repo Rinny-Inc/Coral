@@ -13,6 +13,7 @@ use coral_server::{
     entity_tracker::TrackedEntity,
     experience::XpOrb,
     items::armor::{apply_armor_reduction, total_defense},
+    mob::kill,
     player::registry::next_entity_id,
 };
 use coral_types::{GameMode, dist3};
@@ -214,6 +215,14 @@ pub(in crate::codec::state::play) async fn use_entity(
             if state.gamemode == GameMode::Spectator {
                 return Flow::Continue;
             }
+            if ctx
+                .mob_registry
+                .get(use_entity.target_entity_id)
+                .await
+                .is_some()
+            {
+                return attack_mob(use_entity.target_entity_id, state, ctx).await;
+            }
             if let Some(target) = ctx
                 .player_registry
                 .get_by_entity_id(use_entity.target_entity_id)
@@ -380,6 +389,55 @@ pub(in crate::codec::state::play) async fn use_entity(
             }
         }
         _ => {}
+    }
+    Flow::Continue
+}
+
+async fn attack_mob(target_entity_id: i32, state: &mut PlayerState, ctx: &PlayCtx<'_>) -> Flow {
+    let Some(mob) = ctx.mob_registry.get(target_entity_id).await else {
+        return Flow::Continue;
+    };
+    let Some(me) = ctx.player_registry.get(&state.uuid).await else {
+        return Flow::Continue;
+    };
+
+    let reach = if state.gamemode == GameMode::Creative {
+        5.0
+    } else {
+        4.0
+    };
+    if dist3(me.x, me.y, me.z, mob.x, mob.y, mob.z) > reach {
+        return Flow::Continue;
+    }
+
+    let strength_bonus = state
+        .active_effects
+        .iter()
+        .find(|e| e.kind == EffectKind::Strength)
+        .map(|e| 1.3 * (e.amplifier + 1) as f32)
+        .unwrap_or(0.0);
+    let weakness_penalty = state
+        .active_effects
+        .iter()
+        .find(|e| e.kind == EffectKind::Weakness)
+        .map(|e| 0.5 * (e.amplifier + 1) as f32)
+        .unwrap_or(0.0);
+    let base =
+        ctx.item_registry.attack_damage(state.held_item.id()) + strength_bonus - weakness_penalty;
+    let critical = !me.on_ground && state.fall_distance > 0.0;
+    let damage = base.max(0.0) * if critical { 1.5 } else { 1.0 };
+
+    let Some((_, died)) = ctx.mob_registry.damage(target_entity_id, damage).await else {
+        return Flow::Continue;
+    };
+
+    ctx.channels
+        .entity_status_tx
+        .send((target_entity_id, EntityStatusType::HurtAnimation as u8))
+        .ok();
+
+    if died && let Some(death) = kill(ctx.mob_registry, target_entity_id).await {
+        ctx.channels.mob_death_tx.send(death).ok();
     }
     Flow::Continue
 }

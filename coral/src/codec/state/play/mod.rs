@@ -30,6 +30,7 @@ use coral_protocol::packets::play::{
         ItemStack, WindowItems, WindowProperty, WindowType,
     },
     keepalive::KeepAlive,
+    mob::SpawnMob,
     movement::{
         MoveKind, MovementBroadcast, PlayerLook, PlayerMovements, PlayerOnGround, PlayerPosition,
         PlayerPositionAndLook,
@@ -175,6 +176,7 @@ pub async fn play(
         fluid_queue,
         tile_entities,
         server_loaded_chunks,
+        mob_registry,
         ..
     } = ctx;
 
@@ -218,6 +220,31 @@ pub async fn play(
     let mut explosion_rx = channels.explosion_tx.subscribe();
     let mut falling_spawn_rx = channels.falling_spawn_tx.subscribe();
     let mut falling_move_rx = channels.falling_move_tx.subscribe();
+    let mut mob_spawn_rx = channels.mob_spawn_tx.subscribe();
+    let mut mob_move_rx = channels.mob_move_tx.subscribe();
+    let mut mob_attack_rx = channels.mob_attack_tx.subscribe();
+    let mut entity_status_rx = channels.entity_status_tx.subscribe();
+
+    for mob in mob_registry.all().await {
+        send_packet(
+            framed,
+            SpawnMob {
+                entity_id: mob.entity_id,
+                mob_type: mob.mob_type.entity_id(),
+                x: mob.x,
+                y: mob.y,
+                z: mob.z,
+                yaw: mob.yaw,
+                pitch: mob.pitch,
+                head_yaw: mob.head_yaw,
+                vx: 0.0,
+                vy: 0.0,
+                vz: 0.0,
+                metadata_entries: vec![(6, MetadataValue::Float(mob.health))],
+            },
+        )
+        .await;
+    }
 
     let mut keep_alive_interval = interval(KEEP_ALIVE_INTERVAL); // 30 seconds is timed out
 
@@ -239,6 +266,7 @@ pub async fn play(
         block_registry: &block_registry,
         recipes: &recipes,
         fluid_queue: &fluid_queue,
+        mob_registry: &mob_registry,
         client_protocol,
     };
 
@@ -468,6 +496,61 @@ pub async fn play(
                         send_packet(framed, WindowItems { window_id, slots: all_slots }).await;
                     }
                 }
+            }
+
+            Ok((eid, status)) = entity_status_rx.recv() => {
+                let status = match status {
+                    3 => EntityStatusType::DeadAnimation,
+                    _ => EntityStatusType::HurtAnimation,
+                };
+                send_packet(framed, EntityStatus { entity_id: eid, status }).await;
+            }
+            Ok((eid, mob_type, x, y, z, yaw, pitch, head_yaw, health)) = mob_spawn_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
+                send_packet(framed, SpawnMob {
+                    entity_id: eid,
+                    mob_type,
+                    x, y, z,
+                    yaw, pitch, head_yaw,
+                    vx: 0.0, vy: 0.0, vz: 0.0,
+                    metadata_entries: vec![(6, MetadataValue::Float(health))],
+                }).await;
+            }
+            Ok((eid, x, y, z, yaw, pitch, head_yaw, on_ground)) = mob_move_rx.recv() => {
+                if !state.has_chunk_at_pos(x, z) {
+                    continue;
+                }
+                send_packet(framed, EntityTeleport {
+                    entity_id: eid,
+                    x, y, z,
+                    yaw, pitch,
+                    on_ground,
+                }).await;
+                send_packet(framed, EntityHeadLook {
+                    entity_id: eid,
+                    head_yaw,
+                }).await;
+            }
+            Ok((target, damage, attacker_eid)) = mob_attack_rx.recv() => {
+                if target != state.uuid {
+                    continue;
+                }
+                let health = (state.health - damage).max(0.0);
+                state.health = health;
+                if let Some(player) = ctx.player_registry.get(&state.uuid).await {
+                    ctx.player_registry.update_health(&state.uuid, health, player.food, player.food_saturation).await;
+                    send_packet(framed, UpdateHealth {
+                        health,
+                        food: player.food,
+                        food_saturation: player.food_saturation,
+                    }).await;
+                }
+                send_packet(framed, EntityStatus {
+                    entity_id: attacker_eid,
+                    status: EntityStatusType::HurtAnimation,
+                }).await;
             }
 
             Ok((eid, object_type, data, x, y, z, vx, vy, vz)) = falling_spawn_rx.recv() => {

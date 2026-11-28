@@ -1,21 +1,19 @@
 use std::sync::Arc;
 
+use coral_protocol::packets::play::chat::builder::ChatBuilder;
 use coral_server::{
     mob::{Mob, MobRegistry, MobType},
-    player::registry::PlayerRegistry,
+    player::registry::{PlayerRegistry, next_entity_id},
 };
 use coral_types::MobSpawnBroadcast;
-use tokio::sync::watch::Sender;
+use tokio::sync::broadcast::Sender;
 
 use crate::{Command, CommandResult, make_handler};
-
-// FIXME: not implemented
 
 pub fn command(
     player_registry: Arc<PlayerRegistry>,
     mob_registry: Arc<MobRegistry>,
     mob_spawn_tx: Arc<Sender<MobSpawnBroadcast>>,
-    next_entity_id: i32,
 ) -> Command {
     Command {
         name: "summon",
@@ -65,7 +63,7 @@ pub fn command(
                     (sender.x, sender.y, sender.z)
                 };
 
-                let entity_id = next_entity_id;
+                let entity_id = next_entity_id();
                 let mob = Mob::new(entity_id, mob_type.clone(), x, y, z);
                 let health = mob.health;
 
@@ -85,13 +83,13 @@ pub fn command(
                     ))
                     .ok();
 
-                CommandResult::Success(format!(
+                CommandResult::Success(ChatBuilder::plain_json(&format!(
                     "Summoned {} at {:.1} {:.1} {:.1}",
                     mob_type.name(),
                     x,
                     y,
                     z
-                ))
+                )))
             }
         }),
     }

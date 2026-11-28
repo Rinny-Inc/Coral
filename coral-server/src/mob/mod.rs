@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
+use coral_types::MobDeath;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::bounding_box::{BoundingBox, EntityBounds};
+use crate::{
+    bounding_box::{BoundingBox, EntityBounds},
+    mob::ai::roll_drops,
+};
 
 pub mod ai;
 
@@ -239,4 +243,17 @@ impl Default for MobRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub async fn kill(registry: &MobRegistry, entity_id: i32) -> Option<MobDeath> {
+    let mob = registry.remove(entity_id).await?;
+    let drops = roll_drops(mob.mob_type.clone());
+    Some((
+        mob.entity_id,
+        mob.x,
+        mob.y,
+        mob.z,
+        drops,
+        mob.mob_type.xp_on_death(),
+    ))
 }

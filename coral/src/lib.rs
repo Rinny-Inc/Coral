@@ -16,6 +16,7 @@ use coral_protocol::packets::play::{
     movement::MovementBroadcast,
 };
 use coral_server::{
+    mob::MobRegistry,
     ops::OpsFile,
     player::{Player, registry::PlayerRegistry},
     projectile::ProjectileKind,
@@ -23,8 +24,9 @@ use coral_server::{
 };
 use coral_types::{
     BedUpdate, BlockUpdate, BreakAnimation, ChestAnimation, DamageEvent, DespawnEntity,
-    EntityVelocityUpdate, EquipmentUpdate, ExplosionEvent, ExplosionRequest, FallingMove,
-    FallingSpawn, GamemodeUpdate, ItemDrop, ItemPickup, KickRequest, ParticleEffect, PingUpdate,
+    EntityStatusBroadcast, EntityVelocityUpdate, EquipmentUpdate, ExplosionEvent, ExplosionRequest,
+    FallingMove, FallingSpawn, GamemodeUpdate, ItemDrop, ItemPickup, KickRequest,
+    MobAttackBroadcast, MobDeath, MobMoveBroadcast, MobSpawnBroadcast, ParticleEffect, PingUpdate,
     PrivateMessage, ProjectileMove, SignUpdate, SoundEffect, SplashEffect, TeleportRequest,
     TimeUpdate, TntPrime, XpOrbMove, XpOrbSpawn, XpPickup,
 };
@@ -83,7 +85,11 @@ pub struct Channels {
     pub falling_spawn_tx: Arc<Sender<FallingSpawn>>,
     pub falling_move_tx: Arc<Sender<FallingMove>>,
     pub tnt_prime_tx: Arc<Sender<TntPrime>>,
-    // TODO: mob_spawn_tx
+    pub mob_spawn_tx: Arc<Sender<MobSpawnBroadcast>>,
+    pub mob_move_tx: Arc<Sender<MobMoveBroadcast>>,
+    pub mob_attack_tx: Arc<Sender<MobAttackBroadcast>>,
+    pub mob_death_tx: Arc<Sender<MobDeath>>,
+    pub entity_status_tx: Arc<Sender<EntityStatusBroadcast>>,
 }
 impl Channels {
     pub fn new() -> Self {
@@ -130,6 +136,11 @@ impl Channels {
             falling_spawn_tx: Arc::new(channel::<FallingSpawn>(256).0),
             falling_move_tx: Arc::new(channel::<FallingMove>(1024).0),
             tnt_prime_tx: Arc::new(channel::<TntPrime>(256).0),
+            mob_spawn_tx: Arc::new(channel::<MobSpawnBroadcast>(256).0),
+            mob_move_tx: Arc::new(channel::<MobMoveBroadcast>(2048).0),
+            mob_attack_tx: Arc::new(channel::<MobAttackBroadcast>(256).0),
+            mob_death_tx: Arc::new(channel::<MobDeath>(256).0),
+            entity_status_tx: Arc::new(channel::<EntityStatusBroadcast>(256).0),
         }
     }
 }
@@ -159,6 +170,7 @@ pub async fn register_commands(
     dispatcher: &Arc<CommandDispatcher>,
     channels: &Channels,
     player_registry: &Arc<PlayerRegistry>,
+    mob_registry: &Arc<MobRegistry>,
     ops: &Arc<RwLock<OpsFile>>,
     whitelist: &Arc<RwLock<WhitelistFile>>,
     resource_monitor: &Arc<ResourceMonitor>,
@@ -168,6 +180,13 @@ pub async fn register_commands(
     world_difficulty: &Arc<AtomicU8>,
 ) {
     dispatcher.register(list::version::command()).await;
+    dispatcher
+        .register(list::summon::command(
+            player_registry.clone(),
+            mob_registry.clone(),
+            channels.mob_spawn_tx.clone(),
+        ))
+        .await;
     dispatcher
         .register(list::player_list::command(player_registry.clone()))
         .await;

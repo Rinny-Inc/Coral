@@ -12,6 +12,7 @@ use coral_server::{
     entity_tracker::EntityTracker,
     experience::XpOrb,
     items::{ItemRegistry, drops::DroppedItems},
+    mob::MobRegistry,
     player::registry::PlayerRegistry,
     projectile::Projectile,
     tile_entities::TileEntityStore,
@@ -53,6 +54,7 @@ pub(super) struct PlayCtx<'a> {
     pub block_registry: &'a Arc<BlockRegistry>,
     pub recipes: &'a Arc<RecipeRegistry>,
     pub fluid_queue: &'a Arc<RwLock<FluidQueue>>,
+    pub mob_registry: &'a Arc<MobRegistry>,
     pub client_protocol: i32,
 }
 

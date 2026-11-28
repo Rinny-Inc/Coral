@@ -20,7 +20,6 @@ const GRAVITY: f64 = 0.08;
 const DRAG: f64 = 0.98;
 const IDLE_FRICTION: f64 = 0.6;
 
-// FIXME: not implemented
 pub async fn tick_mob(
     mob_registry: Arc<MobRegistry>,
     player_registry: Arc<PlayerRegistry>,
